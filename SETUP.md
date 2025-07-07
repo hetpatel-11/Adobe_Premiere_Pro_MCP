@@ -27,7 +27,7 @@ This guide will walk you through the complete setup process for the MCP Adobe Pr
 
 ```bash
 # Clone the main repository
-git clone https://github.com/your-username/mcp-adobe-premiere-pro.git
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP
 
 # Navigate to project directory
 cd mcp-adobe-premiere-pro
