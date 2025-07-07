@@ -389,6 +389,31 @@ function clearLog() {
     }
 }
 
+// UXP/CEP compatibility helpers
+function isUXP() {
+  return typeof require === 'undefined' && typeof window.uxp !== 'undefined';
+}
+
+function logUXPWarning() {
+  const msg = '⚠️ UXP support is experimental. Some features may not work due to limited Premiere Pro UXP APIs.';
+  if (typeof document !== 'undefined') {
+    const el = document.createElement('div');
+    el.style.color = 'orange';
+    el.style.fontWeight = 'bold';
+    el.style.margin = '8px 0';
+    el.textContent = msg;
+    document.body.prepend(el);
+  }
+  console.warn(msg);
+}
+
+if (isUXP()) {
+  logUXPWarning();
+  // Example: Use UXP APIs for file/network if needed
+  // window.uxp.fs, window.uxp.network, etc.
+  // (You may need to rewrite file/network access for full UXP support)
+}
+
 // Initialize the bridge when the page loads
 document.addEventListener('DOMContentLoaded', () => {
     bridge = new MCPPremiereBridge();

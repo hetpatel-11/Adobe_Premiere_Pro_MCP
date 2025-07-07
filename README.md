@@ -12,6 +12,21 @@ This project is an **AI-powered automation bridge for Adobe Premiere Pro**. It e
 
 ---
 
+## 🧩 Using with UXP DevTools (Experimental)
+
+You can also use this project as a UXP panel in Premiere Pro (24.4+):
+
+1. Open [Adobe UXP DevTools](https://developer.adobe.com/uxp/devtools/).
+2. Click “Add Plugin” and select the `uxp-plugin/` folder.
+3. Start the panel in DevTools and open it in Premiere Pro via `Window > Plugins > MCP Bridge (UXP)`.
+
+**⚠️ Note:**
+- UXP scripting in Premiere Pro is **experimental and limited**. Some features (like timeline and sequence editing) may not be available yet.
+- For full automation, use the CEP (legacy) panel.
+- See [Adobe UXP documentation](https://developer.adobe.com/uxp/) for more info.
+
+---
+
 ## 🛠️ Supported Tools
 
 ### 📁 Project Management
@@ -121,6 +136,7 @@ npm start
 - **Text/graphics overlays do not work** (see above)
 - **Some scripting APIs are buggy or version-dependent**
 - **CEP extensions are deprecated** in the latest Adobe apps (but still work for now)
+- **UXP scripting is experimental and limited** in Premiere Pro (see above)
 - **Error handling is robust, but some failures may be silent** due to Premiere scripting quirks
 - **This is a proof-of-concept / starting point** — not a polished commercial product
 
@@ -139,6 +155,7 @@ If you want to go further (e.g., advanced graphics/text), you’ll need After Ef
 ## 📚 References
 - [Adobe Premiere Pro Scripting Guide](https://ppro-scripting.docsforadobe.dev/)
 - [Adobe CEP Resources](https://github.com/Adobe-CEP)
+- [Adobe UXP Documentation](https://developer.adobe.com/uxp/)
 - [MCP Protocol](https://github.com/anthropics/model-context-protocol)
 
 ---

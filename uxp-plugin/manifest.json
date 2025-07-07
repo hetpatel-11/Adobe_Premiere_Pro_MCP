@@ -1,0 +1,42 @@
+{
+  "id": "com.mcp.premiere.uxpbridge",
+  "name": "MCP Bridge (UXP)",
+  "version": "1.0.0",
+  "host": {
+    "app": "PPRO",
+    "minVersion": "24.4.0"
+  },
+  "type": "panel",
+  "uiEntry": {
+    "type": "panel",
+    "file": "index.html"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "mcp-uxp-bridge-panel",
+      "file": "index.html"
+    }
+  ],
+  "manifestVersion": 6,
+  "permissions": {
+    "allowCodeGenerationFromStrings": true,
+    "network": {
+      "domains": ["localhost", "127.0.0.1"]
+    },
+    "fs": {
+      "read": true,
+      "write": true
+    }
+  },
+  "requiredPermissions": {
+    "allowCodeGenerationFromStrings": true,
+    "network": {
+      "domains": ["localhost", "127.0.0.1"]
+    },
+    "fs": {
+      "read": true,
+      "write": true
+    }
+  }
+} 
