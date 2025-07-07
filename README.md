@@ -16,14 +16,13 @@ This project is an **AI-powered automation bridge for Adobe Premiere Pro**. It e
 
 You can also use this project as a UXP panel in Premiere Pro (24.4+):
 
-1. Open [Adobe UXP DevTools](https://developer.adobe.com/uxp/devtools/).
+1. Open [Adobe UXP DevTools](https://developer.adobe.com/photoshop/uxp/2022/guides/devtool/).
 2. Click “Add Plugin” and select the `uxp-plugin/` folder.
 3. Start the panel in DevTools and open it in Premiere Pro via `Window > Plugins > MCP Bridge (UXP)`.
 
 **⚠️ Note:**
 - UXP scripting in Premiere Pro is **experimental and limited**. Some features (like timeline and sequence editing) may not be available yet.
 - For full automation, use the CEP (legacy) panel.
-- See [Adobe UXP documentation](https://developer.adobe.com/uxp/) for more info.
 
 ---
 
