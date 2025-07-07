@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Premiere Pro Bridge</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #2d2d2d;
+            color: #ffffff;
+        }
+        
+        .container {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            text-align: center;
+            color: #00a8ff;
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+        
+        .status-section {
+            background-color: #3d3d3d;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 10px;
+        }
+        
+        .status-dot.connected {
+            background-color: #00ff00;
+        }
+        
+        .status-dot.disconnected {
+            background-color: #ff0000;
+        }
+        
+        .status-dot.connecting {
+            background-color: #ffff00;
+        }
+        
+        .control-section {
+            background-color: #3d3d3d;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background-color: #00a8ff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: #0088cc;
+        }
+        
+        button:disabled {
+            background-color: #666666;
+            cursor: not-allowed;
+        }
+        
+        .log-section {
+            background-color: #3d3d3d;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        
+        .log-container {
+            background-color: #1a1a1a;
+            border-radius: 4px;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 2px 0;
+        }
+        
+        .log-entry.info {
+            color: #00ff00;
+        }
+        
+        .log-entry.warning {
+            color: #ffff00;
+        }
+        
+        .log-entry.error {
+            color: #ff0000;
+        }
+        
+        .config-section {
+            background-color: #3d3d3d;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        input[type="text"], input[type="number"] {
+            background-color: #2d2d2d;
+            color: white;
+            border: 1px solid #555;
+            padding: 8px;
+            border-radius: 4px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #00a8ff;
+        }
+        
+        .command-queue {
+            background-color: #1a1a1a;
+            border-radius: 4px;
+            padding: 10px;
+            margin-top: 10px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
+        .command-item {
+            padding: 8px;
+            margin-bottom: 5px;
+            background-color: #2d2d2d;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .command-status {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        
+        .command-status.pending {
+            background-color: #ffff00;
+            color: #000000;
+        }
+        
+        .command-status.executing {
+            background-color: #00a8ff;
+            color: #ffffff;
+        }
+        
+        .command-status.completed {
+            background-color: #00ff00;
+            color: #000000;
+        }
+        
+        .command-status.error {
+            background-color: #ff0000;
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MCP Premiere Pro Bridge</h1>
+        
+        <!-- Status Section -->
+        <div class="status-section">
+            <div class="section-title">Connection Status</div>
+            <div class="status-indicator">
+                <div class="status-dot" id="connectionStatus"></div>
+                <span id="connectionText">Disconnected</span>
+            </div>
+            <div class="status-indicator">
+                <div class="status-dot" id="serverStatus"></div>
+                <span id="serverText">MCP Server: Not Running</span>
+            </div>
+        </div>
+        
+        <!-- Configuration Section -->
+        <div class="config-section">
+            <div class="section-title">Configuration</div>
+            <input type="text" id="serverPort" placeholder="MCP Server Port (default: 3000)" value="3000">
+            <input type="text" id="tempDirectory" placeholder="Temp Directory Path" value="">
+            <button onclick="saveConfig()">Save Configuration</button>
+        </div>
+        
+        <!-- Control Section -->
+        <div class="control-section">
+            <div class="section-title">Controls</div>
+            <button onclick="startBridge()" id="startButton">Start Bridge</button>
+            <button onclick="stopBridge()" id="stopButton" disabled>Stop Bridge</button>
+            <button onclick="testConnection()" id="testButton">Test Connection</button>
+            <button onclick="clearLog()" id="clearButton">Clear Log</button>
+        </div>
+        
+        <!-- Command Queue Section -->
+        <div class="status-section">
+            <div class="section-title">Command Queue</div>
+            <div class="command-queue" id="commandQueue">
+                <div class="command-item">
+                    <span>No commands in queue</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Log Section -->
+        <div class="log-section">
+            <div class="section-title">Activity Log</div>
+            <div class="log-container" id="logContainer">
+                <div class="log-entry info">MCP Premiere Pro Bridge loaded</div>
+                <div class="log-entry info">Ready to start bridge connection</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="bridge.js"></script>
+</body>
+</html> 
