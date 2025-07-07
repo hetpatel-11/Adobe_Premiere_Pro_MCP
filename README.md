@@ -102,7 +102,7 @@ You can also use this project as a UXP panel in Premiere Pro (24.4+):
 
 ### 1. Clone and Install
 ```sh
-git clone <this-repo-url>
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP
 cd MCP_Adobe_Premiere_Pro
 npm install
 ```
