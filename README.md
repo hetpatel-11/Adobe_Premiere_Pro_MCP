@@ -154,9 +154,6 @@ If you want to go further (e.g., advanced graphics/text), you’ll need After Ef
 ## 📚 References
 - [Adobe Premiere Pro Scripting Guide](https://ppro-scripting.docsforadobe.dev/)
 - [Adobe CEP Resources](https://github.com/Adobe-CEP)
-- [Adobe UXP Documentation](https://developer.adobe.com/uxp/)
-- [MCP Protocol](https://github.com/anthropics/model-context-protocol)
-
 ---
 
 ## 🙏 Thanks & Contributions
