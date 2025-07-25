@@ -2,6 +2,10 @@
 
 > **AI meets Premiere Pro.** Control your edits with natural language and automate your workflow with Claude or any AI agent, powered by the Model Context Protocol (MCP).
 
+<a href="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP/badge" alt="Adobe Premiere Pro MCP server" />
+</a>
+
 ---
 
 ## ✨ What is This?
