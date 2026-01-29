@@ -7,19 +7,21 @@
 import { Logger } from '../utils/logger.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-// import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
+import { createSecureTempDir, validateFilePath, sanitizeInput } from '../utils/security.js';
 export class PremiereProBridge {
     logger;
     communicationMethod;
     tempDir;
     uxpProcess;
     isInitialized = false;
+    sessionId;
     constructor() {
         this.logger = new Logger('PremiereProBridge');
         this.communicationMethod = 'file'; // Default to file-based communication
-        // Use a fixed location so the CEP panel can watch the same folder
-        this.tempDir = '/tmp/premiere-bridge';
+        this.sessionId = uuidv4();
+        // Use session-specific secure temp directory
+        this.tempDir = createSecureTempDir(this.sessionId);
     }
     async initialize() {
         try {
@@ -36,8 +38,8 @@ export class PremiereProBridge {
     }
     async setupTempDirectory() {
         try {
-            await fs.mkdir(this.tempDir, { recursive: true });
-            this.logger.debug(`Temp directory created: ${this.tempDir}`);
+            await fs.mkdir(this.tempDir, { recursive: true, mode: 0o700 }); // Restrict to owner only
+            this.logger.debug(`Secure temp directory created: ${this.tempDir}`);
         }
         catch (error) {
             this.logger.error('Failed to create temp directory:', error);
@@ -156,11 +158,17 @@ export class PremiereProBridge {
         await this.executeScript(script);
     }
     async importMedia(filePath) {
+        // Validate file path for security
+        const pathValidation = validateFilePath(filePath);
+        if (!pathValidation.valid) {
+            throw new Error(`Invalid file path: ${pathValidation.error}`);
+        }
+        const safePath = sanitizeInput(filePath);
         const script = `
       // Import media file
-      var file = new File("${filePath}");
+      var file = new File(${JSON.stringify(safePath)});
       var importedItem = app.project.importFiles([file.fsName]);
-      
+
       // Return imported item info
       JSON.stringify({
         id: importedItem.nodeId,

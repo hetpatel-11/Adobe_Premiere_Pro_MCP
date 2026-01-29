@@ -9,8 +9,8 @@ import { Logger } from '../utils/logger.js';
 import { ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-// import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
+import { createSecureTempDir, validateFilePath, sanitizeInput } from '../utils/security.js';
 
 export interface PremiereProProject {
   id: string;
@@ -68,12 +68,14 @@ export class PremiereProBridge {
   private tempDir: string;
   private uxpProcess?: ChildProcess;
   private isInitialized = false;
+  private sessionId: string;
 
   constructor() {
     this.logger = new Logger('PremiereProBridge');
     this.communicationMethod = 'file'; // Default to file-based communication
-    // Use a fixed location so the CEP panel can watch the same folder
-    this.tempDir = '/tmp/premiere-bridge';
+    this.sessionId = uuidv4();
+    // Use session-specific secure temp directory
+    this.tempDir = createSecureTempDir(this.sessionId);
   }
 
   async initialize(): Promise<void> {
@@ -91,8 +93,8 @@ export class PremiereProBridge {
 
   private async setupTempDirectory(): Promise<void> {
     try {
-      await fs.mkdir(this.tempDir, { recursive: true });
-      this.logger.debug(`Temp directory created: ${this.tempDir}`);
+      await fs.mkdir(this.tempDir, { recursive: true, mode: 0o700 }); // Restrict to owner only
+      this.logger.debug(`Secure temp directory created: ${this.tempDir}`);
     } catch (error) {
       this.logger.error('Failed to create temp directory:', error);
       throw error;
@@ -227,11 +229,18 @@ export class PremiereProBridge {
   }
 
   async importMedia(filePath: string): Promise<PremiereProProjectItem> {
+    // Validate file path for security
+    const pathValidation = validateFilePath(filePath);
+    if (!pathValidation.valid) {
+      throw new Error(`Invalid file path: ${pathValidation.error}`);
+    }
+
+    const safePath = sanitizeInput(filePath);
     const script = `
       // Import media file
-      var file = new File("${filePath}");
+      var file = new File(${JSON.stringify(safePath)});
       var importedItem = app.project.importFiles([file.fsName]);
-      
+
       // Return imported item info
       JSON.stringify({
         id: importedItem.nodeId,
@@ -242,7 +251,7 @@ export class PremiereProBridge {
         frameRate: importedItem.getVideoFrameRate()
       });
     `;
-    
+
     return await this.executeScript(script);
   }
 

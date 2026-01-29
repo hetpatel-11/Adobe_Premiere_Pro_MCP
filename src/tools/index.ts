@@ -347,6 +347,270 @@ export class PremiereProTools {
         })
       },
 
+      // Markers
+      {
+        name: 'add_marker',
+        description: 'Adds a marker to the timeline for navigation or notes.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence to add the marker to'),
+          time: z.number().describe('The time in seconds where the marker should be placed'),
+          name: z.string().describe('The name/label for the marker'),
+          comment: z.string().optional().describe('Optional comment or description for the marker'),
+          color: z.string().optional().describe('Marker color (e.g., "red", "green", "blue")'),
+          duration: z.number().optional().describe('Duration in seconds for a span marker (0 for point marker)')
+        })
+      },
+      {
+        name: 'delete_marker',
+        description: 'Deletes a marker from the timeline.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          markerId: z.string().describe('The ID of the marker to delete')
+        })
+      },
+      {
+        name: 'update_marker',
+        description: 'Updates an existing marker\'s properties.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          markerId: z.string().describe('The ID of the marker to update'),
+          name: z.string().optional().describe('New name for the marker'),
+          comment: z.string().optional().describe('New comment'),
+          color: z.string().optional().describe('New color')
+        })
+      },
+      {
+        name: 'list_markers',
+        description: 'Lists all markers in a sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence')
+        })
+      },
+
+      // Track Management
+      {
+        name: 'add_track',
+        description: 'Adds a new video or audio track to the sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackType: z.enum(['video', 'audio']).describe('Type of track to add'),
+          position: z.enum(['above', 'below']).optional().describe('Where to add the track relative to existing tracks')
+        })
+      },
+      {
+        name: 'delete_track',
+        description: 'Deletes a track from the sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackType: z.enum(['video', 'audio']).describe('Type of track'),
+          trackIndex: z.number().describe('The index of the track to delete')
+        })
+      },
+      {
+        name: 'rename_track',
+        description: 'Renames a track in the sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackType: z.enum(['video', 'audio']).describe('Type of track'),
+          trackIndex: z.number().describe('The index of the track to rename'),
+          newName: z.string().describe('The new name for the track')
+        })
+      },
+      {
+        name: 'lock_track',
+        description: 'Locks or unlocks a track to prevent/allow editing.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackType: z.enum(['video', 'audio']).describe('Type of track'),
+          trackIndex: z.number().describe('The index of the track'),
+          locked: z.boolean().describe('Whether to lock (true) or unlock (false)')
+        })
+      },
+      {
+        name: 'toggle_track_visibility',
+        description: 'Shows or hides a video track.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackIndex: z.number().describe('The index of the video track'),
+          visible: z.boolean().describe('Whether to show (true) or hide (false)')
+        })
+      },
+
+      // Advanced Audio Operations
+      {
+        name: 'normalize_audio',
+        description: 'Normalizes audio levels to a target peak level.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the audio clip'),
+          targetLevel: z.number().optional().describe('Target peak level in dB (default: -3dB)')
+        })
+      },
+      {
+        name: 'audio_ducking',
+        description: 'Automatically lowers background audio when there is dialogue.',
+        inputSchema: z.object({
+          backgroundClipId: z.string().describe('The ID of the background audio/music clip'),
+          dialogueClipId: z.string().describe('The ID of the dialogue clip'),
+          duckAmount: z.number().optional().describe('Amount to reduce background in dB (default: -12dB)'),
+          fadeTime: z.number().optional().describe('Fade time in seconds (default: 0.5s)')
+        })
+      },
+      {
+        name: 'extract_audio',
+        description: 'Extracts the audio track from a video clip.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the video clip'),
+          outputPath: z.string().optional().describe('Optional path to export the audio file')
+        })
+      },
+      {
+        name: 'link_audio_video',
+        description: 'Links or unlinks audio and video components of a clip.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          linked: z.boolean().describe('Whether to link (true) or unlink (false)')
+        })
+      },
+      {
+        name: 'apply_audio_effect',
+        description: 'Applies an audio effect to a clip.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the audio clip'),
+          effectName: z.string().describe('Name of the audio effect (e.g., "Compressor", "EQ", "Reverb")'),
+          parameters: z.record(z.any()).optional().describe('Effect parameters')
+        })
+      },
+
+      // Nested Sequences
+      {
+        name: 'create_nested_sequence',
+        description: 'Creates a nested sequence from selected clips.',
+        inputSchema: z.object({
+          clipIds: z.array(z.string()).describe('Array of clip IDs to nest'),
+          name: z.string().describe('Name for the nested sequence')
+        })
+      },
+      {
+        name: 'unnest_sequence',
+        description: 'Breaks apart a nested sequence into individual clips.',
+        inputSchema: z.object({
+          nestedSequenceClipId: z.string().describe('The ID of the nested sequence clip')
+        })
+      },
+
+      // Additional Clip Operations
+      {
+        name: 'duplicate_clip',
+        description: 'Duplicates a clip on the timeline.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip to duplicate'),
+          offset: z.number().optional().describe('Time offset in seconds for the duplicate (default: places immediately after original)')
+        })
+      },
+      {
+        name: 'reverse_clip',
+        description: 'Reverses the playback of a clip.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip to reverse'),
+          maintainAudioPitch: z.boolean().optional().describe('Whether to maintain audio pitch (default: true)')
+        })
+      },
+      {
+        name: 'enable_disable_clip',
+        description: 'Enables or disables a clip on the timeline.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          enabled: z.boolean().describe('Whether to enable (true) or disable (false)')
+        })
+      },
+      {
+        name: 'replace_clip',
+        description: 'Replaces a clip on the timeline with another media item.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip to replace'),
+          newProjectItemId: z.string().describe('The ID of the new project item to use'),
+          preserveEffects: z.boolean().optional().describe('Whether to keep effects and settings (default: true)')
+        })
+      },
+      {
+        name: 'slip_clip',
+        description: 'Slips the content of a clip (changes in/out points without moving position).',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          slipAmount: z.number().describe('Amount to slip in seconds (positive or negative)')
+        })
+      },
+      {
+        name: 'slide_clip',
+        description: 'Slides a clip (moves position while trimming adjacent clips).',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          slideAmount: z.number().describe('Amount to slide in seconds (positive or negative)')
+        })
+      },
+
+      // Project Settings
+      {
+        name: 'get_sequence_settings',
+        description: 'Gets the settings for a sequence (resolution, framerate, etc.).',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence')
+        })
+      },
+      {
+        name: 'set_sequence_settings',
+        description: 'Updates sequence settings.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          settings: z.object({
+            width: z.number().optional().describe('Frame width'),
+            height: z.number().optional().describe('Frame height'),
+            frameRate: z.number().optional().describe('Frame rate'),
+            pixelAspectRatio: z.number().optional().describe('Pixel aspect ratio')
+          }).describe('Settings to update')
+        })
+      },
+      {
+        name: 'get_clip_properties',
+        description: 'Gets detailed properties of a clip.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip')
+        })
+      },
+      {
+        name: 'set_clip_properties',
+        description: 'Sets properties of a clip.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          properties: z.object({
+            opacity: z.number().optional().describe('Opacity 0-100'),
+            scale: z.number().optional().describe('Scale percentage'),
+            rotation: z.number().optional().describe('Rotation in degrees'),
+            position: z.object({
+              x: z.number().optional(),
+              y: z.number().optional()
+            }).optional().describe('Position coordinates')
+          }).describe('Properties to set')
+        })
+      },
+
+      // Render Queue
+      {
+        name: 'add_to_render_queue',
+        description: 'Adds a sequence to the Adobe Media Encoder render queue.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence to render'),
+          outputPath: z.string().describe('Output file path'),
+          presetPath: z.string().optional().describe('Export preset file path'),
+          startImmediately: z.boolean().optional().describe('Whether to start rendering immediately (default: false)')
+        })
+      },
+      {
+        name: 'get_render_queue_status',
+        description: 'Gets the status of items in the render queue.',
+        inputSchema: z.object({})
+      },
+
       // Advanced Features
       {
         name: 'create_multicam_sequence',
@@ -505,6 +769,76 @@ export class PremiereProTools {
           return await this.exportSequence(args.sequenceId, args.outputPath, args.presetPath, args.format, args.quality, args.resolution);
         case 'export_frame':
           return await this.exportFrame(args.sequenceId, args.time, args.outputPath, args.format);
+
+        // Markers
+        case 'add_marker':
+          return await this.addMarker(args.sequenceId, args.time, args.name, args.comment, args.color, args.duration);
+        case 'delete_marker':
+          return await this.deleteMarker(args.sequenceId, args.markerId);
+        case 'update_marker':
+          return await this.updateMarker(args.sequenceId, args.markerId, args);
+        case 'list_markers':
+          return await this.listMarkers(args.sequenceId);
+
+        // Track Management
+        case 'add_track':
+          return await this.addTrack(args.sequenceId, args.trackType, args.position);
+        case 'delete_track':
+          return await this.deleteTrack(args.sequenceId, args.trackType, args.trackIndex);
+        case 'rename_track':
+          return await this.renameTrack(args.sequenceId, args.trackType, args.trackIndex, args.newName);
+        case 'lock_track':
+          return await this.lockTrack(args.sequenceId, args.trackType, args.trackIndex, args.locked);
+        case 'toggle_track_visibility':
+          return await this.toggleTrackVisibility(args.sequenceId, args.trackIndex, args.visible);
+
+        // Advanced Audio
+        case 'normalize_audio':
+          return await this.normalizeAudio(args.clipId, args.targetLevel);
+        case 'audio_ducking':
+          return await this.audioDucking(args.backgroundClipId, args.dialogueClipId, args.duckAmount, args.fadeTime);
+        case 'extract_audio':
+          return await this.extractAudio(args.clipId, args.outputPath);
+        case 'link_audio_video':
+          return await this.linkAudioVideo(args.clipId, args.linked);
+        case 'apply_audio_effect':
+          return await this.applyAudioEffect(args.clipId, args.effectName, args.parameters);
+
+        // Nested Sequences
+        case 'create_nested_sequence':
+          return await this.createNestedSequence(args.clipIds, args.name);
+        case 'unnest_sequence':
+          return await this.unnestSequence(args.nestedSequenceClipId);
+
+        // Additional Clip Operations
+        case 'duplicate_clip':
+          return await this.duplicateClip(args.clipId, args.offset);
+        case 'reverse_clip':
+          return await this.reverseClip(args.clipId, args.maintainAudioPitch);
+        case 'enable_disable_clip':
+          return await this.enableDisableClip(args.clipId, args.enabled);
+        case 'replace_clip':
+          return await this.replaceClip(args.clipId, args.newProjectItemId, args.preserveEffects);
+        case 'slip_clip':
+          return await this.slipClip(args.clipId, args.slipAmount);
+        case 'slide_clip':
+          return await this.slideClip(args.clipId, args.slideAmount);
+
+        // Project Settings
+        case 'get_sequence_settings':
+          return await this.getSequenceSettings(args.sequenceId);
+        case 'set_sequence_settings':
+          return await this.setSequenceSettings(args.sequenceId, args.settings);
+        case 'get_clip_properties':
+          return await this.getClipProperties(args.clipId);
+        case 'set_clip_properties':
+          return await this.setClipProperties(args.clipId, args.properties);
+
+        // Render Queue
+        case 'add_to_render_queue':
+          return await this.addToRenderQueue(args.sequenceId, args.outputPath, args.presetPath, args.startImmediately);
+        case 'get_render_queue_status':
+          return await this.getRenderQueueStatus();
 
         // Advanced Features
         case 'create_multicam_sequence':
@@ -2014,5 +2348,569 @@ export class PremiereProTools {
     `;
     
     return await this.bridge.executeScript(script);
+  }
+
+  // ============================================
+  // NEW TOOLS IMPLEMENTATION
+  // ============================================
+
+  // Markers Implementation
+  private async addMarker(_sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var marker = sequence.markers.createMarker(${time});
+          marker.name = ${JSON.stringify(name)};
+          ${comment ? `marker.comments = ${JSON.stringify(comment)};` : ''}
+          ${color ? `marker.setColorByIndex(${color === 'red' ? '5' : color === 'green' ? '3' : color === 'blue' ? '1' : '0'});` : ''}
+          ${duration && duration > 0 ? `marker.end = ${time + duration};` : ''}
+
+          JSON.stringify({
+            success: true,
+            markerId: marker.guid,
+            message: "Marker added successfully"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async deleteMarker(_sequenceId: string, markerId: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var deleted = false;
+          for (var i = 0; i < sequence.markers.numMarkers; i++) {
+            if (sequence.markers[i].guid === ${JSON.stringify(markerId)}) {
+              sequence.markers.deleteMarker(i);
+              deleted = true;
+              break;
+            }
+          }
+
+          JSON.stringify({
+            success: deleted,
+            message: deleted ? "Marker deleted successfully" : "Marker not found"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async updateMarker(_sequenceId: string, markerId: string, updates: any): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var found = false;
+          for (var i = 0; i < sequence.markers.numMarkers; i++) {
+            var marker = sequence.markers[i];
+            if (marker.guid === ${JSON.stringify(markerId)}) {
+              ${updates.name ? `marker.name = ${JSON.stringify(updates.name)};` : ''}
+              ${updates.comment ? `marker.comments = ${JSON.stringify(updates.comment)};` : ''}
+              ${updates.color ? `marker.setColorByIndex(${updates.color === 'red' ? '5' : updates.color === 'green' ? '3' : updates.color === 'blue' ? '1' : '0'});` : ''}
+              found = true;
+              break;
+            }
+          }
+
+          JSON.stringify({
+            success: found,
+            message: found ? "Marker updated successfully" : "Marker not found"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async listMarkers(_sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var markers = [];
+          for (var i = 0; i < sequence.markers.numMarkers; i++) {
+            var marker = sequence.markers[i];
+            markers.push({
+              id: marker.guid,
+              name: marker.name,
+              comment: marker.comments,
+              start: marker.start.seconds,
+              end: marker.end.seconds,
+              duration: marker.end.seconds - marker.start.seconds,
+              type: marker.type
+            });
+          }
+
+          JSON.stringify({
+            success: true,
+            markers: markers,
+            count: markers.length
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Track Management Implementation
+  private async addTrack(_sequenceId: string, trackType: string, _position?: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
+          tracks.addTrack();
+
+          JSON.stringify({
+            success: true,
+            message: "${trackType} track added successfully",
+            trackIndex: tracks.numTracks - 1
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async deleteTrack(_sequenceId: string, trackType: string, trackIndex: number): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
+          if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
+            tracks.deleteTrack(${trackIndex});
+            JSON.stringify({
+              success: true,
+              message: "Track deleted successfully"
+            });
+          } else {
+            JSON.stringify({
+              success: false,
+              error: "Track index out of range"
+            });
+          }
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async renameTrack(_sequenceId: string, trackType: string, trackIndex: number, newName: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
+          if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
+            tracks[${trackIndex}].name = ${JSON.stringify(newName)};
+            JSON.stringify({
+              success: true,
+              message: "Track renamed successfully"
+            });
+          } else {
+            JSON.stringify({
+              success: false,
+              error: "Track index out of range"
+            });
+          }
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async lockTrack(_sequenceId: string, trackType: string, trackIndex: number, locked: boolean): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
+          if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
+            tracks[${trackIndex}].setLocked(${locked});
+            JSON.stringify({
+              success: true,
+              message: "Track " + (${locked} ? "locked" : "unlocked")
+            });
+          } else {
+            JSON.stringify({
+              success: false,
+              error: "Track index out of range"
+            });
+          }
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async toggleTrackVisibility(_sequenceId: string, trackIndex: number, visible: boolean): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          if (${trackIndex} >= 0 && ${trackIndex} < sequence.videoTracks.numTracks) {
+            sequence.videoTracks[${trackIndex}].setTargeted(${visible}, true);
+            JSON.stringify({
+              success: true,
+              message: "Track visibility toggled"
+            });
+          } else {
+            JSON.stringify({
+              success: false,
+              error: "Track index out of range"
+            });
+          }
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Advanced Audio - Template implementations (can be enhanced later)
+  private async normalizeAudio(_clipId: string, _targetLevel?: number): Promise<any> {
+    return {
+      success: false,
+      error: "normalize_audio: This feature requires additional audio analysis. Implementation pending.",
+      note: "You can manually normalize using Effects > Audio Effects > Normalize"
+    };
+  }
+
+  private async audioDucking(_backgroundClipId: string, _dialogueClipId: string, _duckAmount?: number, _fadeTime?: number): Promise<any> {
+    return {
+      success: false,
+      error: "audio_ducking: This feature requires keyframe automation. Implementation pending.",
+      note: "You can manually add ducking using audio keyframes"
+    };
+  }
+
+  private async extractAudio(_clipId: string, _outputPath?: string): Promise<any> {
+    return {
+      success: false,
+      error: "extract_audio: This feature requires media export. Implementation pending.",
+      note: "You can manually extract audio via right-click > Extract Audio"
+    };
+  }
+
+  private async linkAudioVideo(clipId: string, linked: boolean): Promise<any> {
+    const script = `
+      try {
+        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
+        if (clip) {
+          clip.setLinked(${linked});
+          JSON.stringify({
+            success: true,
+            message: "Audio-video " + (${linked} ? "linked" : "unlinked")
+          });
+        } else {
+          JSON.stringify({
+            success: false,
+            error: "Clip not found"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async applyAudioEffect(clipId: string, effectName: string, parameters?: any): Promise<any> {
+    return await this.applyEffect(clipId, effectName, parameters);
+  }
+
+  // Nested Sequences
+  private async createNestedSequence(_clipIds: string[], _name: string): Promise<any> {
+    return {
+      success: false,
+      error: "create_nested_sequence: This feature requires selection and nesting APIs. Implementation pending.",
+      note: "You can manually nest clips via right-click > Nest"
+    };
+  }
+
+  private async unnestSequence(_nestedSequenceClipId: string): Promise<any> {
+    return {
+      success: false,
+      error: "unnest_sequence: This feature is not available in Premiere Pro scripting API",
+      note: "You can manually unnest via Edit > Paste Attributes"
+    };
+  }
+
+  // Additional Clip Operations
+  private async duplicateClip(clipId: string, offset?: number): Promise<any> {
+    const script = `
+      try {
+        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
+        if (clip) {
+          var duplicate = clip.duplicate();
+          ${offset !== undefined ? `duplicate.move(${offset});` : ''}
+          JSON.stringify({
+            success: true,
+            duplicateId: duplicate.nodeId,
+            message: "Clip duplicated successfully"
+          });
+        } else {
+          JSON.stringify({
+            success: false,
+            error: "Clip not found"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async reverseClip(clipId: string, maintainAudioPitch?: boolean): Promise<any> {
+    return await this.speedChange(clipId, -100, maintainAudioPitch !== false);
+  }
+
+  private async enableDisableClip(clipId: string, enabled: boolean): Promise<any> {
+    const script = `
+      try {
+        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
+        if (clip) {
+          clip.enabled = ${enabled};
+          JSON.stringify({
+            success: true,
+            message: "Clip " + (${enabled} ? "enabled" : "disabled")
+          });
+        } else {
+          JSON.stringify({
+            success: false,
+            error: "Clip not found"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async replaceClip(_clipId: string, _newProjectItemId: string, _preserveEffects?: boolean): Promise<any> {
+    return {
+      success: false,
+      error: "replace_clip: This feature requires complex clip replacement logic. Implementation pending.",
+      note: "You can manually replace clips via right-click > Replace With Clip"
+    };
+  }
+
+  private async slipClip(_clipId: string, _slipAmount: number): Promise<any> {
+    return {
+      success: false,
+      error: "slip_clip: Slip editing requires precise in/out point manipulation. Implementation pending.",
+      note: "You can manually slip clips using the Slip tool (Y key)"
+    };
+  }
+
+  private async slideClip(_clipId: string, _slideAmount: number): Promise<any> {
+    return {
+      success: false,
+      error: "slide_clip: Slide editing requires adjacent clip trimming. Implementation pending.",
+      note: "You can manually slide clips using the Slide tool (U key)"
+    };
+  }
+
+  // Project Settings
+  private async getSequenceSettings(_sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = app.project.activeSequence;
+        if (!sequence) {
+          JSON.stringify({
+            success: false,
+            error: "No active sequence"
+          });
+        } else {
+          JSON.stringify({
+            success: true,
+            settings: {
+              name: sequence.name,
+              width: sequence.frameSizeHorizontal,
+              height: sequence.frameSizeVertical,
+              frameRate: sequence.framerate,
+              pixelAspectRatio: sequence.pixelAspectRatio,
+              audioChannelCount: sequence.audioChannelCount,
+              audioSampleRate: sequence.audioSampleRate
+            }
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setSequenceSettings(_sequenceId: string, _settings: any): Promise<any> {
+    return {
+      success: false,
+      error: "set_sequence_settings: Sequence settings cannot be changed after creation in Premiere Pro",
+      note: "Create a new sequence with desired settings instead"
+    };
+  }
+
+  private async getClipProperties(clipId: string): Promise<any> {
+    const script = `
+      try {
+        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
+        if (clip) {
+          JSON.stringify({
+            success: true,
+            properties: {
+              name: clip.name,
+              start: clip.start.seconds,
+              end: clip.end.seconds,
+              duration: clip.duration.seconds,
+              inPoint: clip.inPoint.seconds,
+              outPoint: clip.outPoint.seconds,
+              enabled: clip.enabled
+            }
+          });
+        } else {
+          JSON.stringify({
+            success: false,
+            error: "Clip not found"
+          });
+        }
+      } catch (e) {
+        JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setClipProperties(_clipId: string, _properties: any): Promise<any> {
+    return {
+      success: false,
+      error: "set_clip_properties: Use specific tools like apply_effect for motion/opacity changes",
+      note: "Motion graphics require Effects panel adjustments"
+    };
+  }
+
+  // Render Queue
+  private async addToRenderQueue(sequenceId: string, outputPath: string, presetPath?: string, _startImmediately?: boolean): Promise<any> {
+    return await this.exportSequence(sequenceId, outputPath, presetPath);
+  }
+
+  private async getRenderQueueStatus(): Promise<any> {
+    return {
+      success: false,
+      error: "get_render_queue_status: Render queue monitoring requires Adobe Media Encoder integration",
+      note: "Check Adobe Media Encoder application for render status"
+    };
   }
 } 

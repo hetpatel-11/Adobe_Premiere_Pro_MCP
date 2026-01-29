@@ -54,6 +54,7 @@ export declare class PremiereProBridge {
     private tempDir;
     private uxpProcess?;
     private isInitialized;
+    private sessionId;
     constructor();
     initialize(): Promise<void>;
     private setupTempDirectory;

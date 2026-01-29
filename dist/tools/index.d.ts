@@ -54,5 +54,33 @@ export declare class PremiereProTools {
     private autoEditToMusic;
     private stabilizeClip;
     private speedChange;
+    private addMarker;
+    private deleteMarker;
+    private updateMarker;
+    private listMarkers;
+    private addTrack;
+    private deleteTrack;
+    private renameTrack;
+    private lockTrack;
+    private toggleTrackVisibility;
+    private normalizeAudio;
+    private audioDucking;
+    private extractAudio;
+    private linkAudioVideo;
+    private applyAudioEffect;
+    private createNestedSequence;
+    private unnestSequence;
+    private duplicateClip;
+    private reverseClip;
+    private enableDisableClip;
+    private replaceClip;
+    private slipClip;
+    private slideClip;
+    private getSequenceSettings;
+    private setSequenceSettings;
+    private getClipProperties;
+    private setClipProperties;
+    private addToRenderQueue;
+    private getRenderQueueStatus;
 }
 //# sourceMappingURL=index.d.ts.map

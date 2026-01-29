@@ -125,7 +125,13 @@ class MCPPremiereBridge {
     async executeExtendScript(script) {
         return new Promise((resolve, reject) => {
             try {
-                // Use UXP's ability to execute ExtendScript
+                // Validate script before execution
+                if (!this.validateScript(script)) {
+                    reject(new Error('Script validation failed: potentially unsafe script'));
+                    return;
+                }
+
+                // Use UXP's ability to execute ExtendScript (ONLY safe method)
                 if (typeof app !== 'undefined' && app.executeExtendScript) {
                     app.executeExtendScript(script, (result) => {
                         if (result.error) {
@@ -141,14 +147,48 @@ class MCPPremiereBridge {
                         }
                     });
                 } else {
-                    // Fallback: try to execute directly
-                    const result = eval(script);
-                    resolve(result);
+                    // NO FALLBACK - reject if ExtendScript execution not available
+                    // This is a security requirement - we never use eval()
+                    reject(new Error('ExtendScript execution not available. app.executeExtendScript is required.'));
                 }
             } catch (error) {
                 reject(error);
             }
         });
+    }
+
+    validateScript(script) {
+        if (!script || typeof script !== 'string') {
+            return false;
+        }
+
+        // Block obviously dangerous patterns
+        const dangerousPatterns = [
+            /eval\s*\(/i,
+            /Function\s*\(/i,
+            /require\s*\(/i,
+            /import\s+/i,
+            /__dirname/i,
+            /__filename/i,
+            /process\./i,
+            /child_process/i,
+            /fs\.(unlink|rm|rmdir|writeFile)/i,
+        ];
+
+        for (const pattern of dangerousPatterns) {
+            if (pattern.test(script)) {
+                this.log(`Script blocked: contains dangerous pattern ${pattern}`, 'warning');
+                return false;
+            }
+        }
+
+        // Script length limit (prevent DoS)
+        if (script.length > 500000) { // 500KB limit
+            this.log('Script blocked: exceeds size limit', 'warning');
+            return false;
+        }
+
+        return true;
     }
     
     startCommandPolling() {
