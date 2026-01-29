@@ -26,7 +26,6 @@ You can also use this project as a UXP panel in Premiere Pro (24.4+):
 
 **⚠️ Note:**
 - UXP scripting in Premiere Pro is **experimental and limited**. Some features (like timeline and sequence editing) may not be available yet.
-- For full automation, use the CEP (legacy) panel.
 
 ---
 
@@ -106,7 +105,7 @@ You can also use this project as a UXP panel in Premiere Pro (24.4+):
 ### 1. Clone and Install
 ```sh
 git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP
-cd MCP_Adobe_Premiere_Pro
+cd Adobe_Premiere_Pro_MCP
 npm install
 ```
 
@@ -116,29 +115,24 @@ npm run build
 npm start
 ```
 
-### 3. Install the CEP Extension in Premiere Pro
-1. **Copy the `PremiereRemote` extension folder** to your Adobe CEP extensions directory:
-   - **macOS:** `~/Library/Application Support/Adobe/CEP/extensions/`
-   - **Windows:** `%APPDATA%/Adobe/CEP/extensions/`
-2. **Enable loading unsigned extensions:**
-   - macOS: Edit `~/Library/Preferences/com.adobe.CSXS.9.plist` and set `PlayerDebugMode` to `1`.
-   - Windows: Use `regedit` to set `PlayerDebugMode` to `1` under `HKEY_CURRENT_USER/Software/Adobe/CSXS.9`.
-   - [CEP Debugging Guide](https://github.com/Adobe-CEP/Getting-Started-guides/blob/master/Setting-up-Your-Environment.md)
-3. **Restart Premiere Pro.**
-4. **Open the extension:**
-   - Go to `Window > Extensions (Legacy) > PremiereRemote`.
-   - The panel should show "Ready!" if the bridge is running.
+### 3. Install the UXP Plugin in Premiere Pro
+1. **Open [Adobe UXP Developer Tool](https://developer.adobe.com/photoshop/uxp/2022/guides/devtool/)**
+2. **Click "Add Plugin"** and select the `uxp-plugin/` folder from this repository
+3. **Click "Load"** to enable the plugin
+4. **Restart Premiere Pro**
+5. **Open the plugin:**
+   - Go to `Window > Extensions > MCP Bridge (UXP)`
+   - The panel should show "Ready!" if the bridge is running
 
 ### 4. Connect Claude (or another AI agent)
-- Configure Claude to use the MCP server as a tool endpoint.
-- Ask Claude to perform editing tasks (see supported features above).
+- Configure Claude to use the MCP server as a tool endpoint
+- Ask Claude to perform editing tasks (see supported features above)
 
 ---
 
 ## 🐞 Known Issues & Limitations
 - **Text/graphics overlays do not work** (see above)
 - **Some scripting APIs are buggy or version-dependent**
-- **CEP extensions are deprecated** in the latest Adobe apps (but still work for now)
 - **UXP scripting is experimental and limited** in Premiere Pro (see above)
 - **Error handling is robust, but some failures may be silent** due to Premiere scripting quirks
 - **This is a proof-of-concept / starting point** — not a polished commercial product
