@@ -18,7 +18,7 @@ This MCP server lets you control Premiere Pro by talking to Claude:
 
 ## Demo
 
-![Adobe Premiere Pro MCP in Action](images/Screenshot%202026-02-01%20at%207.05.17%20PM.png)
+![Adobe Premiere Pro MCP in Action](images/demo.png)
 
 *MCP Bridge (CEP) panel in Premiere Pro showing **Connected** and **Premiere Pro: Ready**, with Claude successfully retrieving project info (e.g. Test_1.prproj) via natural language.*
 
