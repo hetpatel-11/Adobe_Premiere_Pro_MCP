@@ -1,113 +1,122 @@
 /**
- * MCP Premiere Pro Bridge
- * 
+ * MCP Premiere Pro Bridge (UXP Compatible)
+ *
  * This script handles communication between the MCP server and Adobe Premiere Pro
  * through the UXP plugin system.
  */
 
+// UXP APIs
+const { storage, host } = require('uxp');
+const { localFileSystem } = storage;
 const { app } = require('premiere');
-const fs = require('fs');
-const path = require('path');
 
 class MCPPremiereBridge {
     constructor() {
         this.isConnected = false;
         this.mcpServerPort = 3000;
-        this.tempDirectory = '';
+        this.tempDirectory = '/tmp/premiere-mcp-bridge';
         this.commandQueue = [];
         this.isProcessing = false;
-        
-        // Initialize the bridge
-        this.init();
+        this.pollingInterval = null;
+
+        // UXP-specific
+        this.tempFolderToken = null;
     }
-    
-    init() {
-        this.log('Initializing MCP Premiere Pro Bridge...', 'info');
-        this.setupFileWatcher();
-        this.loadConfig();
-        this.updateUI();
-        
-        // Start polling for commands
-        this.startCommandPolling();
-    }
-    
-    setupFileWatcher() {
-        // Set up file watching for command files
-        const tempPath = this.getTempDirectory();
-        if (tempPath) {
-            this.log(`Watching temp directory: ${tempPath}`, 'info');
-            this.watchDirectory(tempPath);
-        }
-    }
-    
-    getTempDirectory() {
-        if (this.tempDirectory) {
-            return this.tempDirectory;
-        }
-        
-        // Default temp directory
-        const defaultPath = path.join(process.cwd(), 'temp', 'premiere-bridge');
+
+    async init() {
         try {
-            if (!fs.existsSync(defaultPath)) {
-                fs.mkdirSync(defaultPath, { recursive: true });
-            }
-            this.tempDirectory = defaultPath;
-            return defaultPath;
+            this.log('Initializing MCP Premiere Pro Bridge (UXP)...', 'info');
+            await this.loadConfig();
+            this.updateUI();
+            this.log('Bridge initialized successfully', 'info');
         } catch (error) {
-            this.log(`Error creating temp directory: ${error.message}`, 'error');
-            return null;
+            this.log(`Initialization error: ${error.message}`, 'error');
         }
     }
-    
-    watchDirectory(dirPath) {
+
+    async setupFileWatcher() {
         try {
-            const files = fs.readdirSync(dirPath);
-            files.forEach(file => {
-                if (file.startsWith('command-') && file.endsWith('.json')) {
-                    this.processCommandFile(path.join(dirPath, file));
+            // In UXP, we need to request folder access
+            if (!this.tempFolderToken) {
+                this.log('Requesting access to temp directory...', 'info');
+                this.tempFolderToken = await localFileSystem.getFolder();
+                this.tempDirectory = this.tempFolderToken.nativePath;
+
+                // Update UI with selected path
+                const tempInput = document.getElementById('tempDirectory');
+                if (tempInput) {
+                    tempInput.value = this.tempDirectory;
                 }
-            });
+            }
+
+            this.log(`Watching temp directory: ${this.tempDirectory}`, 'info');
+        } catch (error) {
+            this.log(`Error setting up file watcher: ${error.message}`, 'error');
+        }
+    }
+
+    async watchDirectory() {
+        if (!this.tempFolderToken) {
+            this.log('Temp folder not set. Click "Select Temp Folder" first.', 'warning');
+            return;
+        }
+
+        try {
+            const entries = await this.tempFolderToken.getEntries();
+
+            for (const entry of entries) {
+                if (entry.isFile && entry.name.startsWith('command-') && entry.name.endsWith('.json')) {
+                    await this.processCommandFile(entry);
+                }
+            }
         } catch (error) {
             this.log(`Error watching directory: ${error.message}`, 'error');
         }
     }
-    
-    async processCommandFile(filePath) {
+
+    async processCommandFile(fileEntry) {
         try {
-            const fileContent = fs.readFileSync(filePath, 'utf8');
+            // Read command file
+            const fileContent = await fileEntry.read();
             const command = JSON.parse(fileContent);
-            
+
             this.log(`Processing command: ${command.id}`, 'info');
             this.addToQueue(command);
-            
-            // Process the command
+
+            // Execute the command
             const result = await this.executeCommand(command);
-            
+
             // Write response file
-            const responseFile = filePath.replace('command-', 'response-');
-            fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-            
-            // Clean up command file
-            fs.unlinkSync(filePath);
-            
+            const responseFileName = fileEntry.name.replace('command-', 'response-');
+            const responseFile = await this.tempFolderToken.createFile(responseFileName, { overwrite: true });
+            await responseFile.write(JSON.stringify(result, null, 2));
+
+            // Delete command file
+            await fileEntry.delete();
+
             this.log(`Command completed: ${command.id}`, 'info');
             this.updateCommandStatus(command.id, 'completed');
-            
+
         } catch (error) {
-            this.log(`Error processing command file: ${error.message}`, 'error');
-            
+            this.log(`Error processing command: ${error.message}`, 'error');
+
             // Write error response
-            const responseFile = filePath.replace('command-', 'response-');
-            fs.writeFileSync(responseFile, JSON.stringify({
-                error: error.message,
-                timestamp: new Date().toISOString()
-            }, null, 2));
+            try {
+                const responseFileName = fileEntry.name.replace('command-', 'response-');
+                const responseFile = await this.tempFolderToken.createFile(responseFileName, { overwrite: true });
+                await responseFile.write(JSON.stringify({
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }, null, 2));
+            } catch (writeError) {
+                this.log(`Error writing error response: ${writeError.message}`, 'error');
+            }
         }
     }
-    
+
     async executeCommand(command) {
         this.updateCommandStatus(command.id, 'executing');
-        
+
         try {
             // Execute the ExtendScript code
             const result = await this.executeExtendScript(command.script);
@@ -121,7 +130,7 @@ class MCPPremiereBridge {
             throw error;
         }
     }
-    
+
     async executeExtendScript(script) {
         return new Promise((resolve, reject) => {
             try {
@@ -131,25 +140,40 @@ class MCPPremiereBridge {
                     return;
                 }
 
-                // Use UXP's ability to execute ExtendScript (ONLY safe method)
-                if (typeof app !== 'undefined' && app.executeExtendScript) {
-                    app.executeExtendScript(script, (result) => {
-                        if (result.error) {
-                            reject(new Error(result.error));
-                        } else {
-                            // Parse the result if it's JSON
-                            try {
-                                const parsed = JSON.parse(result.result);
-                                resolve(parsed);
-                            } catch (e) {
-                                resolve(result.result);
-                            }
-                        }
-                    });
+                // UXP's method to execute ExtendScript
+                if (typeof app !== 'undefined') {
+                    // For UXP, we use app.executeExtendScript or similar
+                    // Note: API availability depends on Premiere Pro version
+
+                    // Try different methods based on what's available
+                    if (app.executeExtendScript) {
+                        app.executeExtendScript(script)
+                            .then(result => {
+                                try {
+                                    const parsed = JSON.parse(result);
+                                    resolve(parsed);
+                                } catch (e) {
+                                    resolve(result);
+                                }
+                            })
+                            .catch(error => reject(error));
+                    } else if (app.evalScript) {
+                        // Alternative method
+                        app.evalScript(script)
+                            .then(result => {
+                                try {
+                                    const parsed = JSON.parse(result);
+                                    resolve(parsed);
+                                } catch (e) {
+                                    resolve(result);
+                                }
+                            })
+                            .catch(error => reject(error));
+                    } else {
+                        reject(new Error('ExtendScript execution not available in this Premiere Pro version'));
+                    }
                 } else {
-                    // NO FALLBACK - reject if ExtendScript execution not available
-                    // This is a security requirement - we never use eval()
-                    reject(new Error('ExtendScript execution not available. app.executeExtendScript is required.'));
+                    reject(new Error('Premiere Pro app object not available'));
                 }
             } catch (error) {
                 reject(error);
@@ -190,23 +214,36 @@ class MCPPremiereBridge {
 
         return true;
     }
-    
+
     startCommandPolling() {
         // Poll for new commands every 500ms
-        setInterval(() => {
-            if (!this.isProcessing) {
-                this.checkForCommands();
+        if (this.pollingInterval) {
+            clearInterval(this.pollingInterval);
+        }
+
+        this.pollingInterval = setInterval(async () => {
+            if (!this.isProcessing && this.tempFolderToken) {
+                await this.checkForCommands();
             }
         }, 500);
+
+        this.log('Command polling started', 'info');
     }
-    
-    checkForCommands() {
-        const tempPath = this.getTempDirectory();
-        if (tempPath) {
-            this.watchDirectory(tempPath);
+
+    stopCommandPolling() {
+        if (this.pollingInterval) {
+            clearInterval(this.pollingInterval);
+            this.pollingInterval = null;
+            this.log('Command polling stopped', 'info');
         }
     }
-    
+
+    async checkForCommands() {
+        if (this.tempFolderToken) {
+            await this.watchDirectory();
+        }
+    }
+
     addToQueue(command) {
         this.commandQueue.push({
             id: command.id,
@@ -216,7 +253,7 @@ class MCPPremiereBridge {
         });
         this.updateCommandQueueUI();
     }
-    
+
     updateCommandStatus(commandId, status) {
         const command = this.commandQueue.find(cmd => cmd.id === commandId);
         if (command) {
@@ -224,7 +261,7 @@ class MCPPremiereBridge {
             this.updateCommandQueueUI();
         }
     }
-    
+
     updateCommandQueueUI() {
         const queueElement = document.getElementById('commandQueue');
         if (queueElement && this.commandQueue.length > 0) {
@@ -238,99 +275,130 @@ class MCPPremiereBridge {
                 `).join('');
         }
     }
-    
-    loadConfig() {
+
+    async loadConfig() {
         try {
-            const configPath = path.join(this.getTempDirectory(), 'config.json');
-            if (fs.existsSync(configPath)) {
-                const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-                this.mcpServerPort = config.serverPort || 3000;
-                this.tempDirectory = config.tempDirectory || this.tempDirectory;
-                
-                // Update UI
-                document.getElementById('serverPort').value = this.mcpServerPort;
-                document.getElementById('tempDirectory').value = this.tempDirectory;
-                
-                this.log('Configuration loaded', 'info');
+            // UXP localStorage for simple config
+            const savedTempPath = localStorage.getItem('mcp_temp_directory');
+            const savedServerPort = localStorage.getItem('mcp_server_port');
+
+            if (savedTempPath) {
+                this.tempDirectory = savedTempPath;
+                const tempInput = document.getElementById('tempDirectory');
+                if (tempInput) tempInput.value = savedTempPath;
             }
+
+            if (savedServerPort) {
+                this.mcpServerPort = parseInt(savedServerPort);
+                const portInput = document.getElementById('serverPort');
+                if (portInput) portInput.value = savedServerPort;
+            }
+
+            this.log('Configuration loaded', 'info');
         } catch (error) {
             this.log(`Error loading config: ${error.message}`, 'warning');
         }
     }
-    
+
     saveConfig() {
         try {
-            const config = {
-                serverPort: document.getElementById('serverPort').value || 3000,
-                tempDirectory: document.getElementById('tempDirectory').value || this.tempDirectory
-            };
-            
-            const configPath = path.join(this.getTempDirectory(), 'config.json');
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-            
-            this.mcpServerPort = config.serverPort;
-            this.tempDirectory = config.tempDirectory;
-            
+            const serverPort = document.getElementById('serverPort')?.value || '3000';
+            const tempDirectory = document.getElementById('tempDirectory')?.value || this.tempDirectory;
+
+            localStorage.setItem('mcp_server_port', serverPort);
+            localStorage.setItem('mcp_temp_directory', tempDirectory);
+
+            this.mcpServerPort = parseInt(serverPort);
+            this.tempDirectory = tempDirectory;
+
             this.log('Configuration saved', 'info');
         } catch (error) {
             this.log(`Error saving config: ${error.message}`, 'error');
         }
     }
-    
-    startBridge() {
+
+    async selectTempFolder() {
+        try {
+            this.tempFolderToken = await localFileSystem.getFolder();
+            this.tempDirectory = this.tempFolderToken.nativePath;
+
+            const tempInput = document.getElementById('tempDirectory');
+            if (tempInput) {
+                tempInput.value = this.tempDirectory;
+            }
+
+            this.saveConfig();
+            this.log(`Temp folder selected: ${this.tempDirectory}`, 'info');
+        } catch (error) {
+            this.log(`Error selecting folder: ${error.message}`, 'error');
+        }
+    }
+
+    async startBridge() {
         this.log('Starting MCP Bridge...', 'info');
+
+        if (!this.tempFolderToken) {
+            this.log('Please select temp folder first', 'warning');
+            await this.selectTempFolder();
+            if (!this.tempFolderToken) {
+                this.log('Cannot start without temp folder', 'error');
+                return;
+            }
+        }
+
         this.isConnected = true;
         this.updateUI();
-        
+
         // Start file watching
-        this.setupFileWatcher();
-        
+        this.startCommandPolling();
+
         // Test Premiere Pro connection
-        this.testPremiereConnection();
+        await this.testPremiereConnection();
     }
-    
+
     stopBridge() {
         this.log('Stopping MCP Bridge...', 'info');
         this.isConnected = false;
+        this.stopCommandPolling();
         this.updateUI();
     }
-    
-    testConnection() {
+
+    async testConnection() {
         this.log('Testing connections...', 'info');
-        this.testPremiereConnection();
+        await this.testPremiereConnection();
     }
-    
-    testPremiereConnection() {
+
+    async testPremiereConnection() {
         try {
             // Test basic Premiere Pro access
             const script = `
-                JSON.stringify({
-                    appVersion: app.version,
-                    projectName: app.project ? app.project.name : 'No project open',
-                    timestamp: new Date().toISOString()
-                });
+                (function() {
+                    try {
+                        return JSON.stringify({
+                            appVersion: app.version,
+                            projectName: app.project ? app.project.name : 'No project open',
+                            timestamp: new Date().toISOString()
+                        });
+                    } catch(e) {
+                        return JSON.stringify({ error: String(e) });
+                    }
+                })();
             `;
-            
-            this.executeExtendScript(script)
-                .then(result => {
-                    this.log(`Premiere Pro connection successful: ${JSON.stringify(result)}`, 'info');
-                    this.updateServerStatus(true);
-                })
-                .catch(error => {
-                    this.log(`Premiere Pro connection failed: ${error.message}`, 'error');
-                    this.updateServerStatus(false);
-                });
+
+            const result = await this.executeExtendScript(script);
+            this.log(`Premiere Pro connection successful: ${JSON.stringify(result)}`, 'info');
+            this.updateServerStatus(true);
         } catch (error) {
-            this.log(`Error testing Premiere Pro connection: ${error.message}`, 'error');
+            this.log(`Premiere Pro connection failed: ${error.message}`, 'error');
             this.updateServerStatus(false);
         }
     }
-    
+
     updateUI() {
         // Update connection status
         const connectionStatus = document.getElementById('connectionStatus');
         const connectionText = document.getElementById('connectionText');
-        
+
         if (connectionStatus && connectionText) {
             if (this.isConnected) {
                 connectionStatus.className = 'status-dot connected';
@@ -340,54 +408,54 @@ class MCPPremiereBridge {
                 connectionText.textContent = 'Disconnected';
             }
         }
-        
+
         // Update buttons
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
-        
+
         if (startButton) startButton.disabled = this.isConnected;
         if (stopButton) stopButton.disabled = !this.isConnected;
     }
-    
+
     updateServerStatus(isRunning) {
         const serverStatus = document.getElementById('serverStatus');
         const serverText = document.getElementById('serverText');
-        
+
         if (serverStatus && serverText) {
             if (isRunning) {
                 serverStatus.className = 'status-dot connected';
-                serverText.textContent = 'MCP Server: Running';
+                serverText.textContent = 'Premiere Pro: Connected';
             } else {
                 serverStatus.className = 'status-dot disconnected';
-                serverText.textContent = 'MCP Server: Not Running';
+                serverText.textContent = 'Premiere Pro: Not Connected';
             }
         }
     }
-    
+
     log(message, level = 'info') {
         const timestamp = new Date().toISOString();
         const logEntry = `[${timestamp}] ${message}`;
-        
+
         // Add to UI log
         const logContainer = document.getElementById('logContainer');
         if (logContainer) {
             const logElement = document.createElement('div');
             logElement.className = `log-entry ${level}`;
             logElement.textContent = logEntry;
-            
+
             logContainer.appendChild(logElement);
             logContainer.scrollTop = logContainer.scrollHeight;
-            
+
             // Keep only last 100 entries
             while (logContainer.children.length > 100) {
                 logContainer.removeChild(logContainer.firstChild);
             }
         }
-        
+
         // Console log
         console.log(logEntry);
     }
-    
+
     clearLog() {
         const logContainer = document.getElementById('logContainer');
         if (logContainer) {
@@ -396,9 +464,10 @@ class MCPPremiereBridge {
     }
 }
 
-// Global functions called by the HTML
+// Global bridge instance
 let bridge = null;
 
+// Global functions called by the HTML
 function startBridge() {
     if (bridge) {
         bridge.startBridge();
@@ -429,37 +498,14 @@ function clearLog() {
     }
 }
 
-// UXP/CEP compatibility helpers
-function isUXP() {
-  return typeof require === 'undefined' && typeof window.uxp !== 'undefined';
-}
-
-function logUXPWarning() {
-  const msg = '⚠️ UXP support is experimental. Some features may not work due to limited Premiere Pro UXP APIs.';
-  if (typeof document !== 'undefined') {
-    const el = document.createElement('div');
-    el.style.color = 'orange';
-    el.style.fontWeight = 'bold';
-    el.style.margin = '8px 0';
-    el.textContent = msg;
-    document.body.prepend(el);
-  }
-  console.warn(msg);
-}
-
-if (isUXP()) {
-  logUXPWarning();
-  // Example: Use UXP APIs for file/network if needed
-  // window.uxp.fs, window.uxp.network, etc.
-  // (You may need to rewrite file/network access for full UXP support)
+function selectTempFolder() {
+    if (bridge) {
+        bridge.selectTempFolder();
+    }
 }
 
 // Initialize the bridge when the page loads
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     bridge = new MCPPremiereBridge();
+    await bridge.init();
 });
-
-// Export for UXP
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = MCPPremiereBridge;
-} 

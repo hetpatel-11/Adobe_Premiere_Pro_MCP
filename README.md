@@ -1,246 +1,274 @@
-# 🎬 MCP Adobe Premiere Pro — AI Video Editing Automation
+# Adobe Premiere Pro MCP Server
 
-> **AI meets Premiere Pro.** Control your edits with natural language and automate your workflow with Claude or any AI agent, powered by the Model Context Protocol (MCP).
+Control Adobe Premiere Pro with natural language through Claude using the Model Context Protocol (MCP).
 
-> ⚠️ **Transparency Notice:** This project was developed with AI assistance (Claude Sonnet 4.5) as an experimental proof-of-concept. While many features are fully functional, some tools are placeholders awaiting full implementation. See the detailed tool status below.
+> ⚠️ **Transparency Notice:** This project was developed with AI assistance (Claude Sonnet 4.5) as an experimental proof-of-concept. 
 
 <a href="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP/badge" alt="Adobe Premiere Pro MCP server" />
 </a>
 
----
+## What This Does
 
-## ✨ What is This?
-This project is an **AI-powered automation bridge for Adobe Premiere Pro**. It exposes a set of editing tools (via MCP) so you can:
-- 🗣️ **Talk to your editor** (via Claude or other AI agents)
-- ⚡ **Automate repetitive tasks**
-- 🧠 **Build smarter, context-aware workflows**
+This MCP server lets you control Premiere Pro by talking to Claude:
+- "Import my video file and add it to the timeline"
+- "Create a new sequence called 'Final Edit'"
+- "Export my current sequence"
+- "What items are in my project?"
 
-**Current Status:**
-- ✅ **50+ fully functional tools** tested and working
-- ✅ **Security hardened** with comprehensive input validation
-- ✅ **102 unit tests** ensuring reliability
-- ⚠️ **10 placeholder tools** awaiting full implementation
-- 🚀 **Production-ready core** for common editing workflows
+## Demo
 
----
+![Adobe Premiere Pro MCP in Action](images/Screenshot%202026-02-01%20at%207.05.17%20PM.png)
 
-## 🧩 Using with UXP DevTools (Experimental)
+*MCP Bridge (CEP) panel in Premiere Pro showing **Connected** and **Premiere Pro: Ready**, with Claude successfully retrieving project info (e.g. Test_1.prproj) via natural language.*
 
-You can also use this project as a UXP panel in Premiere Pro (24.4+):
+## Quick Start
 
-1. Open [Adobe UXP DevTools](https://developer.adobe.com/photoshop/uxp/2022/guides/devtool/).
-2. Click “Add Plugin” and select the `uxp-plugin/` folder.
-3. Start the panel in DevTools and open it in Premiere Pro via `Window > Plugins > MCP Bridge (UXP)`.
+### Prerequisites
 
-**⚠️ Note:**
-- UXP scripting in Premiere Pro is **experimental and limited**. Some features (like timeline and sequence editing) may not be available yet.
+- **macOS** (Windows support coming soon)
+- **Adobe Premiere Pro** 2020 or later
+- **Claude Desktop** app
+- **Node.js** 18+
 
----
+### Installation (5 minutes)
 
-## 🛠️ Tool Status (65 Total Tools)
+**1. Clone and build the project:**
 
-### ✅ Fully Working Tools (50+ tools)
-
-#### 📁 Project Management
-- **create_project** — Create a new Premiere Pro project
-- **open_project** — Open an existing project file
-- **save_project** — Save the current project
-- **save_project_as** — Save the project with a new name/location
-
-#### 📂 Media Management
-- **import_media** — Import a media file (video, audio, image)
-- **import_folder** — Import all media files from a folder
-- **create_bin** — Create a new bin (folder) in the project panel
-
-#### 🎬 Sequence Management
-- **create_sequence** — Create a new sequence (timeline)
-- **duplicate_sequence** — Duplicate an existing sequence
-- **delete_sequence** — Delete a sequence
-
-#### ⏱️ Timeline Operations
-- **add_to_timeline** — Add a media clip to a sequence timeline
-- **remove_from_timeline** — Remove a clip from the timeline
-- **move_clip** — Move a clip to a different position
-- **trim_clip** — Adjust the in/out points of a clip
-- **split_clip** — Split a clip at a specific time point
-- **duplicate_clip** ✨ — Duplicate a clip on the timeline
-- **enable_disable_clip** ✨ — Enable or disable a clip
-- **reverse_clip** ✨ — Reverse playback direction of a clip
-
-#### 🎨 Effects & Transitions
-- **apply_effect** — Apply a visual or audio effect to a clip
-- **remove_effect** — Remove an effect from a clip
-- **add_transition** — Add a transition between two clips
-- **add_transition_to_clip** — Add a transition to the start or end of a clip
-
-#### 🔊 Audio Operations
-- **adjust_audio_levels** — Adjust the volume of an audio clip
-- **add_audio_keyframes** — Add keyframes to audio levels
-- **mute_track** — Mute or unmute an entire audio track
-- **link_audio_video** ✨ — Link/unlink audio and video components
-- **apply_audio_effect** ✨ — Apply audio effects to clips
-
-#### 🎛️ Color Correction
-- **color_correct** — Apply basic color correction adjustments
-- **apply_lut** — Apply a Look-Up Table (LUT) to a clip
-
-#### 📤 Export & Rendering
-- **export_sequence** — Render and export a sequence to a video file
-- **export_frame** — Export a single frame as an image
-- **add_to_render_queue** ✨ — Add sequence to render queue
-
-#### 🎥 Advanced Features
-- **create_multicam_sequence** — Create a multicamera sequence from multiple video clips
-- **create_proxy_media** — Generate proxy versions of media
-- **auto_edit_to_music** — Automatically edit video to music beats
-- **stabilize_clip** — Apply video stabilization
-- **speed_change** — Change the playback speed of a clip
-
-#### 📍 Markers (NEW ✨)
-- **add_marker** — Add timeline markers for navigation
-- **delete_marker** — Remove markers from timeline
-- **update_marker** — Update marker properties (name, color, comment)
-- **list_markers** — List all markers in a sequence
-
-#### 🎚️ Track Management (NEW ✨)
-- **add_track** — Add new video or audio tracks
-- **delete_track** — Remove tracks from sequence
-- **rename_track** — Rename tracks
-- **lock_track** — Lock/unlock tracks to prevent editing
-- **toggle_track_visibility** — Show/hide video tracks
-
-#### 📊 Project Information
-- **list_project_items** — List all media items, bins, and assets in the project
-- **list_sequences** — List all sequences in the project
-- **list_sequence_tracks** — List all tracks in a sequence
-- **get_project_info** — Get comprehensive project information
-- **get_sequence_settings** ✨ — Get sequence resolution, framerate, etc.
-- **get_clip_properties** ✨ — Get detailed clip information
-- **get_render_queue_status** ✨ — Check render queue status
-
----
-
-### ⚠️ Placeholder Tools (Require Further Implementation)
-
-These tools are defined but return "not yet implemented" errors. They exist as scaffolding for future development:
-
-#### 🔊 Advanced Audio (Placeholders)
-- **normalize_audio** ❌ — Requires external audio analysis
-- **audio_ducking** ❌ — Requires complex keyframe automation
-- **extract_audio** ❌ — Requires export pipeline implementation
-
-#### 🎬 Nested Sequences (Placeholders)
-- **create_nested_sequence** ❌ — Requires selection API implementation
-- **unnest_sequence** ❌ — Not available in Premiere Pro scripting API
-
-#### ✂️ Advanced Editing (Placeholders)
-- **replace_clip** ❌ — Requires complex clip replacement logic
-- **slip_clip** ❌ — Requires precise in/out point manipulation
-- **slide_clip** ❌ — Requires adjacent clip trimming logic
-- **set_sequence_settings** ❌ — Cannot modify sequence settings after creation
-- **set_clip_properties** ❌ — Limited by ExtendScript API
-
----
-
-## ⚠️ What Doesn’t Work (and Why)
-
-### ❌ Not Supported (Adobe Scripting Limitations)
-- **add_text_overlay** — Text overlays (legacy titles) are deprecated/broken in modern Premiere Pro scripting
-- **add_shape** — Shape/graphics overlays are not supported by Premiere scripting
-- **Essential Graphics (MOGRTs)** — Not scriptable
-- **Direct pixel manipulation** — Not possible
-
-> **Why?** Adobe has removed or deprecated these scripting APIs. Only the features above are reliably scriptable.
-
----
-
-## 🚦 Quick Start
-
-### 1. Clone and Install
-```sh
-git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP
-cd Adobe_Premiere_Pro_MCP
+```bash
+cd /Users/hetpatel/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP
 npm install
-```
-
-### 2. Build & Start the MCP Server
-```sh
 npm run build
-npm start
 ```
 
-### 3. Install the UXP Plugin in Premiere Pro
-1. **Open [Adobe UXP Developer Tool](https://developer.adobe.com/photoshop/uxp/2022/guides/devtool/)**
-2. **Click "Add Plugin"** and select the `uxp-plugin/` folder from this repository
-3. **Click "Load"** to enable the plugin
-4. **Restart Premiere Pro**
-5. **Open the plugin:**
-   - Go to `Window > Extensions > MCP Bridge (UXP)`
-   - The panel should show "Ready!" if the bridge is running
+**2. Enable CEP extensions:**
 
-### 4. Connect Claude (or another AI agent)
-- Configure Claude to use the MCP server as a tool endpoint
-- Ask Claude to perform editing tasks (see supported features above)
+```bash
+defaults write com.adobe.CSXS.12 PlayerDebugMode 1
+defaults write com.adobe.CSXS.11 PlayerDebugMode 1
+defaults write com.adobe.CSXS.10 PlayerDebugMode 1
+```
+
+**3. Install the CEP plugin:**
+
+```bash
+mkdir -p ~/Library/Application\ Support/Adobe/CEP/extensions
+cp -r cep-plugin ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP
+```
+
+**4. Add MCP server to Claude Desktop config:**
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "node",
+      "args": ["/Users/YOUR_USERNAME/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP/dist/index.js"],
+      "env": {
+        "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge"
+      }
+    }
+  }
+}
+```
+
+⚠️ **Replace `/Users/YOUR_USERNAME/` with your actual home directory path!**
+
+**5. Restart everything:**
+
+```bash
+# Quit Claude Desktop completely (Cmd+Q) and reopen
+# Quit Premiere Pro completely (Cmd+Q) and reopen
+```
+
+**6. Configure the bridge in Premiere Pro:**
+
+1. Open Premiere Pro
+2. Go to: **Window → Extensions → MCP Bridge (CEP)**
+3. In the panel:
+   - Set **Temp Directory** to: `/tmp/premiere-mcp-bridge`
+   - Click **"Save Configuration"**
+   - Click **"Start Bridge"**
+   - Click **"Test Connection"**
+4. You should see green status: "✅ Premiere Pro connection OK"
+
+**7. Test with Claude:**
+
+In Claude Desktop, ask:
+```
+"What's my current Premiere Pro project info?"
+```
+
+If Claude responds with your project details, **it's working!** 🎉
+
+## How It Works
+
+```
+┌─────────────┐         ┌──────────────┐         ┌──────────────┐
+│   Claude    │  MCP    │  Node.js     │  Files  │  CEP Plugin  │
+│  Desktop    │◄───────►│  MCP Server  │◄───────►│  (Premiere)  │
+└─────────────┘         └──────────────┘         └──────────────┘
+                                                          │
+                                                          ▼
+                                                  ┌──────────────┐
+                                                  │  Premiere    │
+                                                  │  ExtendScript│
+                                                  └──────────────┘
+```
+
+1. You ask Claude to do something in Premiere Pro
+2. Claude calls the MCP server tool
+3. MCP server writes a command file to `/tmp/premiere-mcp-bridge/`
+4. CEP plugin watches the folder, sees the command
+5. CEP plugin executes ExtendScript in Premiere Pro
+6. Result is written back to a response file
+7. MCP server reads the result and returns to Claude
+8. Claude shows you the result
+
+## Tool Status
+
+### ✅ Working Tools (Verified)
+- `get_project_info` - Get project information
+- `list_project_items` - List all items in project
+- `get_sequence_settings` - Get sequence settings
+
+### ⚠️ Known Issues
+Some tools have bugs and are currently not working. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for:
+- Detailed issue descriptions
+- Root cause analysis
+- Workarounds for users
+- Fix instructions for developers
+
+Common issues:
+- `list_sequences` - Missing return statement in ExtendScript
+- `create_bin` - Variable scope issue
+- `import_media` - Path validation too strict
+- `list_sequence_tracks` - ExtendScript execution error
+
+**Workaround:** For media import, manually drag files into Premiere Pro or use File > Import.
+
+## Example Usage
+
+Once set up, you can ask Claude:
+
+**Import and edit:**
+```
+"Import /Users/me/Desktop/video.mp4 and add it to a new sequence called 'My Edit'"
+```
+
+**Apply effects:**
+```
+"Apply a gaussian blur effect to the first clip in the timeline"
+```
+
+**Export:**
+```
+"Export the current sequence to ~/Desktop/output.mp4 in H.264 format"
+```
+
+**Query project:**
+```
+"What sequences do I have in my project?"
+"List all video clips in my project"
+```
+
+## Troubleshooting
+
+### CEP Plugin doesn't appear in Premiere Pro
+
+**Check 1:** Verify PlayerDebugMode is enabled
+```bash
+defaults read com.adobe.CSXS.12 PlayerDebugMode
+# Should return: 1
+```
+
+**Check 2:** Verify plugin is installed
+```bash
+ls -la ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP/
+# Should show: index.html, bridge-cep.js, CSInterface.js, CSXS/manifest.xml
+```
+
+**Check 3:** Restart Premiere Pro completely (Cmd+Q, then reopen)
+
+### "EvalScript error" in CEP plugin
+
+**Solution:** The plugin has been updated with ExtendScript compatibility fixes. Reload the panel:
+- Right-click in the panel → "Reload" (if available)
+- Or close/reopen: Window → Extensions → MCP Bridge (CEP)
+- Or restart Premiere Pro
+
+### Claude can't see Premiere Pro tools
+
+**Check 1:** Restart Claude Desktop completely (Cmd+Q, then reopen)
+
+**Check 2:** Verify config path is correct
+```bash
+cat ~/Library/Application\ Support/Claude/claude_desktop_config.json
+```
+Make sure the path to `dist/index.js` matches your actual project location.
+
+### Commands timeout / no response
+
+**Check 1:** Bridge is started in Premiere Pro
+- CEP panel should show: "✅ Connected"
+- Click "Test Connection" to verify
+
+**Check 2:** Temp directory paths match exactly
+- In CEP panel: `/tmp/premiere-mcp-bridge`
+- In Claude config: `"PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge"`
+
+**Check 3:** Check for command files
+```bash
+ls -la /tmp/premiere-mcp-bridge/
+# Should show config.json and occasionally command-*.json files
+```
+
+### Still having issues?
+
+1. Check the **Activity Log** in the CEP plugin panel for errors
+2. Make sure you have a **project open** in Premiere Pro
+3. Verify all paths are absolute (not relative)
+4. Check that `/tmp/premiere-mcp-bridge/` exists and is writable
+
+## Technical Details
+
+### Why CEP instead of UXP?
+
+- **CEP has full ExtendScript support** in Premiere Pro
+- UXP support in Premiere Pro is limited (no ExtendScript execution)
+- CEP works on all Premiere Pro versions 2020-2025
+- UXP is better for Photoshop/Illustrator, but not ready for Premiere Pro
+
+### ExtendScript Compatibility
+
+ExtendScript is based on JavaScript 1.5 (ES3 from 2000), so the plugin avoids:
+- Modern array methods: `forEach`, `map`, `filter`
+- Arrow functions: `() => {}`
+- Template literals: `` `string ${var}` ``
+- `const`, `let` (uses `var` instead)
+- `toISOString()` (uses manual date formatting)
+
+### Security
+
+- All scripts are validated before execution
+- Dangerous patterns blocked: `eval`, `require`, `import`, etc.
+- 500KB script size limit
+- Temp directory has restricted permissions (700)
+
+## License
+
+MIT License - See LICENSE.md
+
+## Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Test with Premiere Pro
+4. Submit a pull request
 
 ---
 
-## 🐞 Known Issues & Limitations
-
-### API Limitations
-- **Text/graphics overlays do not work** — Adobe deprecated legacy title APIs
-- **Some scripting APIs are buggy or version-dependent** — Behavior varies between Premiere versions
-- **UXP scripting is experimental** — Some features limited compared to CEP
-- **10 tools are placeholders** — See "Placeholder Tools" section above
-
-### Implementation Status
-- **50+ tools fully functional** — Core editing workflows work reliably
-- **Comprehensive test coverage** — 102 unit tests ensure stability
-- **Security hardened** — Input validation, sanitization, and secure temp directories
-- **Production-ready core** — Main features tested and validated
-
-### Performance Notes
-- **File-based communication** — Current bridge uses file polling (WebSocket upgrade planned)
-- **Single-threaded execution** — Operations run sequentially
-- **No caching yet** — Repeated queries re-execute (caching layer planned)
-
----
-
-## 🔒 Security Features
-
-This project includes comprehensive security hardening:
-
-- **✅ No code injection vulnerabilities** — Removed all `eval()` usage
-- **✅ Input validation** — All user inputs sanitized and validated
-- **✅ Path traversal protection** — File paths validated against allowed directories
-- **✅ Secure temp directories** — Session-isolated temp folders with restrictive permissions (0o700)
-- **✅ Rate limiting** — Built-in rate limiter to prevent abuse
-- **✅ Audit logging** — Security events logged for monitoring
-- **✅ Schema validation** — Zod schemas enforce type safety on all tool inputs
-
-## 💡 Why This Project Exists
-
-This project explores how far AI-powered video editing automation can go in Premiere Pro. Built collaboratively with Claude Sonnet 4.5, it demonstrates:
-
-- **Automating repetitive editing tasks** — Batch operations, consistent workflows
-- **Building smarter AI workflows** — Natural language control of professional video tools
-- **Exploring Adobe scripting boundaries** — Push the limits of what ExtendScript can do
-- **Production-ready architecture** — Security, testing, and error handling from day one
-
-### Limitations & Future Directions
-
-For advanced graphics/text overlays, you'll need After Effects scripting, Photoshop automation, or third-party plugins. The roadmap includes:
-- WebSocket communication (replacing file-based bridge)
-- Caching layer for improved performance
-- Authentication and authorization
-- Completing the 10 placeholder tools
-
----
-
-## 📚 References
-- [Adobe Premiere Pro Scripting Guide](https://ppro-scripting.docsforadobe.dev/)
-- [Adobe CEP Resources](https://github.com/Adobe-CEP)
----
-
-## 🙏 Thanks & Contributions
-If you find this useful or want to contribute, feel free to open issues or PRs. Honest feedback and improvements are welcome! 
+**Built with the Model Context Protocol** • [Claude Desktop](https://claude.ai/download) • [MCP Documentation](https://modelcontextprotocol.io)

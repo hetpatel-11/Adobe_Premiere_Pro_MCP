@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+*.tsbuildinfo
+
+# Logs and temp
+*.log
+.DS_Store
+*.backup

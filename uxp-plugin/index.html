@@ -211,7 +211,8 @@
         <div class="config-section">
             <div class="section-title">Configuration</div>
             <input type="text" id="serverPort" placeholder="MCP Server Port (default: 3000)" value="3000">
-            <input type="text" id="tempDirectory" placeholder="Temp Directory Path" value="">
+            <input type="text" id="tempDirectory" placeholder="Temp Directory Path" value="/tmp/premiere-mcp-bridge" readonly>
+            <button onclick="selectTempFolder()">Select Temp Folder</button>
             <button onclick="saveConfig()">Save Configuration</button>
         </div>
         

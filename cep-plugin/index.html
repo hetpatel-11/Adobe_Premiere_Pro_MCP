@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Bridge (CEP)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #2d2d2d; color: #fff; }
+        .container { max-width: 400px; margin: 0 auto; }
+        h1 { text-align: center; color: #00a8ff; margin-bottom: 30px; font-size: 24px; }
+        .status-section, .control-section, .config-section, .log-section { background-color: #3d3d3d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .status-indicator { display: flex; align-items: center; margin-bottom: 15px; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; }
+        .status-dot.connected { background-color: #00ff00; }
+        .status-dot.disconnected { background-color: #ff0000; }
+        button { background-color: #00a8ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; margin: 5px; }
+        button:hover { background-color: #0088cc; }
+        button:disabled { background-color: #666; cursor: not-allowed; }
+        .log-container { background-color: #1a1a1a; border-radius: 4px; padding: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; }
+        .log-entry.info { color: #00ff00; }
+        .log-entry.warning { color: #ffff00; }
+        .log-entry.error { color: #ff0000; }
+        input[type="text"] { background-color: #2d2d2d; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; width: 100%; margin-bottom: 10px; }
+        .section-title { font-size: 18px; font-weight: bold; margin-bottom: 15px; color: #00a8ff; }
+        .command-queue { background-color: #1a1a1a; border-radius: 4px; padding: 10px; max-height: 150px; overflow-y: auto; }
+        .command-item { padding: 8px; margin-bottom: 5px; background-color: #2d2d2d; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .command-status { padding: 2px 8px; border-radius: 12px; font-size: 11px; }
+        .command-status.pending { background-color: #ffff00; color: #000; }
+        .command-status.executing { background-color: #00a8ff; color: #fff; }
+        .command-status.completed { background-color: #00ff00; color: #000; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MCP Bridge (CEP)</h1>
+        <div class="status-section">
+            <div class="section-title">Connection Status</div>
+            <div class="status-indicator">
+                <div class="status-dot" id="connectionStatus"></div>
+                <span id="connectionText">Disconnected</span>
+            </div>
+            <div class="status-indicator">
+                <div class="status-dot" id="serverStatus"></div>
+                <span id="serverText">Premiere Pro: Click Test to verify</span>
+            </div>
+        </div>
+        <div class="config-section">
+            <div class="section-title">Configuration</div>
+            <input type="text" id="tempDirectory" placeholder="Temp Directory (e.g. /tmp/premiere-mcp-bridge)" value="/tmp/premiere-mcp-bridge">
+            <button onclick="saveConfig()">Save Configuration</button>
+        </div>
+        <div class="control-section">
+            <div class="section-title">Controls</div>
+            <button onclick="startBridge()" id="startButton">Start Bridge</button>
+            <button onclick="stopBridge()" id="stopButton" disabled>Stop Bridge</button>
+            <button onclick="testConnection()" id="testButton">Test Connection</button>
+            <button onclick="clearLog()" id="clearButton">Clear Log</button>
+        </div>
+        <div class="status-section">
+            <div class="section-title">Command Queue</div>
+            <div class="command-queue" id="commandQueue">
+                <div class="command-item"><span>No commands in queue</span></div>
+            </div>
+        </div>
+        <div class="log-section">
+            <div class="section-title">Activity Log</div>
+            <div class="log-container" id="logContainer">
+                <div class="log-entry info">MCP Bridge (CEP) loaded. Use with release Premiere Pro.</div>
+                <div class="log-entry info">Set Temp Directory to match Claude config, then Start Bridge.</div>
+            </div>
+        </div>
+    </div>
+    <script src="CSInterface.js"></script>
+    <script src="bridge-cep.js"></script>
+</body>
+</html>

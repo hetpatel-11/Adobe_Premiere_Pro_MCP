@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="10.0" ExtensionBundleId="com.mcp.premiere.cepbridge" ExtensionBundleVersion="1.0.0" ExtensionBundleName="MCP Bridge (CEP)">
+  <ExtensionList>
+    <Extension Id="com.mcp.premiere.cepbridge.panel" Version="1.0.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[14.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="10.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.mcp.premiere.cepbridge.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>MCP Bridge (CEP)</Menu>
+          <Geometry>
+            <Size>
+              <Height>400</Height>
+              <Width>320</Width>
+            </Size>
+            <MinSize>
+              <Height>300</Height>
+              <Width>280</Width>
+            </MinSize>
+            <MaxSize>
+              <Height>2000</Height>
+              <Width>2000</Width>
+            </MaxSize>
+          </Geometry>
+          <Icons/>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>
