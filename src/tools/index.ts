@@ -753,6 +753,169 @@ export class PremiereProTools {
           takeAudio: z.boolean().optional().describe('Whether to include audio (default: true)'),
           takeVideo: z.boolean().optional().describe('Whether to include video (default: true)')
         })
+      },
+
+      // Media Management - Relink & Metadata
+      {
+        name: 'relink_media',
+        description: 'Relinks an offline or moved media file to a new file path.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item to relink'),
+          newFilePath: z.string().describe('The new absolute file path to relink to')
+        })
+      },
+      {
+        name: 'set_color_label',
+        description: 'Sets the color label on a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item'),
+          colorIndex: z.number().describe('Color label index 0-15 (0=Violet, 1=Iris, 2=Caribbean, 3=Lavender, 4=Cerulean, 5=Forest, 6=Rose, 7=Mango, 8=Purple, 9=Blue, 10=Teal, 11=Magenta, 12=Tan, 13=Green, 14=Brown, 15=Yellow)')
+        })
+      },
+      {
+        name: 'get_color_label',
+        description: 'Gets the color label index of a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item')
+        })
+      },
+      {
+        name: 'get_metadata',
+        description: 'Gets project metadata and XMP metadata for a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item')
+        })
+      },
+      {
+        name: 'set_metadata',
+        description: 'Sets a project metadata value on a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item'),
+          key: z.string().describe('The metadata key/field name'),
+          value: z.string().describe('The metadata value to set')
+        })
+      },
+      {
+        name: 'get_footage_interpretation',
+        description: 'Gets the footage interpretation settings (frame rate, pixel aspect ratio, field type, etc.) for a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item')
+        })
+      },
+      {
+        name: 'set_footage_interpretation',
+        description: 'Sets footage interpretation settings (frame rate, pixel aspect ratio) for a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item'),
+          frameRate: z.number().optional().describe('Override frame rate'),
+          pixelAspectRatio: z.number().optional().describe('Override pixel aspect ratio')
+        })
+      },
+      {
+        name: 'check_offline_media',
+        description: 'Checks all project items and returns a list of any that are offline (missing media).',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'export_as_fcp_xml',
+        description: 'Exports a sequence as Final Cut Pro XML.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence to export'),
+          outputPath: z.string().describe('The absolute file path for the exported XML file')
+        })
+      },
+      {
+        name: 'undo',
+        description: 'Performs an undo operation in Premiere Pro.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'set_sequence_in_out_points',
+        description: 'Sets the in and/or out points on a sequence timeline.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          inPoint: z.number().optional().describe('The in point in seconds'),
+          outPoint: z.number().optional().describe('The out point in seconds')
+        })
+      },
+      {
+        name: 'get_sequence_in_out_points',
+        description: 'Gets the in and out points of a sequence timeline.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence')
+        })
+      },
+      {
+        name: 'export_aaf',
+        description: 'Exports a sequence as an AAF file for interchange with other editing/audio applications.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence to export'),
+          outputPath: z.string().describe('The absolute file path for the exported AAF file'),
+          mixDownVideo: z.boolean().optional().describe('Whether to mix down video (default: true)'),
+          explodeToMono: z.boolean().optional().describe('Whether to explode audio to mono (default: false)'),
+          sampleRate: z.number().optional().describe('Audio sample rate (default: 48000)'),
+          bitsPerSample: z.number().optional().describe('Audio bits per sample (default: 16)')
+        })
+      },
+      {
+        name: 'consolidate_duplicates',
+        description: 'Consolidates duplicate media items in the project.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'refresh_media',
+        description: 'Refreshes the media for a project item, reloading it from disk.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item to refresh')
+        })
+      },
+      {
+        name: 'import_sequences_from_project',
+        description: 'Imports sequences from another Premiere Pro project file.',
+        inputSchema: z.object({
+          projectPath: z.string().describe('The absolute path to the source .prproj file'),
+          sequenceIds: z.array(z.string()).describe('Array of sequence IDs to import from the source project')
+        })
+      },
+      {
+        name: 'create_subsequence',
+        description: 'Creates a subsequence from the in/out points of a sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the source sequence'),
+          ignoreTrackTargeting: z.boolean().optional().describe('Whether to ignore track targeting (default: false)')
+        })
+      },
+      {
+        name: 'import_mogrt',
+        description: 'Imports a Motion Graphics Template (.mogrt) file into a sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          mogrtPath: z.string().describe('The absolute path to the .mogrt file'),
+          time: z.number().describe('The time in seconds where the MOGRT should be placed'),
+          videoTrackIndex: z.number().optional().describe('The video track index (default: 0)'),
+          audioTrackIndex: z.number().optional().describe('The audio track index (default: 0)')
+        })
+      },
+      {
+        name: 'import_mogrt_from_library',
+        description: 'Imports a Motion Graphics Template from a Creative Cloud Library.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          libraryName: z.string().describe('The name of the Creative Cloud Library'),
+          mogrtName: z.string().describe('The name of the MOGRT in the library'),
+          time: z.number().describe('The time in seconds where the MOGRT should be placed'),
+          videoTrackIndex: z.number().optional().describe('The video track index (default: 0)'),
+          audioTrackIndex: z.number().optional().describe('The audio track index (default: 0)')
+        })
+      },
+      {
+        name: 'manage_proxies',
+        description: 'Checks proxy status, attaches a proxy file, or gets the proxy path for a project item.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item'),
+          action: z.enum(['check', 'attach', 'get_path']).describe('The proxy action: check status, attach a proxy, or get proxy path'),
+          proxyPath: z.string().optional().describe('The absolute path to the proxy file (required for attach action)')
+        })
       }
     ];
   }
@@ -994,6 +1157,48 @@ export class PremiereProTools {
         // Subclip
         case 'create_subclip':
           return await this.createSubclip(args.projectItemId, args.name, args.startTime, args.endTime, args.hasHardBoundaries, args.takeAudio, args.takeVideo);
+
+        // Media Management - Relink & Metadata
+        case 'relink_media':
+          return await this.relinkMedia(args.projectItemId, args.newFilePath);
+        case 'set_color_label':
+          return await this.setColorLabel(args.projectItemId, args.colorIndex);
+        case 'get_color_label':
+          return await this.getColorLabel(args.projectItemId);
+        case 'get_metadata':
+          return await this.getMetadata(args.projectItemId);
+        case 'set_metadata':
+          return await this.setMetadata(args.projectItemId, args.key, args.value);
+        case 'get_footage_interpretation':
+          return await this.getFootageInterpretation(args.projectItemId);
+        case 'set_footage_interpretation':
+          return await this.setFootageInterpretation(args.projectItemId, args.frameRate, args.pixelAspectRatio);
+        case 'check_offline_media':
+          return await this.checkOfflineMedia();
+        case 'export_as_fcp_xml':
+          return await this.exportAsFcpXml(args.sequenceId, args.outputPath);
+        case 'undo':
+          return await this.undo();
+        case 'set_sequence_in_out_points':
+          return await this.setSequenceInOutPoints(args.sequenceId, args.inPoint, args.outPoint);
+        case 'get_sequence_in_out_points':
+          return await this.getSequenceInOutPoints(args.sequenceId);
+        case 'export_aaf':
+          return await this.exportAaf(args.sequenceId, args.outputPath, args.mixDownVideo, args.explodeToMono, args.sampleRate, args.bitsPerSample);
+        case 'consolidate_duplicates':
+          return await this.consolidateDuplicates();
+        case 'refresh_media':
+          return await this.refreshMedia(args.projectItemId);
+        case 'import_sequences_from_project':
+          return await this.importSequencesFromProject(args.projectPath, args.sequenceIds);
+        case 'create_subsequence':
+          return await this.createSubsequence(args.sequenceId, args.ignoreTrackTargeting);
+        case 'import_mogrt':
+          return await this.importMogrt(args.sequenceId, args.mogrtPath, args.time, args.videoTrackIndex, args.audioTrackIndex);
+        case 'import_mogrt_from_library':
+          return await this.importMogrtFromLibrary(args.sequenceId, args.libraryName, args.mogrtName, args.time, args.videoTrackIndex, args.audioTrackIndex);
+        case 'manage_proxies':
+          return await this.manageProxies(args.projectItemId, args.action, args.proxyPath);
 
         default:
           return {
@@ -3062,4 +3267,461 @@ export class PremiereProTools {
     `;
     return await this.bridge.executeScript(script);
   }
-} 
+
+  // Relink Media Implementation
+  private async relinkMedia(projectItemId: string, newFilePath: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        if (item.canChangeMediaPath()) {
+          item.changeMediaPath(${JSON.stringify(newFilePath)}, true);
+          return JSON.stringify({
+            success: true,
+            message: "Media relinked successfully",
+            projectItemId: ${JSON.stringify(projectItemId)},
+            newFilePath: ${JSON.stringify(newFilePath)}
+          });
+        } else {
+          return JSON.stringify({ success: false, error: "Cannot change media path for this item" });
+        }
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Set Color Label Implementation
+  private async setColorLabel(projectItemId: string, colorIndex: number): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        item.setColorLabel(${colorIndex});
+        return JSON.stringify({
+          success: true,
+          message: "Color label set",
+          projectItemId: ${JSON.stringify(projectItemId)},
+          colorIndex: ${colorIndex}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Get Color Label Implementation
+  private async getColorLabel(projectItemId: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var colorLabel = item.getColorLabel();
+        return JSON.stringify({
+          success: true,
+          projectItemId: ${JSON.stringify(projectItemId)},
+          colorLabel: colorLabel
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Get Metadata Implementation
+  private async getMetadata(projectItemId: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var projectMetadata = item.getProjectMetadata();
+        var xmpMetadata = item.getXMPMetadata();
+        return JSON.stringify({
+          success: true,
+          projectItemId: ${JSON.stringify(projectItemId)},
+          projectMetadata: projectMetadata,
+          xmpMetadata: xmpMetadata
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Set Metadata Implementation
+  private async setMetadata(projectItemId: string, key: string, value: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var schema = "http://ns.adobe.com/premierePrivateProjectMetaData/1.0/";
+        var fullKey = schema + ${JSON.stringify(key)};
+        item.setProjectMetadata(${JSON.stringify(value)}, [fullKey]);
+        return JSON.stringify({
+          success: true,
+          message: "Metadata set",
+          projectItemId: ${JSON.stringify(projectItemId)},
+          key: ${JSON.stringify(key)},
+          value: ${JSON.stringify(value)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Get Footage Interpretation Implementation
+  private async getFootageInterpretation(projectItemId: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var interp = item.getFootageInterpretation();
+        return JSON.stringify({
+          success: true,
+          projectItemId: ${JSON.stringify(projectItemId)},
+          frameRate: interp.frameRate,
+          pixelAspectRatio: interp.pixelAspectRatio,
+          fieldType: interp.fieldType,
+          removePulldown: interp.removePulldown,
+          alphaUsage: interp.alphaUsage
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Set Footage Interpretation Implementation
+  private async setFootageInterpretation(projectItemId: string, frameRate?: number, pixelAspectRatio?: number): Promise<any> {
+    const setFrameRate = frameRate !== undefined;
+    const setPar = pixelAspectRatio !== undefined;
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var interp = item.getFootageInterpretation();
+        ${setFrameRate ? 'interp.frameRate = ' + frameRate + ';' : ''}
+        ${setPar ? 'interp.pixelAspectRatio = ' + pixelAspectRatio + ';' : ''}
+        item.setFootageInterpretation(interp);
+        return JSON.stringify({
+          success: true,
+          message: "Footage interpretation updated",
+          projectItemId: ${JSON.stringify(projectItemId)},
+          frameRate: interp.frameRate,
+          pixelAspectRatio: interp.pixelAspectRatio
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Check Offline Media Implementation
+  private async checkOfflineMedia(): Promise<any> {
+    const script = `
+      try {
+        var offlineItems = [];
+        function walkForOffline(parent) {
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            if (item.type === 2) {
+              walkForOffline(item);
+            } else {
+              if (item.isOffline()) {
+                offlineItems.push({
+                  nodeId: item.nodeId,
+                  name: item.name,
+                  treePath: item.treePath
+                });
+              }
+            }
+          }
+        }
+        walkForOffline(app.project.rootItem);
+        return JSON.stringify({
+          success: true,
+          offlineCount: offlineItems.length,
+          offlineItems: offlineItems
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Export as FCP XML Implementation
+  private async exportAsFcpXml(sequenceId: string, outputPath: string): Promise<any> {
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        seq.exportAsFinalCutProXML(${JSON.stringify(outputPath)});
+        return JSON.stringify({
+          success: true,
+          message: "Exported as Final Cut Pro XML",
+          sequenceId: ${JSON.stringify(sequenceId)},
+          outputPath: ${JSON.stringify(outputPath)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Undo Implementation
+  private async undo(): Promise<any> {
+    const script = `
+      try {
+        app.enableQE();
+        qe.project.undo();
+        return JSON.stringify({
+          success: true,
+          message: "Undo performed"
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Set Sequence In/Out Points Implementation
+  private async setSequenceInOutPoints(sequenceId: string, inPoint?: number, outPoint?: number): Promise<any> {
+    const setIn = inPoint !== undefined;
+    const setOut = outPoint !== undefined;
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        ${setIn ? 'seq.setInPoint(__secondsToTicks(' + inPoint + '));' : ''}
+        ${setOut ? 'seq.setOutPoint(__secondsToTicks(' + outPoint + '));' : ''}
+        return JSON.stringify({
+          success: true,
+          message: "Sequence in/out points set",
+          sequenceId: ${JSON.stringify(sequenceId)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Get Sequence In/Out Points Implementation
+  private async getSequenceInOutPoints(sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var inTime = seq.getInPointAsTime();
+        var outTime = seq.getOutPointAsTime();
+        return JSON.stringify({
+          success: true,
+          sequenceId: ${JSON.stringify(sequenceId)},
+          inPoint: inTime.seconds,
+          outPoint: outTime.seconds
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Export AAF Implementation
+  private async exportAaf(sequenceId: string, outputPath: string, mixDownVideo?: boolean, explodeToMono?: boolean, sampleRate?: number, bitsPerSample?: number): Promise<any> {
+    const mixDown = mixDownVideo !== false ? 1 : 0;
+    const explode = explodeToMono ? 1 : 0;
+    const rate = sampleRate || 48000;
+    const bits = bitsPerSample || 16;
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        app.project.exportAAF(seq, ${JSON.stringify(outputPath)}, ${mixDown}, ${explode}, ${rate}, ${bits}, 0, 0, 1, 0);
+        return JSON.stringify({
+          success: true,
+          message: "Exported as AAF",
+          sequenceId: ${JSON.stringify(sequenceId)},
+          outputPath: ${JSON.stringify(outputPath)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Consolidate Duplicates Implementation
+  private async consolidateDuplicates(): Promise<any> {
+    const script = `
+      try {
+        app.project.consolidateDuplicates();
+        return JSON.stringify({
+          success: true,
+          message: "Duplicates consolidated"
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Refresh Media Implementation
+  private async refreshMedia(projectItemId: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        item.refreshMedia();
+        return JSON.stringify({
+          success: true,
+          message: "Media refreshed",
+          projectItemId: ${JSON.stringify(projectItemId)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Import Sequences From Project Implementation
+  private async importSequencesFromProject(projectPath: string, sequenceIds: string[]): Promise<any> {
+    const script = `
+      try {
+        var seqIds = ${JSON.stringify(sequenceIds)};
+        app.project.importSequences(${JSON.stringify(projectPath)}, seqIds);
+        return JSON.stringify({
+          success: true,
+          message: "Sequences imported from project",
+          projectPath: ${JSON.stringify(projectPath)},
+          sequenceIds: seqIds
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Create Subsequence Implementation
+  private async createSubsequence(sequenceId: string, ignoreTrackTargeting?: boolean): Promise<any> {
+    const ignoreTargeting = ignoreTrackTargeting ? 'true' : 'false';
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var subseq = seq.createSubsequence(${ignoreTargeting});
+        return JSON.stringify({
+          success: true,
+          message: "Subsequence created",
+          sequenceId: subseq.sequenceID,
+          name: subseq.name
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Import MOGRT Implementation
+  private async importMogrt(sequenceId: string, mogrtPath: string, time: number, videoTrackIndex?: number, audioTrackIndex?: number): Promise<any> {
+    const vidTrack = videoTrackIndex || 0;
+    const audTrack = audioTrackIndex || 0;
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var ticks = __secondsToTicks(${time});
+        var clip = seq.importMGT(${JSON.stringify(mogrtPath)}, ticks, ${vidTrack}, ${audTrack});
+        var clipId = "";
+        if (clip && clip.nodeId) clipId = clip.nodeId;
+        return JSON.stringify({
+          success: true,
+          message: "MOGRT imported",
+          clipId: clipId
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Import MOGRT From Library Implementation
+  private async importMogrtFromLibrary(sequenceId: string, libraryName: string, mogrtName: string, time: number, videoTrackIndex?: number, audioTrackIndex?: number): Promise<any> {
+    const vidTrack = videoTrackIndex || 0;
+    const audTrack = audioTrackIndex || 0;
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var ticks = __secondsToTicks(${time});
+        var clip = seq.importMGTFromLibrary(${JSON.stringify(libraryName)}, ${JSON.stringify(mogrtName)}, ticks, ${vidTrack}, ${audTrack});
+        var clipId = "";
+        if (clip && clip.nodeId) clipId = clip.nodeId;
+        return JSON.stringify({
+          success: true,
+          message: "MOGRT imported from library",
+          clipId: clipId
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Manage Proxies Implementation
+  private async manageProxies(projectItemId: string, action: string, proxyPath?: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var actionType = ${JSON.stringify(action)};
+        if (actionType === "check") {
+          return JSON.stringify({
+            success: true,
+            projectItemId: ${JSON.stringify(projectItemId)},
+            hasProxy: item.hasProxy(),
+            canProxy: item.canProxy()
+          });
+        } else if (actionType === "attach") {
+          var pPath = ${JSON.stringify(proxyPath || '')};
+          if (!pPath || pPath === "") return JSON.stringify({ success: false, error: "proxyPath is required for attach action" });
+          item.attachProxy(pPath, 0);
+          return JSON.stringify({
+            success: true,
+            message: "Proxy attached",
+            projectItemId: ${JSON.stringify(projectItemId)},
+            proxyPath: pPath
+          });
+        } else if (actionType === "get_path") {
+          return JSON.stringify({
+            success: true,
+            projectItemId: ${JSON.stringify(projectItemId)},
+            proxyPath: item.getProxyPath()
+          });
+        } else {
+          return JSON.stringify({ success: false, error: "Unknown action: " + actionType });
+        }
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+}
