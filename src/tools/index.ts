@@ -276,26 +276,6 @@ export class PremiereProTools {
           alignment: z.enum(['left', 'center', 'right']).optional().describe('Text alignment')
         })
       },
-      {
-        name: 'add_shape',
-        description: 'Adds a shape (rectangle, circle, etc.) to the timeline.',
-        inputSchema: z.object({
-          shapeType: z.enum(['rectangle', 'circle', 'triangle']).describe('The type of shape to add'),
-          sequenceId: z.string().describe('The sequence to add the shape to'),
-          trackIndex: z.number().describe('The video track to place the shape on'),
-          startTime: z.number().describe('The time in seconds when the shape should appear'),
-          duration: z.number().describe('How long the shape should remain on screen in seconds'),
-          color: z.string().optional().describe('The hex color code for the shape'),
-          size: z.object({
-            width: z.number().optional().describe('Width in pixels'),
-            height: z.number().optional().describe('Height in pixels')
-          }).optional().describe('Shape size'),
-          position: z.object({
-            x: z.number().optional().describe('Horizontal position (0-100)'),
-            y: z.number().optional().describe('Vertical position (0-100)')
-          }).optional().describe('Shape position on screen')
-        })
-      },
 
       // Color Correction
       {
@@ -407,16 +387,6 @@ export class PremiereProTools {
         })
       },
       {
-        name: 'rename_track',
-        description: 'Renames a track in the sequence.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
-          trackType: z.enum(['video', 'audio']).describe('Type of track'),
-          trackIndex: z.number().describe('The index of the track to rename'),
-          newName: z.string().describe('The new name for the track')
-        })
-      },
-      {
         name: 'lock_track',
         description: 'Locks or unlocks a track to prevent/allow editing.',
         inputSchema: z.object({
@@ -436,33 +406,6 @@ export class PremiereProTools {
         })
       },
 
-      // Advanced Audio Operations
-      {
-        name: 'normalize_audio',
-        description: 'Normalizes audio levels to a target peak level.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the audio clip'),
-          targetLevel: z.number().optional().describe('Target peak level in dB (default: -3dB)')
-        })
-      },
-      {
-        name: 'audio_ducking',
-        description: 'Automatically lowers background audio when there is dialogue.',
-        inputSchema: z.object({
-          backgroundClipId: z.string().describe('The ID of the background audio/music clip'),
-          dialogueClipId: z.string().describe('The ID of the dialogue clip'),
-          duckAmount: z.number().optional().describe('Amount to reduce background in dB (default: -12dB)'),
-          fadeTime: z.number().optional().describe('Fade time in seconds (default: 0.5s)')
-        })
-      },
-      {
-        name: 'extract_audio',
-        description: 'Extracts the audio track from a video clip.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the video clip'),
-          outputPath: z.string().optional().describe('Optional path to export the audio file')
-        })
-      },
       {
         name: 'link_audio_video',
         description: 'Links or unlinks audio and video components of a clip.',
@@ -532,22 +475,6 @@ export class PremiereProTools {
           preserveEffects: z.boolean().optional().describe('Whether to keep effects and settings (default: true)')
         })
       },
-      {
-        name: 'slip_clip',
-        description: 'Slips the content of a clip (changes in/out points without moving position).',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip'),
-          slipAmount: z.number().describe('Amount to slip in seconds (positive or negative)')
-        })
-      },
-      {
-        name: 'slide_clip',
-        description: 'Slides a clip (moves position while trimming adjacent clips).',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip'),
-          slideAmount: z.number().describe('Amount to slide in seconds (positive or negative)')
-        })
-      },
 
       // Project Settings
       {
@@ -612,34 +539,6 @@ export class PremiereProTools {
       },
 
       // Advanced Features
-      {
-        name: 'create_multicam_sequence',
-        description: 'Creates a multicamera source sequence from multiple video clips, synchronized by audio or timecode.',
-        inputSchema: z.object({
-          name: z.string().describe('The name for the new multicam sequence'),
-          cameraFiles: z.array(z.string()).describe('An array of absolute file paths for each camera angle'),
-          syncMethod: z.enum(['timecode', 'audio', 'markers']).describe('The method to use for synchronizing the clips')
-        })
-      },
-      {
-        name: 'create_proxy_media',
-        description: 'Generates low-resolution proxy versions of high-resolution media to improve editing performance.',
-        inputSchema: z.object({
-          projectItemIds: z.array(z.string()).describe('An array of IDs of the project items to create proxies for'),
-          proxyPreset: z.string().describe('The name of the proxy preset to use'),
-          replaceOriginals: z.boolean().optional().describe('Whether to replace original media with proxies')
-        })
-      },
-      {
-        name: 'auto_edit_to_music',
-        description: 'Automatically creates an edit by cutting video clips to the beat of a music track.',
-        inputSchema: z.object({
-          audioTrackId: z.string().describe('The ID of the audio track containing the music'),
-          videoClipIds: z.array(z.string()).describe('An array of video clip IDs to use for the edit'),
-          editStyle: z.enum(['cuts_only', 'cuts_and_transitions', 'beat_sync']).describe('The desired editing style'),
-          sensitivity: z.number().optional().describe('Beat detection sensitivity (0-100)')
-        })
-      },
       {
         name: 'stabilize_clip',
         description: 'Applies video stabilization to reduce camera shake.',
@@ -755,8 +654,6 @@ export class PremiereProTools {
         // Text and Graphics
         case 'add_text_overlay':
           return await this.addTextOverlay(args);
-        case 'add_shape':
-          return await this.addShape(args);
 
         // Color Correction
         case 'color_correct':
@@ -785,20 +682,11 @@ export class PremiereProTools {
           return await this.addTrack(args.sequenceId, args.trackType, args.position);
         case 'delete_track':
           return await this.deleteTrack(args.sequenceId, args.trackType, args.trackIndex);
-        case 'rename_track':
-          return await this.renameTrack(args.sequenceId, args.trackType, args.trackIndex, args.newName);
         case 'lock_track':
           return await this.lockTrack(args.sequenceId, args.trackType, args.trackIndex, args.locked);
         case 'toggle_track_visibility':
           return await this.toggleTrackVisibility(args.sequenceId, args.trackIndex, args.visible);
 
-        // Advanced Audio
-        case 'normalize_audio':
-          return await this.normalizeAudio(args.clipId, args.targetLevel);
-        case 'audio_ducking':
-          return await this.audioDucking(args.backgroundClipId, args.dialogueClipId, args.duckAmount, args.fadeTime);
-        case 'extract_audio':
-          return await this.extractAudio(args.clipId, args.outputPath);
         case 'link_audio_video':
           return await this.linkAudioVideo(args.clipId, args.linked);
         case 'apply_audio_effect':
@@ -819,10 +707,6 @@ export class PremiereProTools {
           return await this.enableDisableClip(args.clipId, args.enabled);
         case 'replace_clip':
           return await this.replaceClip(args.clipId, args.newProjectItemId, args.preserveEffects);
-        case 'slip_clip':
-          return await this.slipClip(args.clipId, args.slipAmount);
-        case 'slide_clip':
-          return await this.slideClip(args.clipId, args.slideAmount);
 
         // Project Settings
         case 'get_sequence_settings':
@@ -841,12 +725,6 @@ export class PremiereProTools {
           return await this.getRenderQueueStatus();
 
         // Advanced Features
-        case 'create_multicam_sequence':
-          return await this.createMulticamSequence(args.name, args.cameraFiles, args.syncMethod);
-        case 'create_proxy_media':
-          return await this.createProxyMedia(args.projectItemIds, args.proxyPreset, args.replaceOriginals);
-        case 'auto_edit_to_music':
-          return await this.autoEditToMusic(args.audioTrackId, args.videoClipIds, args.editStyle, args.sensitivity);
         case 'stabilize_clip':
           return await this.stabilizeClip(args.clipId, args.method, args.smoothness);
         case 'speed_change':
@@ -1911,75 +1789,6 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async addShape(args: any): Promise<any> {
-    const script = `
-      try {
-        var sequence = app.project.getSequenceByID("${args.sequenceId}");
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-          return;
-        }
-        
-        var track = sequence.videoTracks[${args.trackIndex}];
-        if (!track) {
-          return JSON.stringify({
-            success: false,
-            error: "Video track not found"
-          });
-          return;
-        }
-        
-        // Create a shape using the legacy title system
-        var shapeItem = app.project.createNewTitle("Shape");
-        if (!shapeItem) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to create shape"
-          });
-          return;
-        }
-        
-        // Add shape to title
-        var shape = shapeItem.addShape("${args.shapeType}");
-        if (shape) {
-          ${args.color ? `shape.fillColor = "${args.color}";` : ''}
-          ${args.size ? `
-          shape.width = ${args.size.width || 100};
-          shape.height = ${args.size.height || 100};
-          ` : ''}
-          ${args.position ? `
-          shape.x = ${args.position.x || 50};
-          shape.y = ${args.position.y || 50};
-          ` : ''}
-        }
-        
-        // Insert the shape into the timeline
-        var shapeClip = track.insertClip(shapeItem, new Time("${args.startTime}s"));
-        shapeClip.end = new Time(shapeClip.start.seconds + ${args.duration});
-        
-        return JSON.stringify({
-          success: true,
-          message: "Shape added successfully",
-          shapeType: "${args.shapeType}",
-          clipId: shapeClip.nodeId,
-          startTime: ${args.startTime},
-          duration: ${args.duration},
-          trackIndex: ${args.trackIndex}
-        });
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    
-    return await this.bridge.executeScript(script);
-  }
-
   // Color Correction Implementation
   private async colorCorrect(clipId: string, adjustments: any): Promise<any> {
     const script = `
@@ -2138,132 +1947,6 @@ export class PremiereProTools {
   }
 
   // Advanced Features Implementation
-  private async createMulticamSequence(name: string, cameraFiles: string[], syncMethod: string): Promise<any> {
-    const script = `
-      try {
-        var multicamSource = app.project.createMulticamSource("${name}", [${cameraFiles.map(f => `"${f}"`).join(', ')}], "${syncMethod}");
-        if (!multicamSource) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to create multicam source"
-          });
-          return;
-        }
-        
-        var sequence = app.project.createSequenceFromMulticamSource("${name}", multicamSource);
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to create sequence from multicam source"
-          });
-          return;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Multicam sequence created successfully",
-          name: "${name}",
-          sequenceId: sequence.sequenceID,
-          cameraCount: ${cameraFiles.length},
-          syncMethod: "${syncMethod}"
-        });
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    
-    return await this.bridge.executeScript(script);
-  }
-
-  private async createProxyMedia(projectItemIds: string[], proxyPreset: string, replaceOriginals = false): Promise<any> {
-    const script = `
-      try {
-        var projectItems = [${projectItemIds.map(id => `app.project.getProjectItemByID("${id}")`).join(', ')}];
-        var validItems = projectItems.filter(function(item) { return item !== null; });
-        
-        if (validItems.length === 0) {
-          return JSON.stringify({
-            success: false,
-            error: "No valid project items found"
-          });
-          return;
-        }
-        
-        var proxyJob = app.encoder.createProxyJob(validItems, "${proxyPreset}");
-        if (!proxyJob) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to create proxy job"
-          });
-          return;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Proxy media creation started",
-          proxyPreset: "${proxyPreset}",
-          itemCount: validItems.length,
-          replaceOriginals: ${replaceOriginals}
-        });
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    
-    return await this.bridge.executeScript(script);
-  }
-
-  private async autoEditToMusic(audioTrackId: string, videoClipIds: string[], editStyle: string, sensitivity = 50): Promise<any> {
-    const script = `
-      try {
-        var audioTrack = app.project.getTrackByID("${audioTrackId}");
-        var videoClips = [${videoClipIds.map(id => `app.project.getClipByID("${id}")`).join(', ')}];
-        
-        if (!audioTrack) {
-          return JSON.stringify({
-            success: false,
-            error: "Audio track not found"
-          });
-          return;
-        }
-        
-        var validVideoClips = videoClips.filter(function(clip) { return clip !== null; });
-        if (validVideoClips.length === 0) {
-          return JSON.stringify({
-            success: false,
-            error: "No valid video clips found"
-          });
-          return;
-        }
-        
-        // This would require sophisticated beat detection and auto-editing algorithms
-        // For now, return a placeholder response with the detected parameters
-        return JSON.stringify({
-          success: true,
-          message: "Auto-edit to music analysis completed",
-          audioTrackId: "${audioTrackId}",
-          videoClipCount: validVideoClips.length,
-          editStyle: "${editStyle}",
-          sensitivity: ${sensitivity},
-          note: "This feature requires advanced beat detection implementation"
-        });
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    
-    return await this.bridge.executeScript(script);
-  }
-
   private async stabilizeClip(clipId: string, method = 'warp', smoothness = 50): Promise<any> {
     const script = `
       try {
@@ -2561,40 +2244,6 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async renameTrack(_sequenceId: string, trackType: string, trackIndex: number, newName: string): Promise<any> {
-    const script = `
-      try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
-          if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
-            tracks[${trackIndex}].name = ${JSON.stringify(newName)};
-            return JSON.stringify({
-              success: true,
-              message: "Track renamed successfully"
-            });
-          } else {
-            return JSON.stringify({
-              success: false,
-              error: "Track index out of range"
-            });
-          }
-        }
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
-
   private async lockTrack(_sequenceId: string, trackType: string, trackIndex: number, locked: boolean): Promise<any> {
     const script = `
       try {
@@ -2660,31 +2309,6 @@ export class PremiereProTools {
       }
     `;
     return await this.bridge.executeScript(script);
-  }
-
-  // Advanced Audio - Template implementations (can be enhanced later)
-  private async normalizeAudio(_clipId: string, _targetLevel?: number): Promise<any> {
-    return {
-      success: false,
-      error: "normalize_audio: This feature requires additional audio analysis. Implementation pending.",
-      note: "You can manually normalize using Effects > Audio Effects > Normalize"
-    };
-  }
-
-  private async audioDucking(_backgroundClipId: string, _dialogueClipId: string, _duckAmount?: number, _fadeTime?: number): Promise<any> {
-    return {
-      success: false,
-      error: "audio_ducking: This feature requires keyframe automation. Implementation pending.",
-      note: "You can manually add ducking using audio keyframes"
-    };
-  }
-
-  private async extractAudio(_clipId: string, _outputPath?: string): Promise<any> {
-    return {
-      success: false,
-      error: "extract_audio: This feature requires media export. Implementation pending.",
-      note: "You can manually extract audio via right-click > Extract Audio"
-    };
   }
 
   private async linkAudioVideo(clipId: string, linked: boolean): Promise<any> {
@@ -2798,22 +2422,6 @@ export class PremiereProTools {
       success: false,
       error: "replace_clip: This feature requires complex clip replacement logic. Implementation pending.",
       note: "You can manually replace clips via right-click > Replace With Clip"
-    };
-  }
-
-  private async slipClip(_clipId: string, _slipAmount: number): Promise<any> {
-    return {
-      success: false,
-      error: "slip_clip: Slip editing requires precise in/out point manipulation. Implementation pending.",
-      note: "You can manually slip clips using the Slip tool (Y key)"
-    };
-  }
-
-  private async slideClip(_clipId: string, _slideAmount: number): Promise<any> {
-    return {
-      success: false,
-      error: "slide_clip: Slide editing requires adjacent clip trimming. Implementation pending.",
-      note: "You can manually slide clips using the Slide tool (U key)"
     };
   }
 
