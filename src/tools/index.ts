@@ -259,21 +259,14 @@ export class PremiereProTools {
       // Text and Graphics
       {
         name: 'add_text_overlay',
-        description: 'Adds a text layer (title) over the video timeline.',
+        description: 'Adds a text layer (title) over the video timeline. Requires a MOGRT (.mogrt) template file path for text graphics.',
         inputSchema: z.object({
           text: z.string().describe('The text content to display'),
           sequenceId: z.string().describe('The sequence to add the text to'),
           trackIndex: z.number().describe('The video track to place the text on'),
           startTime: z.number().describe('The time in seconds when the text should appear'),
           duration: z.number().describe('How long the text should remain on screen in seconds'),
-          fontFamily: z.string().optional().describe('e.g., "Arial", "Times New Roman"'),
-          fontSize: z.number().optional().describe('e.g., 48'),
-          color: z.string().optional().describe('The hex color code for the text, e.g., "#FFFFFF"'),
-          position: z.object({
-            x: z.number().optional().describe('Horizontal position (0-100)'),
-            y: z.number().optional().describe('Vertical position (0-100)')
-          }).optional().describe('Text position on screen'),
-          alignment: z.enum(['left', 'center', 'right']).optional().describe('Text alignment')
+          mogrtPath: z.string().optional().describe('Absolute path to a .mogrt template file (required for text overlays)')
         })
       },
 
@@ -1526,70 +1519,36 @@ export class PremiereProTools {
 
   // Text and Graphics Implementation
   private async addTextOverlay(args: any): Promise<any> {
+    if (args.mogrtPath) {
+      const script = `
+        try {
+          var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
+          if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+          var timeTicks = __secondsToTicks(${args.startTime});
+          var trackItem = sequence.importMGT(${JSON.stringify(args.mogrtPath)}, timeTicks, ${args.trackIndex}, 0);
+          if (!trackItem) return JSON.stringify({ success: false, error: "Failed to import MOGRT. Ensure the .mogrt file exists." });
+          return JSON.stringify({ success: true, message: "MOGRT imported as text overlay", clipId: trackItem.nodeId });
+        } catch (e) {
+          return JSON.stringify({ success: false, error: e.toString() });
+        }
+      `;
+      return await this.bridge.executeScript(script);
+    }
+
+    // Fallback: try legacy title approach
     const script = `
       try {
-        var sequence = app.project.getSequenceByID("${args.sequenceId}");
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-          return;
-        }
-        
-        var track = sequence.videoTracks[${args.trackIndex}];
-        if (!track) {
-          return JSON.stringify({
-            success: false,
-            error: "Video track not found"
-          });
-          return;
-        }
-        
-        // Create a text clip using the legacy title system
-        var titleItem = app.project.createNewTitle("${args.text}");
-        if (!titleItem) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to create title"
-          });
-          return;
-        }
-        
-        // Set text properties using the legacy title API
-        var title = titleItem.getText();
-        if (title) {
-          title.text = "${args.text}";
-          ${args.fontFamily ? `title.fontFamily = "${args.fontFamily}";` : ''}
-          ${args.fontSize ? `title.fontSize = ${args.fontSize};` : ''}
-          ${args.color ? `title.fillColor = "${args.color}";` : ''}
-          ${args.position ? `
-          title.horizontalJustification = "${args.alignment || 'center'}";
-          title.verticalJustification = "center";
-          ` : ''}
-        }
-        
-        // Insert the title into the timeline
-        var titleClip = track.insertClip(titleItem, new Time("${args.startTime}s"));
-        titleClip.end = new Time(titleClip.start.seconds + ${args.duration});
-        
-        return JSON.stringify({
-          success: true,
-          message: "Text overlay added successfully",
-          text: "${args.text}",
-          clipId: titleClip.nodeId,
-          startTime: ${args.startTime},
-          duration: ${args.duration},
-          trackIndex: ${args.trackIndex}
-        });
-      } catch (e) {
+        var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
         return JSON.stringify({
           success: false,
-          error: e.toString()
+          error: "Text overlay requires a MOGRT file path. Use the mogrtPath parameter with a .mogrt template file, or use import_mogrt tool.",
+          note: "Legacy titles (app.project.createNewTitle) are not supported in current Premiere Pro ExtendScript API."
         });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
     return await this.bridge.executeScript(script);
   }
 
@@ -2032,24 +1991,14 @@ export class PremiereProTools {
   private async linkAudioVideo(clipId: string, linked: boolean): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
-        if (clip) {
-          clip.setLinked(${linked});
-          return JSON.stringify({
-            success: true,
-            message: "Audio-video " + (${linked} ? "linked" : "unlinked")
-          });
-        } else {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-        }
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        info.clip.setSelected(1, 1);
+        var seq = app.project.activeSequence;
+        if (${linked}) { seq.linkSelection(); } else { seq.unlinkSelection(); }
+        return JSON.stringify({ success: true, message: "Clip " + (${linked} ? "linked" : "unlinked") });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
     return await this.bridge.executeScript(script);
@@ -2080,26 +2029,15 @@ export class PremiereProTools {
   private async duplicateClip(clipId: string, offset?: number): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
-        if (clip) {
-          var duplicate = clip.duplicate();
-          ${offset !== undefined ? `duplicate.move(${offset});` : ''}
-          return JSON.stringify({
-            success: true,
-            duplicateId: duplicate.nodeId,
-            message: "Clip duplicated successfully"
-          });
-        } else {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-        }
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var projItem = clip.projectItem;
+        var insertTime = clip.end.seconds + ${offset !== undefined ? offset : 0};
+        info.track.overwriteClip(projItem, insertTime);
+        return JSON.stringify({ success: true, message: "Clip duplicated at " + insertTime + "s" });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
     return await this.bridge.executeScript(script);
@@ -2126,12 +2064,22 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async replaceClip(_clipId: string, _newProjectItemId: string, _preserveEffects?: boolean): Promise<any> {
-    return {
-      success: false,
-      error: "replace_clip: This feature requires complex clip replacement logic. Implementation pending.",
-      note: "You can manually replace clips via right-click > Replace With Clip"
-    };
+  private async replaceClip(clipId: string, newProjectItemId: string, _preserveEffects?: boolean): Promise<any> {
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var newItem = __findProjectItem(${JSON.stringify(newProjectItemId)});
+        if (!newItem) return JSON.stringify({ success: false, error: "New project item not found" });
+        var startTime = info.clip.start.seconds;
+        info.clip.remove(false, true);
+        info.track.overwriteClip(newItem, startTime);
+        return JSON.stringify({ success: true, message: "Clip replaced" });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 
   // Project Settings
@@ -2209,12 +2157,33 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async setClipProperties(_clipId: string, _properties: any): Promise<any> {
-    return {
-      success: false,
-      error: "set_clip_properties: Use specific tools like apply_effect for motion/opacity changes",
-      note: "Motion graphics require Effects panel adjustments"
-    };
+  private async setClipProperties(clipId: string, properties: any): Promise<any> {
+    const propCode = [
+      properties?.opacity !== undefined ? `if (p.displayName === "Opacity") p.setValue(${properties.opacity}, true);` : '',
+      properties?.scale !== undefined ? `if (p.displayName === "Scale") p.setValue(${properties.scale}, true);` : '',
+      properties?.rotation !== undefined ? `if (p.displayName === "Rotation") p.setValue(${properties.rotation}, true);` : '',
+    ].filter(Boolean).join('\n              ');
+
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          var comp = clip.components[i];
+          for (var j = 0; j < comp.properties.numItems; j++) {
+            var p = comp.properties[j];
+            try {
+              ${propCode}
+            } catch (e2) {}
+          }
+        }
+        return JSON.stringify({ success: true, message: "Clip properties updated" });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 
   // Render Queue
