@@ -749,40 +749,29 @@ export class PremiereProTools {
   }
 
   // Discovery Tools Implementation
-  private async listProjectItems(includeBins = true, includeMetadata = false): Promise<any> {
+  private async listProjectItems(includeBins = true, _includeMetadata = false): Promise<any> {
     const script = `
       try {
-        var items = [];
-        var bins = [];
-        
-        // List all project items
-        for (var i = 0; i < app.project.rootItem.children.numItems; i++) {
-          var item = app.project.rootItem.children[i];
-          var itemInfo = {
-            id: item.nodeId,
-            name: item.name,
-            type: item.type.toString(),
-            path: item.getMediaPath(),
-            duration: item.duration ? item.duration.seconds : null
-          };
-          
-          if (${includeMetadata}) {
-            itemInfo.metadata = {
-              width: item.getMediaWidth ? item.getMediaWidth() : null,
-              height: item.getMediaHeight ? item.getMediaHeight() : null,
-              frameRate: item.getMediaFrameRate ? item.getMediaFrameRate() : null,
-              hasVideo: item.hasVideo ? item.hasVideo() : false,
-              hasAudio: item.hasAudio ? item.hasAudio() : false
+        function walkItems(parent, results, bins) {
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            var info = {
+              id: item.nodeId,
+              name: item.name,
+              type: item.type === 2 ? 'bin' : (item.isSequence() ? 'sequence' : 'footage'),
+              treePath: item.treePath
             };
-          }
-          
-          if (item.type === ProjectItemType.BIN) {
-            bins.push(itemInfo);
-          } else {
-            items.push(itemInfo);
+            try { info.mediaPath = item.getMediaPath(); } catch(e) {}
+            if (item.type === 2) {
+              bins.push(info);
+              walkItems(item, results, bins);
+            } else {
+              results.push(info);
+            }
           }
         }
-        
+        var items = []; var bins = [];
+        walkItems(app.project.rootItem, items, bins);
         return JSON.stringify({
           success: true,
           items: items,
@@ -797,7 +786,7 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -811,10 +800,10 @@ export class PremiereProTools {
           sequences.push({
             id: seq.sequenceID,
             name: seq.name,
-            duration: seq.duration.seconds,
-            width: seq.frameBounds.width,
-            height: seq.frameBounds.height,
-            frameRate: seq.frameRate,
+            duration: __ticksToSeconds(seq.end),
+            width: seq.frameSizeHorizontal,
+            height: seq.frameSizeVertical,
+            timebase: seq.timebase,
             videoTrackCount: seq.videoTracks.numTracks,
             audioTrackCount: seq.audioTracks.numTracks
           });
@@ -839,7 +828,10 @@ export class PremiereProTools {
   private async listSequenceTracks(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.getSequenceByID("${sequenceId}");
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) {
+          sequence = app.project.activeSequence;
+        }
         if (!sequence) {
           return JSON.stringify({
             success: false,
@@ -849,12 +841,11 @@ export class PremiereProTools {
 
         var videoTracks = [];
         var audioTracks = [];
-        
-        // List video tracks
+
         for (var i = 0; i < sequence.videoTracks.numTracks; i++) {
           var track = sequence.videoTracks[i];
           var clips = [];
-          
+
           for (var j = 0; j < track.clips.numItems; j++) {
             var clip = track.clips[j];
             clips.push({
@@ -865,22 +856,19 @@ export class PremiereProTools {
               duration: clip.duration.seconds
             });
           }
-          
+
           videoTracks.push({
             index: i,
             name: track.name || "Video " + (i + 1),
-            enabled: track.isTargeted(),
-            locked: track.isLocked(),
             clips: clips,
             clipCount: clips.length
           });
         }
-        
-        // List audio tracks
+
         for (var i = 0; i < sequence.audioTracks.numTracks; i++) {
           var track = sequence.audioTracks[i];
           var clips = [];
-          
+
           for (var j = 0; j < track.clips.numItems; j++) {
             var clip = track.clips[j];
             clips.push({
@@ -891,12 +879,10 @@ export class PremiereProTools {
               duration: clip.duration.seconds
             });
           }
-          
+
           audioTracks.push({
             index: i,
             name: track.name || "Audio " + (i + 1),
-            enabled: track.isTargeted(),
-            locked: track.isLocked(),
             clips: clips,
             clipCount: clips.length
           });
@@ -926,18 +912,18 @@ export class PremiereProTools {
     const script = `
       try {
         var project = app.project;
+        var hasActive = project.activeSequence ? true : false;
         return JSON.stringify({
           success: true,
           name: project.name,
           path: project.path,
-          activeSequence: project.activeSequence ? {
+          activeSequence: hasActive ? {
             id: project.activeSequence.sequenceID,
             name: project.activeSequence.name
           } : null,
           itemCount: project.rootItem.children.numItems,
           sequenceCount: project.sequences.numSequences,
-          isDirty: project.dirty,
-          hasActiveSequence: project.activeSequence !== null
+          hasActiveSequence: hasActive
         });
       } catch (e) {
         return JSON.stringify({
@@ -946,7 +932,7 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -2429,26 +2415,28 @@ export class PremiereProTools {
   private async getSequenceSettings(_sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = __findSequence(${JSON.stringify(_sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
         if (!sequence) {
           return JSON.stringify({
             success: false,
             error: "No active sequence"
           });
-        } else {
-          return JSON.stringify({
-            success: true,
-            settings: {
-              name: sequence.name,
-              width: sequence.frameSizeHorizontal,
-              height: sequence.frameSizeVertical,
-              frameRate: sequence.framerate,
-              pixelAspectRatio: sequence.pixelAspectRatio,
-              audioChannelCount: sequence.audioChannelCount,
-              audioSampleRate: sequence.audioSampleRate
-            }
-          });
         }
+        var settings = sequence.getSettings();
+        return JSON.stringify({
+          success: true,
+          settings: {
+            name: sequence.name,
+            sequenceID: sequence.sequenceID,
+            width: settings.videoFrameWidth,
+            height: settings.videoFrameHeight,
+            timebase: sequence.timebase,
+            videoDisplayFormat: settings.videoDisplayFormat,
+            audioChannelType: settings.audioChannelType,
+            audioSampleRate: settings.audioSampleRate
+          }
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -2470,26 +2458,24 @@ export class PremiereProTools {
   private async getClipProperties(clipId: string): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
-        if (clip) {
-          return JSON.stringify({
-            success: true,
-            properties: {
-              name: clip.name,
-              start: clip.start.seconds,
-              end: clip.end.seconds,
-              duration: clip.duration.seconds,
-              inPoint: clip.inPoint.seconds,
-              outPoint: clip.outPoint.seconds,
-              enabled: clip.enabled
-            }
-          });
-        } else {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-        }
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        return JSON.stringify({
+          success: true,
+          properties: {
+            name: clip.name,
+            start: clip.start.seconds,
+            end: clip.end.seconds,
+            duration: clip.duration.seconds,
+            inPoint: clip.inPoint.seconds,
+            outPoint: clip.outPoint.seconds,
+            enabled: !clip.disabled,
+            trackIndex: info.trackIndex,
+            trackType: info.trackType,
+            speed: clip.getSpeed()
+          }
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
