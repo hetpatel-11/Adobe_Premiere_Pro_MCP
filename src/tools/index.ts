@@ -549,6 +549,210 @@ export class PremiereProTools {
           speed: z.number().describe('Speed multiplier (0.1 = 10% speed, 2.0 = 200% speed)'),
           maintainAudio: z.boolean().optional().describe('Whether to maintain audio pitch when changing speed')
         })
+      },
+
+      // Playhead & Work Area
+      {
+        name: 'get_playhead_position',
+        description: 'Gets the current playhead (CTI) position in the specified sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence')
+        })
+      },
+      {
+        name: 'set_playhead_position',
+        description: 'Sets the playhead (CTI) position in the specified sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          time: z.number().describe('The time in seconds to move the playhead to')
+        })
+      },
+      {
+        name: 'get_selected_clips',
+        description: 'Gets all currently selected clips in the specified sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence')
+        })
+      },
+
+      // Effect & Transition Discovery
+      {
+        name: 'list_available_effects',
+        description: 'Lists all available video effects in Premiere Pro.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'list_available_transitions',
+        description: 'Lists all available video transitions in Premiere Pro.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'list_available_audio_effects',
+        description: 'Lists all available audio effects in Premiere Pro.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'list_available_audio_transitions',
+        description: 'Lists all available audio transitions in Premiere Pro.',
+        inputSchema: z.object({})
+      },
+
+      // Keyframes
+      {
+        name: 'add_keyframe',
+        description: 'Adds a keyframe to a clip component parameter at a specific time.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          componentName: z.string().describe('The display name of the component (e.g., "Motion", "Opacity")'),
+          paramName: z.string().describe('The display name of the parameter (e.g., "Position", "Scale")'),
+          time: z.number().describe('The time in seconds for the keyframe'),
+          value: z.number().describe('The value to set at this keyframe')
+        })
+      },
+      {
+        name: 'remove_keyframe',
+        description: 'Removes a keyframe from a clip component parameter at a specific time.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          componentName: z.string().describe('The display name of the component'),
+          paramName: z.string().describe('The display name of the parameter'),
+          time: z.number().describe('The time in seconds of the keyframe to remove')
+        })
+      },
+      {
+        name: 'get_keyframes',
+        description: 'Gets all keyframes for a clip component parameter.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the clip'),
+          componentName: z.string().describe('The display name of the component'),
+          paramName: z.string().describe('The display name of the parameter')
+        })
+      },
+
+      // Work Area
+      {
+        name: 'set_work_area',
+        description: 'Sets the work area in/out points for a sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          inPoint: z.number().describe('The in point in seconds'),
+          outPoint: z.number().describe('The out point in seconds')
+        })
+      },
+      {
+        name: 'get_work_area',
+        description: 'Gets the work area in/out points for a sequence.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence')
+        })
+      },
+
+      // Batch Operations
+      {
+        name: 'batch_add_transitions',
+        description: 'Adds a transition to all clip boundaries on a track. Useful for quickly adding cross dissolves or other transitions between every clip.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackIndex: z.number().describe('The video track index (0-based)'),
+          transitionName: z.string().describe('The name of the transition (e.g., "Cross Dissolve")'),
+          duration: z.number().describe('The duration of each transition in seconds')
+        })
+      },
+
+      // Project Item Discovery & Management
+      {
+        name: 'find_project_item_by_name',
+        description: 'Searches for project items by name. Useful for finding media files, sequences, or bins.',
+        inputSchema: z.object({
+          name: z.string().describe('The name to search for (case-insensitive partial match)'),
+          type: z.enum(['footage', 'sequence', 'bin', 'any']).optional().describe('Filter by item type')
+        })
+      },
+      {
+        name: 'move_item_to_bin',
+        description: 'Moves a project item into a different bin (folder).',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item to move'),
+          targetBinId: z.string().describe('The ID of the destination bin')
+        })
+      },
+
+      // Active Sequence Management
+      {
+        name: 'set_active_sequence',
+        description: 'Sets the active sequence in the project.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence to activate')
+        })
+      },
+      {
+        name: 'get_active_sequence',
+        description: 'Gets information about the currently active sequence.',
+        inputSchema: z.object({})
+      },
+
+      // Clip Lookup
+      {
+        name: 'get_clip_at_position',
+        description: 'Gets the clip at a specific time position on a track.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          trackType: z.enum(['video', 'audio']).describe('The type of track'),
+          trackIndex: z.number().describe('The track index (0-based)'),
+          time: z.number().describe('The time position in seconds')
+        })
+      },
+
+      // Auto Reframe
+      {
+        name: 'auto_reframe_sequence',
+        description: 'Automatically reframes a sequence to a new aspect ratio using AI-powered motion tracking.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence to reframe'),
+          numerator: z.number().describe('Aspect ratio numerator (e.g., 9 for 9:16)'),
+          denominator: z.number().describe('Aspect ratio denominator (e.g., 16 for 9:16)'),
+          motionPreset: z.enum(['slower', 'default', 'faster']).optional().describe('Motion tracking speed preset'),
+          newName: z.string().optional().describe('Name for the reframed sequence')
+        })
+      },
+
+      // Scene Edit Detection
+      {
+        name: 'detect_scene_edits',
+        description: 'Detects scene changes in selected clips and optionally adds cuts or markers.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          action: z.enum(['ApplyCuts', 'CreateMarkers']).optional().describe('Action to take at detected edit points'),
+          applyCutsToLinkedAudio: z.boolean().optional().describe('Whether to apply cuts to linked audio'),
+          sensitivity: z.string().optional().describe('Detection sensitivity (e.g., "Low", "Medium", "High")')
+        })
+      },
+
+      // Captions
+      {
+        name: 'create_caption_track',
+        description: 'Creates a caption track from a caption/subtitle file.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('The ID of the sequence'),
+          projectItemId: z.string().describe('The ID of the caption file project item'),
+          startTime: z.number().optional().describe('Start time in seconds for the captions'),
+          captionFormat: z.string().optional().describe('Caption format (e.g., "Subtitle Default")')
+        })
+      },
+
+      // Subclip
+      {
+        name: 'create_subclip',
+        description: 'Creates a subclip from a project item with specified in/out points.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the source project item'),
+          name: z.string().describe('Name for the subclip'),
+          startTime: z.number().describe('In point in seconds'),
+          endTime: z.number().describe('Out point in seconds'),
+          hasHardBoundaries: z.boolean().optional().describe('Whether boundaries are hard (cannot be extended)'),
+          takeAudio: z.boolean().optional().describe('Whether to include audio (default: true)'),
+          takeVideo: z.boolean().optional().describe('Whether to include video (default: true)')
+        })
       }
     ];
   }
@@ -722,6 +926,74 @@ export class PremiereProTools {
           return await this.stabilizeClip(args.clipId, args.method, args.smoothness);
         case 'speed_change':
           return await this.speedChange(args.clipId, args.speed, args.maintainAudio);
+
+        // Playhead & Work Area
+        case 'get_playhead_position':
+          return await this.getPlayheadPosition(args.sequenceId);
+        case 'set_playhead_position':
+          return await this.setPlayheadPosition(args.sequenceId, args.time);
+        case 'get_selected_clips':
+          return await this.getSelectedClips(args.sequenceId);
+
+        // Effect & Transition Discovery
+        case 'list_available_effects':
+          return await this.listAvailableEffects();
+        case 'list_available_transitions':
+          return await this.listAvailableTransitions();
+        case 'list_available_audio_effects':
+          return await this.listAvailableAudioEffects();
+        case 'list_available_audio_transitions':
+          return await this.listAvailableAudioTransitions();
+
+        // Keyframes
+        case 'add_keyframe':
+          return await this.addKeyframe(args.clipId, args.componentName, args.paramName, args.time, args.value);
+        case 'remove_keyframe':
+          return await this.removeKeyframe(args.clipId, args.componentName, args.paramName, args.time);
+        case 'get_keyframes':
+          return await this.getKeyframes(args.clipId, args.componentName, args.paramName);
+
+        // Work Area
+        case 'set_work_area':
+          return await this.setWorkArea(args.sequenceId, args.inPoint, args.outPoint);
+        case 'get_work_area':
+          return await this.getWorkArea(args.sequenceId);
+
+        // Batch Operations
+        case 'batch_add_transitions':
+          return await this.batchAddTransitions(args.sequenceId, args.trackIndex, args.transitionName, args.duration);
+
+        // Project Item Discovery & Management
+        case 'find_project_item_by_name':
+          return await this.findProjectItemByName(args.name, args.type);
+        case 'move_item_to_bin':
+          return await this.moveItemToBin(args.projectItemId, args.targetBinId);
+
+        // Active Sequence Management
+        case 'set_active_sequence':
+          return await this.setActiveSequence(args.sequenceId);
+        case 'get_active_sequence':
+          return await this.getActiveSequence();
+
+        // Clip Lookup
+        case 'get_clip_at_position':
+          return await this.getClipAtPosition(args.sequenceId, args.trackType, args.trackIndex, args.time);
+
+        // Auto Reframe
+        case 'auto_reframe_sequence':
+          return await this.autoReframeSequence(args.sequenceId, args.numerator, args.denominator, args.motionPreset, args.newName);
+
+        // Scene Edit Detection
+        case 'detect_scene_edits':
+          return await this.detectSceneEdits(args.sequenceId, args.action, args.applyCutsToLinkedAudio, args.sensitivity);
+
+        // Captions
+        case 'create_caption_track':
+          return await this.createCaptionTrack(args.sequenceId, args.projectItemId, args.startTime, args.captionFormat);
+
+        // Subclip
+        case 'create_subclip':
+          return await this.createSubclip(args.projectItemId, args.name, args.startTime, args.endTime, args.hasHardBoundaries, args.takeAudio, args.takeVideo);
 
         default:
           return {
@@ -2197,5 +2469,597 @@ export class PremiereProTools {
       error: "get_render_queue_status: Render queue monitoring requires Adobe Media Encoder integration",
       note: "Check Adobe Media Encoder application for render status"
     };
+  }
+
+  // Playhead & Work Area Implementation
+  private async getPlayheadPosition(sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var pos = sequence.getPlayerPosition();
+        return JSON.stringify({
+          success: true,
+          position: __ticksToSeconds(pos.ticks),
+          ticks: pos.ticks
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setPlayheadPosition(sequenceId: string, time: number): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var ticks = __secondsToTicks(${time});
+        sequence.setPlayerPosition(ticks);
+        return JSON.stringify({
+          success: true,
+          message: "Playhead position set",
+          time: ${time}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getSelectedClips(sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var selection = sequence.getSelection();
+        var clips = [];
+        for (var i = 0; i < selection.length; i++) {
+          var clip = selection[i];
+          clips.push({
+            nodeId: clip.nodeId,
+            name: clip.name,
+            start: clip.start.seconds,
+            end: clip.end.seconds,
+            duration: clip.duration.seconds,
+            mediaType: clip.mediaType
+          });
+        }
+        return JSON.stringify({
+          success: true,
+          clips: clips,
+          count: clips.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Effect & Transition Discovery Implementation
+  private async listAvailableEffects(): Promise<any> {
+    const script = `
+      try {
+        app.enableQE();
+        var list = qe.project.getVideoEffectList();
+        return JSON.stringify({
+          success: true,
+          effects: list,
+          count: list.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async listAvailableTransitions(): Promise<any> {
+    const script = `
+      try {
+        app.enableQE();
+        var list = qe.project.getVideoTransitionList();
+        return JSON.stringify({
+          success: true,
+          transitions: list,
+          count: list.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async listAvailableAudioEffects(): Promise<any> {
+    const script = `
+      try {
+        app.enableQE();
+        var list = qe.project.getAudioEffectList();
+        return JSON.stringify({
+          success: true,
+          effects: list,
+          count: list.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async listAvailableAudioTransitions(): Promise<any> {
+    const script = `
+      try {
+        app.enableQE();
+        var list = qe.project.getAudioTransitionList();
+        return JSON.stringify({
+          success: true,
+          transitions: list,
+          count: list.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Keyframe Implementation
+  private async addKeyframe(clipId: string, componentName: string, paramName: string, time: number, value: number): Promise<any> {
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var param = null;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          var comp = clip.components[i];
+          if (comp.displayName === ${JSON.stringify(componentName)}) {
+            for (var j = 0; j < comp.properties.numItems; j++) {
+              if (comp.properties[j].displayName === ${JSON.stringify(paramName)}) {
+                param = comp.properties[j];
+                break;
+              }
+            }
+            if (param) break;
+          }
+        }
+        if (!param) return JSON.stringify({ success: false, error: "Parameter " + ${JSON.stringify(paramName)} + " not found in component " + ${JSON.stringify(componentName)} });
+        param.setTimeVarying(true);
+        param.addKey(${time});
+        param.setValueAtKey(${time}, ${value}, true);
+        return JSON.stringify({
+          success: true,
+          message: "Keyframe added",
+          componentName: ${JSON.stringify(componentName)},
+          paramName: ${JSON.stringify(paramName)},
+          time: ${time},
+          value: ${value}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async removeKeyframe(clipId: string, componentName: string, paramName: string, time: number): Promise<any> {
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var param = null;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          var comp = clip.components[i];
+          if (comp.displayName === ${JSON.stringify(componentName)}) {
+            for (var j = 0; j < comp.properties.numItems; j++) {
+              if (comp.properties[j].displayName === ${JSON.stringify(paramName)}) {
+                param = comp.properties[j];
+                break;
+              }
+            }
+            if (param) break;
+          }
+        }
+        if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
+        param.removeKey(${time});
+        return JSON.stringify({
+          success: true,
+          message: "Keyframe removed",
+          time: ${time}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getKeyframes(clipId: string, componentName: string, paramName: string): Promise<any> {
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var param = null;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          var comp = clip.components[i];
+          if (comp.displayName === ${JSON.stringify(componentName)}) {
+            for (var j = 0; j < comp.properties.numItems; j++) {
+              if (comp.properties[j].displayName === ${JSON.stringify(paramName)}) {
+                param = comp.properties[j];
+                break;
+              }
+            }
+            if (param) break;
+          }
+        }
+        if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
+        var isTimeVarying = param.isTimeVarying();
+        if (!isTimeVarying) {
+          return JSON.stringify({
+            success: true,
+            isTimeVarying: false,
+            keyframes: [],
+            staticValue: param.getValue()
+          });
+        }
+        var keys = param.getKeys();
+        var result = [];
+        for (var k = 0; k < keys.length; k++) {
+          result.push({
+            time: keys[k],
+            value: param.getValueAtKey(keys[k])
+          });
+        }
+        return JSON.stringify({
+          success: true,
+          isTimeVarying: true,
+          keyframes: result,
+          count: result.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Work Area Implementation
+  private async setWorkArea(sequenceId: string, inPoint: number, outPoint: number): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        sequence.setWorkAreaInPoint(__secondsToTicks(${inPoint}));
+        sequence.setWorkAreaOutPoint(__secondsToTicks(${outPoint}));
+        return JSON.stringify({
+          success: true,
+          message: "Work area set",
+          inPoint: ${inPoint},
+          outPoint: ${outPoint}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getWorkArea(sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var inTime = sequence.getWorkAreaInPointAsTime();
+        var outTime = sequence.getWorkAreaOutPointAsTime();
+        return JSON.stringify({
+          success: true,
+          inPoint: inTime.seconds,
+          outPoint: outTime.seconds
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Batch Operations Implementation
+  private async batchAddTransitions(sequenceId: string, trackIndex: number, transitionName: string, duration: number): Promise<any> {
+    const script = `
+      try {
+        app.enableQE();
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var track = sequence.videoTracks[${trackIndex}];
+        if (!track) return JSON.stringify({ success: false, error: "Track not found at index ${trackIndex}" });
+        var clipCount = track.clips.numItems;
+        if (clipCount < 2) return JSON.stringify({ success: false, error: "Need at least 2 clips to add transitions, found " + clipCount });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = qeSeq.getVideoTrackAt(${trackIndex});
+        var transition = qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)});
+        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} });
+        var added = 0;
+        var errors = [];
+        var fps = 254016000000 / parseInt(sequence.timebase, 10);
+        var frames = Math.round(${duration} * fps);
+        for (var i = 0; i < clipCount; i++) {
+          try {
+            var qeClip = qeTrack.getItemAt(i);
+            qeClip.addTransition(transition, true, frames + ":00", "0:00", 0.5, false, true);
+            added++;
+          } catch (e) {
+            errors.push("Clip " + i + ": " + e.toString());
+          }
+        }
+        return JSON.stringify({
+          success: true,
+          transitionsAdded: added,
+          totalClips: clipCount,
+          errors: errors
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Project Item Discovery & Management Implementation
+  private async findProjectItemByName(name: string, type?: string): Promise<any> {
+    const filterType = type || 'any';
+    const script = `
+      try {
+        var searchName = ${JSON.stringify(name)}.toLowerCase();
+        var filterType = ${JSON.stringify(filterType)};
+        var results = [];
+        function walkItems(parent) {
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            var itemType = item.type === 2 ? "bin" : (item.isSequence() ? "sequence" : "footage");
+            if (item.name.toLowerCase().indexOf(searchName) !== -1) {
+              if (filterType === "any" || filterType === itemType) {
+                var info = {
+                  id: item.nodeId,
+                  name: item.name,
+                  type: itemType,
+                  treePath: item.treePath
+                };
+                try { info.mediaPath = item.getMediaPath(); } catch(e) {}
+                results.push(info);
+              }
+            }
+            if (item.type === 2) {
+              walkItems(item);
+            }
+          }
+        }
+        walkItems(app.project.rootItem);
+        return JSON.stringify({
+          success: true,
+          items: results,
+          count: results.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async moveItemToBin(projectItemId: string, targetBinId: string): Promise<any> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var bin = __findProjectItem(${JSON.stringify(targetBinId)});
+        if (!bin) return JSON.stringify({ success: false, error: "Target bin not found" });
+        item.moveBin(bin);
+        return JSON.stringify({
+          success: true,
+          message: "Item moved to bin",
+          itemId: ${JSON.stringify(projectItemId)},
+          targetBinId: ${JSON.stringify(targetBinId)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Active Sequence Management Implementation
+  private async setActiveSequence(sequenceId: string): Promise<any> {
+    const script = `
+      try {
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        app.project.openSequence(seq.sequenceID);
+        return JSON.stringify({
+          success: true,
+          message: "Active sequence set",
+          sequenceId: seq.sequenceID,
+          name: seq.name
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getActiveSequence(): Promise<any> {
+    const script = `
+      try {
+        var seq = app.project.activeSequence;
+        if (!seq) return JSON.stringify({ success: false, error: "No active sequence" });
+        return JSON.stringify({
+          success: true,
+          id: seq.sequenceID,
+          name: seq.name,
+          duration: __ticksToSeconds(seq.end),
+          videoTrackCount: seq.videoTracks.numTracks,
+          audioTrackCount: seq.audioTracks.numTracks
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Clip Lookup Implementation
+  private async getClipAtPosition(sequenceId: string, trackType: string, trackIndex: number, time: number): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var tracks = ${JSON.stringify(trackType)} === "video" ? sequence.videoTracks : sequence.audioTracks;
+        if (${trackIndex} < 0 || ${trackIndex} >= tracks.numTracks) return JSON.stringify({ success: false, error: "Track index out of range" });
+        var track = tracks[${trackIndex}];
+        var targetTime = ${time};
+        for (var i = 0; i < track.clips.numItems; i++) {
+          var clip = track.clips[i];
+          if (clip.start.seconds <= targetTime && clip.end.seconds > targetTime) {
+            return JSON.stringify({
+              success: true,
+              clip: {
+                nodeId: clip.nodeId,
+                name: clip.name,
+                start: clip.start.seconds,
+                end: clip.end.seconds,
+                duration: clip.duration.seconds,
+                inPoint: clip.inPoint.seconds,
+                outPoint: clip.outPoint.seconds,
+                trackIndex: ${trackIndex},
+                trackType: ${JSON.stringify(trackType)},
+                clipIndex: i
+              }
+            });
+          }
+        }
+        return JSON.stringify({
+          success: true,
+          clip: null,
+          message: "No clip found at time " + targetTime + "s on " + ${JSON.stringify(trackType)} + " track " + ${trackIndex}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Auto Reframe Implementation
+  private async autoReframeSequence(sequenceId: string, numerator: number, denominator: number, motionPreset?: string, newName?: string): Promise<any> {
+    const preset = motionPreset || 'default';
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var reframedName = ${newName ? JSON.stringify(newName) : 'sequence.name + " Reframed"'};
+        sequence.autoReframeSequence(${numerator}, ${denominator}, ${JSON.stringify(preset)}, reframedName, false);
+        return JSON.stringify({
+          success: true,
+          message: "Sequence auto-reframed",
+          aspectRatio: ${numerator} + ":" + ${denominator},
+          motionPreset: ${JSON.stringify(preset)},
+          newName: reframedName
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Scene Edit Detection Implementation
+  private async detectSceneEdits(sequenceId: string, action?: string, applyCutsToLinkedAudio?: boolean, sensitivity?: string): Promise<any> {
+    const actionVal = action || 'CreateMarkers';
+    const audioVal = applyCutsToLinkedAudio !== false;
+    const sensitivityVal = sensitivity || 'Medium';
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        sequence.performSceneEditDetectionOnSelection(${JSON.stringify(actionVal)}, ${audioVal}, ${JSON.stringify(sensitivityVal)});
+        return JSON.stringify({
+          success: true,
+          message: "Scene edit detection performed",
+          action: ${JSON.stringify(actionVal)},
+          sensitivity: ${JSON.stringify(sensitivityVal)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Caption Track Implementation
+  private async createCaptionTrack(sequenceId: string, projectItemId: string, startTime?: number, captionFormat?: string): Promise<any> {
+    const startTimeVal = startTime || 0;
+    const formatVal = captionFormat || 'Subtitle Default';
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
+        var startAtTime = ${startTimeVal};
+        sequence.createCaptionTrack(projectItem, startAtTime, ${JSON.stringify(formatVal)});
+        return JSON.stringify({
+          success: true,
+          message: "Caption track created",
+          captionFormat: ${JSON.stringify(formatVal)},
+          startTime: ${startTimeVal}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Subclip Implementation
+  private async createSubclip(projectItemId: string, name: string, startTime: number, endTime: number, hasHardBoundaries?: boolean, takeAudio?: boolean, takeVideo?: boolean): Promise<any> {
+    const hardBounds = hasHardBoundaries ? 1 : 0;
+    const audio = takeAudio !== false ? 1 : 0;
+    const video = takeVideo !== false ? 1 : 0;
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var startTicks = __secondsToTicks(${startTime});
+        var endTicks = __secondsToTicks(${endTime});
+        item.createSubClip(${JSON.stringify(name)}, startTicks, endTicks, ${hardBounds}, ${audio}, ${video});
+        return JSON.stringify({
+          success: true,
+          message: "Subclip created",
+          name: ${JSON.stringify(name)},
+          startTime: ${startTime},
+          endTime: ${endTime}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 } 
