@@ -12,6 +12,53 @@ import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 
+const EXTENDSCRIPT_HELPERS = `
+function __findSequence(id) {
+  for (var i = 0; i < app.project.sequences.numSequences; i++) {
+    if (app.project.sequences[i].sequenceID === id) return app.project.sequences[i];
+  }
+  return null;
+}
+function __findClip(nodeId) {
+  var seq = app.project.activeSequence;
+  if (!seq) return null;
+  for (var t = 0; t < seq.videoTracks.numTracks; t++) {
+    var track = seq.videoTracks[t];
+    for (var c = 0; c < track.clips.numItems; c++) {
+      if (track.clips[c].nodeId === nodeId)
+        return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'video' };
+    }
+  }
+  for (var t = 0; t < seq.audioTracks.numTracks; t++) {
+    var track = seq.audioTracks[t];
+    for (var c = 0; c < track.clips.numItems; c++) {
+      if (track.clips[c].nodeId === nodeId)
+        return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'audio' };
+    }
+  }
+  return null;
+}
+function __findProjectItem(nodeId) {
+  function walk(item) {
+    if (item.nodeId === nodeId) return item;
+    if (item.children) {
+      for (var i = 0; i < item.children.numItems; i++) {
+        var found = walk(item.children[i]);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return walk(app.project.rootItem);
+}
+function __ticksToSeconds(ticks) {
+  return parseInt(ticks, 10) / 254016000000;
+}
+function __secondsToTicks(seconds) {
+  return String(Math.round(seconds * 254016000000));
+}
+`;
+
 export interface PremiereProProject {
   id: string;
   name: string;
@@ -141,10 +188,13 @@ export class PremiereProBridge {
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
 
     try {
+      // Prepend helper functions to every script
+      const fullScript = EXTENDSCRIPT_HELPERS + script;
+
       // Write command to file
       await fs.writeFile(commandFile, JSON.stringify({
         id: commandId,
-        script,
+        script: fullScript,
         timestamp: new Date().toISOString()
       }));
 
