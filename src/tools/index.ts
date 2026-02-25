@@ -1133,18 +1133,10 @@ export class PremiereProTools {
   private async duplicateSequence(sequenceId: string, newName: string): Promise<any> {
     const script = `
       try {
-        var originalSeq = app.project.getSequenceByID("${sequenceId}");
-        if (!originalSeq) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-          return;
-        }
-        
+        var originalSeq = __findSequence("${sequenceId}");
+        if (!originalSeq) return JSON.stringify({ success: false, error: "Sequence not found" });
         var newSeq = originalSeq.clone();
         newSeq.name = "${newName}";
-        
         return JSON.stringify({
           success: true,
           originalSequenceId: "${sequenceId}",
@@ -1152,31 +1144,20 @@ export class PremiereProTools {
           newName: "${newName}"
         });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async deleteSequence(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.getSequenceByID("${sequenceId}");
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-          return;
-        }
-        
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
         var sequenceName = sequence.name;
         app.project.deleteSequence(sequence);
-        
         return JSON.stringify({
           success: true,
           message: "Sequence deleted successfully",
@@ -1184,13 +1165,10 @@ export class PremiereProTools {
           deletedSequenceName: sequenceName
         });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -1223,24 +1201,12 @@ export class PremiereProTools {
   private async removeFromTimeline(clipId: string, deleteMode = 'ripple'): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
-        }
-        
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
         var clipName = clip.name;
-        var track = clip.getTrack();
-        
-        if ("${deleteMode}" === "ripple") {
-          track.removeClip(clip, true); // ripple delete
-        } else {
-          track.removeClip(clip, false); // lift delete
-        }
-        
+        var isRipple = "${deleteMode}" === "ripple";
+        clip.remove(isRipple, true);
         return JSON.stringify({
           success: true,
           message: "Clip removed from timeline",
@@ -1255,44 +1221,26 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
-  private async moveClip(clipId: string, newTime: number, newTrackIndex?: number): Promise<any> {
+  private async moveClip(clipId: string, newTime: number, _newTrackIndex?: number): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
-        }
-        
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
         var oldTime = clip.start.seconds;
-        var oldTrack = clip.getTrack();
-        var oldTrackIndex = oldTrack.index;
-        
-        clip.start = new Time("${newTime}s");
-        
-        ${newTrackIndex !== undefined ? `
-        var newTrack = app.project.activeSequence.videoTracks[${newTrackIndex}];
-        if (newTrack) {
-          oldTrack.removeClip(clip, false);
-          newTrack.insertClip(clip, new Time("${newTime}s"));
-        }
-        ` : ''}
-        
+        var shiftAmount = ${newTime} - oldTime;
+        clip.move(shiftAmount);
         return JSON.stringify({
           success: true,
           message: "Clip moved successfully",
           clipId: "${clipId}",
           oldTime: oldTime,
           newTime: ${newTime},
-          oldTrackIndex: oldTrackIndex,
-          newTrackIndex: ${newTrackIndex !== undefined ? newTrackIndex : 'unchanged'}
+          trackIndex: info.trackIndex
         });
       } catch (e) {
         return JSON.stringify({
@@ -1301,30 +1249,22 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async trimClip(clipId: string, inPoint?: number, outPoint?: number, duration?: number): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
-        }
-        
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
         var oldInPoint = clip.inPoint.seconds;
         var oldOutPoint = clip.outPoint.seconds;
         var oldDuration = clip.duration.seconds;
-        
         ${inPoint !== undefined ? `clip.inPoint = new Time("${inPoint}s");` : ''}
         ${outPoint !== undefined ? `clip.outPoint = new Time("${outPoint}s");` : ''}
         ${duration !== undefined ? `clip.outPoint = new Time(clip.inPoint.seconds + ${duration});` : ''}
-        
         return JSON.stringify({
           success: true,
           message: "Clip trimmed successfully",
@@ -1343,7 +1283,7 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -1574,34 +1514,28 @@ export class PremiereProTools {
   private async adjustAudioLevels(clipId: string, level: number): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var found = false;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          var comp = clip.components[i];
+          for (var j = 0; j < comp.properties.numItems; j++) {
+            if (comp.properties[j].displayName === "Volume") {
+              var oldLevel = comp.properties[j].getValue();
+              comp.properties[j].setValue(${level}, true);
+              found = true;
+              return JSON.stringify({
+                success: true,
+                message: "Audio level adjusted successfully",
+                clipId: "${clipId}",
+                oldLevel: oldLevel,
+                newLevel: ${level}
+              });
+            }
+          }
         }
-        
-        var audioComponent = clip.components[0];
-        if (!audioComponent || !audioComponent.properties["Volume"]) {
-          return JSON.stringify({
-            success: false,
-            error: "Audio component not found or clip has no audio"
-          });
-          return;
-        }
-        
-        var oldLevel = audioComponent.properties["Volume"].getValue();
-        audioComponent.properties["Volume"].setValue(${level});
-        
-        return JSON.stringify({
-          success: true,
-          message: "Audio level adjusted successfully",
-          clipId: "${clipId}",
-          oldLevel: oldLevel,
-          newLevel: ${level}
-        });
+        if (!found) return JSON.stringify({ success: false, error: "Volume property not found on clip" });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -1609,100 +1543,74 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async addAudioKeyframes(clipId: string, keyframes: Array<{time: number, level: number}>): Promise<any> {
+    const keyframeCode = keyframes.map(kf => `
+        try {
+          volumeProperty.addKey(${kf.time});
+          volumeProperty.setValueAtKey(${kf.time}, ${kf.level});
+          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level} });
+        } catch (e2) {}
+    `).join('\n');
+
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var volumeProperty = null;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          var comp = clip.components[i];
+          for (var j = 0; j < comp.properties.numItems; j++) {
+            if (comp.properties[j].displayName === "Volume") {
+              volumeProperty = comp.properties[j];
+              break;
+            }
+          }
+          if (volumeProperty) break;
         }
-        
-        var audioComponent = clip.components[0];
-        if (!audioComponent || !audioComponent.properties["Volume"]) {
-          return JSON.stringify({
-            success: false,
-            error: "Audio component not found or clip has no audio"
-          });
-          return;
-        }
-        
-        var volumeProperty = audioComponent.properties["Volume"];
+        if (!volumeProperty) return JSON.stringify({ success: false, error: "Volume property not found" });
         var addedKeyframes = [];
-        
-        ${keyframes.map(kf => `
-        try {
-          volumeProperty.addKey(new Time("${kf.time}s"));
-          volumeProperty.setValueAtKey(new Time("${kf.time}s"), ${kf.level});
-          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level} });
-        } catch (e) {
-          // Keyframe already exists or invalid time
-        }
-        `).join('\n')}
-        
+        ${keyframeCode}
         return JSON.stringify({
           success: true,
-          message: "Audio keyframes added successfully",
-          clipId: "${clipId}",
+          message: "Audio keyframes added",
+          clipId: ${JSON.stringify(clipId)},
           addedKeyframes: addedKeyframes,
           totalKeyframes: addedKeyframes.length
         });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async muteTrack(sequenceId: string, trackIndex: number, muted: boolean): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.getSequenceByID("${sequenceId}");
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-          return;
-        }
-        
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
         var track = sequence.audioTracks[${trackIndex}];
-        if (!track) {
-          return JSON.stringify({
-            success: false,
-            error: "Audio track not found"
-          });
-          return;
-        }
-        
-        track.setMute(${muted});
-        
+        if (!track) return JSON.stringify({ success: false, error: "Audio track not found" });
+        track.setMute(${muted ? 1 : 0});
         return JSON.stringify({
           success: true,
-          message: "Track mute status changed successfully",
+          message: "Track mute status changed",
           sequenceId: "${sequenceId}",
           trackIndex: ${trackIndex},
           muted: ${muted}
         });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -2380,24 +2288,15 @@ export class PremiereProTools {
   private async enableDisableClip(clipId: string, enabled: boolean): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID(${JSON.stringify(clipId)});
-        if (clip) {
-          clip.enabled = ${enabled};
-          return JSON.stringify({
-            success: true,
-            message: "Clip " + (${enabled} ? "enabled" : "disabled")
-          });
-        } else {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-        }
-      } catch (e) {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        info.clip.disabled = ${!enabled};
         return JSON.stringify({
-          success: false,
-          error: e.toString()
+          success: true,
+          message: "Clip " + (${enabled} ? "enabled" : "disabled")
         });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
     return await this.bridge.executeScript(script);
