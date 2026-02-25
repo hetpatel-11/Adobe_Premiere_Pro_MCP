@@ -1290,223 +1290,133 @@ export class PremiereProTools {
   private async splitClip(clipId: string, splitTime: number): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
-        }
-        
-        var track = clip.getTrack();
-        var splitPoint = new Time(clip.start.seconds + ${splitTime});
-        
-        var newClip = track.splitClip(clip, splitPoint);
-        
-        return JSON.stringify({
-          success: true,
-          message: "Clip split successfully",
-          originalClipId: "${clipId}",
-          newClipId: newClip.nodeId,
-          splitTime: ${splitTime},
-          splitPoint: splitPoint.seconds
-        });
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var splitSeconds = info.clip.start.seconds + ${splitTime};
+        var seq = app.project.activeSequence;
+        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
+        var totalFrames = Math.round(splitSeconds * fps);
+        var hours = Math.floor(totalFrames / (fps * 3600));
+        var mins = Math.floor((totalFrames % (fps * 3600)) / (fps * 60));
+        var secs = Math.floor((totalFrames % (fps * 60)) / fps);
+        var frames = Math.round(totalFrames % fps);
+        function pad(n) { return n < 10 ? "0" + n : "" + n; }
+        var tc = pad(hours) + ":" + pad(mins) + ":" + pad(secs) + ":" + pad(frames);
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+        qeTrack.razor(tc);
+        return JSON.stringify({ success: true, message: "Clip split at " + tc, splitTime: ${splitTime}, timecode: tc });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   // Effects and Transitions Implementation
-  private async applyEffect(clipId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
+  private async applyEffect(clipId: string, effectName: string, _parameters?: Record<string, any>): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack, effect;
+        if (info.trackType === 'video') {
+          qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+          effect = qe.project.getVideoEffectByName("${effectName}");
+        } else {
+          qeTrack = qeSeq.getAudioTrackAt(info.trackIndex);
+          effect = qe.project.getAudioEffectByName("${effectName}");
         }
-        
-        var effect = clip.addEffect("${effectName}");
-        if (!effect) {
-          return JSON.stringify({
-            success: false,
-            error: "Effect not found or could not be applied"
-          });
-          return;
-        }
-        
-        ${parameters ? Object.entries(parameters).map(([key, value]) => 
-          `try { if (effect.properties["${key}"]) effect.properties["${key}"].setValue(${JSON.stringify(value)}); } catch (e) { /* Parameter not found */ }`
-        ).join('\n') : ''}
-        
-        return JSON.stringify({
-          success: true,
-          message: "Effect applied successfully",
-          clipId: "${clipId}",
-          effectName: "${effectName}",
-          effectId: effect.matchName,
-          parametersApplied: ${parameters ? Object.keys(parameters).length : 0}
-        });
+        if (!effect) return JSON.stringify({ success: false, error: "Effect not found: ${effectName}. Use list_available_effects to see available effects." });
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        if (info.trackType === 'video') { qeClip.addVideoEffect(effect); } else { qeClip.addAudioEffect(effect); }
+        return JSON.stringify({ success: true, message: "Effect applied", clipId: "${clipId}", effectName: "${effectName}" });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async removeEffect(clipId: string, effectName: string): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
-        }
-        
-        var effects = clip.getEffects();
-        var removed = false;
-        
-        for (var i = 0; i < effects.length; i++) {
-          if (effects[i].displayName === "${effectName}") {
-            clip.removeEffect(effects[i]);
-            removed = true;
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var found = false;
+        for (var i = 0; i < clip.components.numItems; i++) {
+          if (clip.components[i].displayName === "${effectName}" || clip.components[i].matchName === "${effectName}") {
+            found = true;
             break;
           }
         }
-        
-        if (!removed) {
-          return JSON.stringify({
-            success: false,
-            error: "Effect not found on clip"
-          });
-          return;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Effect removed successfully",
-          clipId: "${clipId}",
-          effectName: "${effectName}"
-        });
-      } catch (e) {
         return JSON.stringify({
           success: false,
-          error: e.toString()
+          error: "Effect removal is not supported by the ExtendScript API. The effect '${effectName}' was " + (found ? "found" : "not found") + " on this clip.",
+          note: "Remove effects manually in Premiere Pro"
         });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
-  private async addTransition(clipId1: string, clipId2: string, transitionName: string, duration: number): Promise<any> {
+  private async addTransition(clipId1: string, _clipId2: string, transitionName: string, duration: number): Promise<any> {
     const script = `
       try {
-        var clip1 = app.project.getClipByID("${clipId1}");
-        var clip2 = app.project.getClipByID("${clipId2}");
-        
-        if (!clip1 || !clip2) {
-          return JSON.stringify({
-            success: false,
-            error: "One or both clips not found"
-          });
-          return;
-        }
-        
-        var track = clip1.getTrack();
-        var transition = track.addTransition("${transitionName}", clip1, clip2, ${duration});
-        
-        if (!transition) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to add transition"
-          });
-          return;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Transition added successfully",
-          transitionName: "${transitionName}",
-          duration: ${duration},
-          clip1Id: "${clipId1}",
-          clip2Id: "${clipId2}",
-          transitionId: transition.nodeId
-        });
+        app.enableQE();
+        var info1 = __findClip("${clipId1}");
+        if (!info1) return JSON.stringify({ success: false, error: "First clip not found" });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = qeSeq.getVideoTrackAt(info1.trackIndex);
+        var qeClip = qeTrack.getItemAt(info1.clipIndex);
+        var transition = qe.project.getVideoTransitionByName("${transitionName}");
+        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: ${transitionName}. Use list_available_transitions." });
+        var seq = app.project.activeSequence;
+        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
+        var frames = Math.round(${duration} * fps);
+        qeClip.addTransition(transition, true, frames + ":00", "0:00", 0.5, false, true);
+        return JSON.stringify({ success: true, message: "Transition added", transitionName: "${transitionName}", duration: ${duration} });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async addTransitionToClip(clipId: string, transitionName: string, position: 'start' | 'end', duration: number): Promise<any> {
+    const atEnd = position === 'end';
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
-        }
-        
-        var track = clip.getTrack();
-        var transition;
-        
-        if ("${position}" === "start") {
-          transition = track.addTransition("${transitionName}", clip, "start", ${duration});
-        } else {
-          transition = track.addTransition("${transitionName}", clip, "end", ${duration});
-        }
-        
-        if (!transition) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to add transition"
-          });
-          return;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Transition added successfully",
-          transitionName: "${transitionName}",
-          position: "${position}",
-          duration: ${duration},
-          clipId: "${clipId}",
-          transitionId: transition.nodeId
-        });
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var transition = info.trackType === 'video'
+          ? qe.project.getVideoTransitionByName("${transitionName}")
+          : qe.project.getAudioTransitionByName("${transitionName}");
+        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: ${transitionName}" });
+        var seq = app.project.activeSequence;
+        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
+        var frames = Math.round(${duration} * fps);
+        qeClip.addTransition(transition, ${atEnd}, frames + ":00", "0:00", 0.5, true, true);
+        return JSON.stringify({ success: true, message: "Transition added at ${position}", transitionName: "${transitionName}", duration: ${duration} });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -1685,100 +1595,69 @@ export class PremiereProTools {
 
   // Color Correction Implementation
   private async colorCorrect(clipId: string, adjustments: any): Promise<any> {
+    const paramCode = [
+      adjustments.brightness !== undefined ? `if (p.displayName === "Brightness") p.setValue(${adjustments.brightness}, true);` : '',
+      adjustments.contrast !== undefined ? `if (p.displayName === "Contrast") p.setValue(${adjustments.contrast}, true);` : '',
+      adjustments.saturation !== undefined ? `if (p.displayName === "Saturation") p.setValue(${adjustments.saturation}, true);` : '',
+      adjustments.hue !== undefined ? `if (p.displayName === "Hue") p.setValue(${adjustments.hue}, true);` : '',
+      adjustments.temperature !== undefined ? `if (p.displayName === "Temperature") p.setValue(${adjustments.temperature}, true);` : '',
+      adjustments.tint !== undefined ? `if (p.displayName === "Tint") p.setValue(${adjustments.tint}, true);` : '',
+    ].filter(Boolean).join('\n              ');
+
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var effect = qe.project.getVideoEffectByName("Lumetri Color");
+        if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color effect not found" });
+        qeClip.addVideoEffect(effect);
+        var clip = info.clip;
+        var lastComp = clip.components[clip.components.numItems - 1];
+        for (var j = 0; j < lastComp.properties.numItems; j++) {
+          var p = lastComp.properties[j];
+          try {
+            ${paramCode}
+          } catch (e2) {}
         }
-        
-        var colorCorrection = clip.addEffect("Lumetri Color");
-        if (!colorCorrection) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to add color correction effect"
-          });
-          return;
-        }
-        
-        ${adjustments.brightness !== undefined ? `try { colorCorrection.properties["Brightness"].setValue(${adjustments.brightness}); } catch (e) {}` : ''}
-        ${adjustments.contrast !== undefined ? `try { colorCorrection.properties["Contrast"].setValue(${adjustments.contrast}); } catch (e) {}` : ''}
-        ${adjustments.saturation !== undefined ? `try { colorCorrection.properties["Saturation"].setValue(${adjustments.saturation}); } catch (e) {}` : ''}
-        ${adjustments.hue !== undefined ? `try { colorCorrection.properties["Hue"].setValue(${adjustments.hue}); } catch (e) {}` : ''}
-        ${adjustments.highlights !== undefined ? `try { colorCorrection.properties["Highlights"].setValue(${adjustments.highlights}); } catch (e) {}` : ''}
-        ${adjustments.shadows !== undefined ? `try { colorCorrection.properties["Shadows"].setValue(${adjustments.shadows}); } catch (e) {}` : ''}
-        ${adjustments.temperature !== undefined ? `try { colorCorrection.properties["Temperature"].setValue(${adjustments.temperature}); } catch (e) {}` : ''}
-        ${adjustments.tint !== undefined ? `try { colorCorrection.properties["Tint"].setValue(${adjustments.tint}); } catch (e) {}` : ''}
-        
-        return JSON.stringify({
-          success: true,
-          message: "Color correction applied successfully",
-          clipId: "${clipId}",
-          adjustments: ${JSON.stringify(adjustments)}
-        });
+        return JSON.stringify({ success: true, message: "Color correction applied", clipId: "${clipId}" });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
-  private async applyLut(clipId: string, lutPath: string, intensity = 100): Promise<any> {
+  private async applyLut(clipId: string, lutPath: string, _intensity = 100): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var effect = qe.project.getVideoEffectByName("Lumetri Color");
+        if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color not found" });
+        qeClip.addVideoEffect(effect);
+        var clip = info.clip;
+        var lastComp = clip.components[clip.components.numItems - 1];
+        for (var j = 0; j < lastComp.properties.numItems; j++) {
+          var p = lastComp.properties[j];
+          try {
+            if (p.displayName === "Input LUT") p.setValue("${lutPath}", true);
+          } catch (e2) {}
         }
-        
-        var lutEffect = clip.addEffect("Lumetri Color");
-        if (!lutEffect) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to add LUT effect"
-          });
-          return;
-        }
-        
-        // Apply LUT file
-        try {
-          lutEffect.properties["Input LUT"].setValue("${lutPath}");
-          lutEffect.properties["Input LUT Intensity"].setValue(${intensity / 100});
-        } catch (e) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to apply LUT file: " + e.toString()
-          });
-          return;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "LUT applied successfully",
-          clipId: "${clipId}",
-          lutPath: "${lutPath}",
-          intensity: ${intensity}
-        });
+        return JSON.stringify({ success: true, message: "LUT applied", clipId: "${clipId}", lutPath: "${lutPath}" });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -1810,17 +1689,10 @@ export class PremiereProTools {
   private async exportFrame(sequenceId: string, time: number, outputPath: string, format = 'png'): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.getSequenceByID("${sequenceId}");
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-          return;
-        }
-        
-        sequence.exportFrame(new Time("${time}s"), "${outputPath}", "${format}");
-        
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        sequence.exportFramePNG(${time}, "${outputPath}");
         return JSON.stringify({
           success: true,
           message: "Frame exported successfully",
@@ -1830,99 +1702,61 @@ export class PremiereProTools {
           format: "${format}"
         });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   // Advanced Features Implementation
-  private async stabilizeClip(clipId: string, method = 'warp', smoothness = 50): Promise<any> {
+  private async stabilizeClip(clipId: string, _method = 'warp', smoothness = 50): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var effect = qe.project.getVideoEffectByName("Warp Stabilizer");
+        if (!effect) return JSON.stringify({ success: false, error: "Warp Stabilizer effect not found" });
+        qeClip.addVideoEffect(effect);
+        var clip = info.clip;
+        var lastComp = clip.components[clip.components.numItems - 1];
+        for (var j = 0; j < lastComp.properties.numItems; j++) {
+          try {
+            if (lastComp.properties[j].displayName === "Smoothness") lastComp.properties[j].setValue(${smoothness}, true);
+          } catch (e2) {}
         }
-        
-        var stabilizationEffect = clip.addEffect("Warp Stabilizer");
-        if (!stabilizationEffect) {
-          return JSON.stringify({
-            success: false,
-            error: "Failed to add stabilization effect"
-          });
-          return;
-        }
-        
-        // Configure stabilization settings
-        try {
-          stabilizationEffect.properties["Smoothness"].setValue(${smoothness / 100});
-          stabilizationEffect.properties["Method"].setValue("${method}");
-        } catch (e) {
-          // Some properties might not be available
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Video stabilization applied successfully",
-          clipId: "${clipId}",
-          method: "${method}",
-          smoothness: ${smoothness}
-        });
+        return JSON.stringify({ success: true, message: "Warp Stabilizer applied", clipId: "${clipId}", smoothness: ${smoothness} });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
   private async speedChange(clipId: string, speed: number, maintainAudio = true): Promise<any> {
     const script = `
       try {
-        var clip = app.project.getClipByID("${clipId}");
-        if (!clip) {
-          return JSON.stringify({
-            success: false,
-            error: "Clip not found"
-          });
-          return;
+        app.enableQE();
+        var info = __findClip("${clipId}");
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var oldSpeed = info.clip.getSpeed();
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        try { qeClip.setSpeed(${speed}, ${maintainAudio}); } catch(e2) {
+          return JSON.stringify({ success: false, error: "Speed change via QE DOM not available: " + e2.toString() });
         }
-        
-        var oldSpeed = clip.speed;
-        clip.speed = ${speed};
-        
-        if (${maintainAudio} && clip.hasAudio && clip.hasAudio()) {
-          clip.maintainAudioPitch = true;
-        }
-        
-        return JSON.stringify({
-          success: true,
-          message: "Speed change applied successfully",
-          clipId: "${clipId}",
-          oldSpeed: oldSpeed,
-          newSpeed: ${speed},
-          maintainAudio: ${maintainAudio}
-        });
+        return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speed} });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -2076,29 +1910,19 @@ export class PremiereProTools {
 
   // Track Management Implementation
   private async addTrack(_sequenceId: string, trackType: string, _position?: string): Promise<any> {
+    const numVideo = trackType === 'video' ? 1 : 0;
+    const numAudio = trackType === 'audio' ? 1 : 0;
     const script = `
       try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
-          tracks.addTrack();
-
-          return JSON.stringify({
-            success: true,
-            message: "${trackType} track added successfully",
-            trackIndex: tracks.numTracks - 1
-          });
-        }
-      } catch (e) {
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        qeSeq.addTracks(${numVideo}, ${numAudio}, 0);
         return JSON.stringify({
-          success: false,
-          error: e.toString()
+          success: true,
+          message: "${trackType} track added"
         });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
     return await this.bridge.executeScript(script);
