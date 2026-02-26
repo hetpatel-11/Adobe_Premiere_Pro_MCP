@@ -75,7 +75,7 @@ class MCPPremiereProServer {
       const tools = this.tools.getAvailableTools().map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputSchema: zodToJsonSchema(tool.inputSchema, { $refStrategy: 'none' })
+        inputSchema: zodToJsonSchema(tool.inputSchema as any, { $refStrategy: 'none' }) as any
       }));
       return { tools };
     });
