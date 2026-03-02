@@ -287,6 +287,12 @@ Tools that need the QE DOM (effects, transitions, razor/split) call `app.enableQ
 
 ### CEP Plugin doesn't appear
 
+**Enable UXP developer mode (required on newer Premiere Pro versions)**
+
+Go to **Premiere Pro → Preferences → Plugins** and check **"Enable developer mode"**. Restart Premiere Pro after enabling it.
+
+![Enable UXP developer mode in Preferences → Plugins](images/uxp-developer-mode.png)
+
 ```bash
 # Verify PlayerDebugMode
 defaults read com.adobe.CSXS.12 PlayerDebugMode  # Should return: 1
