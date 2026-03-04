@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { PremiereProBridge } from '../dist/bridge/index.js';
 import { PremiereProTools } from '../dist/tools/index.js';
 
@@ -340,7 +342,13 @@ async function main() {
     skipped: results.filter((entry) => entry.status === 'skipped').length,
   };
 
-  console.log(JSON.stringify({ runId, counts, results }, null, 2));
+  const report = { runId, counts, results };
+  const outputDir = process.env.PREMIERE_TEMP_DIR || '/tmp/premiere-mcp-bridge';
+  const outputPath = path.join(outputDir, 'live-tool-sweep.json');
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(outputPath, JSON.stringify(report, null, 2));
+
+  console.log(JSON.stringify({ ...report, outputPath }, null, 2));
 }
 
 try {
