@@ -5,71 +5,532 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Bridge (CEP)</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #2d2d2d; color: #fff; }
-        .container { max-width: 400px; margin: 0 auto; }
-        h1 { text-align: center; color: #00a8ff; margin-bottom: 30px; font-size: 24px; }
-        .status-section, .control-section, .config-section, .log-section { background-color: #3d3d3d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        .status-indicator { display: flex; align-items: center; margin-bottom: 15px; }
-        .status-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; }
-        .status-dot.connected { background-color: #00ff00; }
-        .status-dot.disconnected { background-color: #ff0000; }
-        button { background-color: #00a8ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; margin: 5px; }
-        button:hover { background-color: #0088cc; }
-        button:disabled { background-color: #666; cursor: not-allowed; }
-        .log-container { background-color: #1a1a1a; border-radius: 4px; padding: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; }
-        .log-entry.info { color: #00ff00; }
-        .log-entry.warning { color: #ffff00; }
-        .log-entry.error { color: #ff0000; }
-        input[type="text"] { background-color: #2d2d2d; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; width: 100%; margin-bottom: 10px; }
-        .section-title { font-size: 18px; font-weight: bold; margin-bottom: 15px; color: #00a8ff; }
-        .command-queue { background-color: #1a1a1a; border-radius: 4px; padding: 10px; max-height: 150px; overflow-y: auto; }
-        .command-item { padding: 8px; margin-bottom: 5px; background-color: #2d2d2d; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
-        .command-status { padding: 2px 8px; border-radius: 12px; font-size: 11px; }
-        .command-status.pending { background-color: #ffff00; color: #000; }
-        .command-status.executing { background-color: #00a8ff; color: #fff; }
-        .command-status.completed { background-color: #00ff00; color: #000; }
+        :root {
+            --bg-0: #0b1218;
+            --bg-1: #121c25;
+            --panel: rgba(20, 31, 41, 0.86);
+            --panel-border: rgba(129, 170, 197, 0.18);
+            --panel-shadow: 0 18px 40px rgba(1, 10, 18, 0.48);
+            --text-0: #f4f8fb;
+            --text-1: #9cb2c3;
+            --text-2: #6e8393;
+            --accent: #5fd3ff;
+            --accent-strong: #11aef0;
+            --accent-soft: rgba(95, 211, 255, 0.16);
+            --success: #61e8a6;
+            --warn: #ffd76b;
+            --error: #ff7b7b;
+            --input: rgba(9, 17, 25, 0.72);
+            --button-dark: rgba(13, 23, 32, 0.72);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            min-height: 100%;
+        }
+
+        body {
+            font-family: "Avenir Next", "Helvetica Neue", "Segoe UI", sans-serif;
+            color: var(--text-0);
+            padding: 16px;
+            background:
+                radial-gradient(circle at top right, rgba(17, 174, 240, 0.2), transparent 34%),
+                radial-gradient(circle at top left, rgba(97, 232, 166, 0.14), transparent 28%),
+                linear-gradient(165deg, var(--bg-0), var(--bg-1));
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 22px 22px;
+            mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.45), transparent 70%);
+        }
+
+        .shell {
+            max-width: 460px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero {
+            position: relative;
+            overflow: hidden;
+            border: 1px solid var(--panel-border);
+            border-radius: 20px;
+            padding: 18px 18px 16px;
+            margin-bottom: 14px;
+            background:
+                linear-gradient(135deg, rgba(95, 211, 255, 0.14), rgba(97, 232, 166, 0.06) 42%, rgba(7, 15, 22, 0.9) 82%),
+                var(--panel);
+            box-shadow: var(--panel-shadow);
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            width: 140px;
+            height: 140px;
+            border-radius: 999px;
+            right: -32px;
+            top: -46px;
+            background: radial-gradient(circle, rgba(95, 211, 255, 0.34), transparent 70%);
+            pointer-events: none;
+        }
+
+        .eyebrow {
+            display: inline-block;
+            font-size: 11px;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            line-height: 1.05;
+            letter-spacing: -0.02em;
+        }
+
+        .hero-copy {
+            margin-top: 8px;
+            color: var(--text-1);
+            font-size: 12px;
+            line-height: 1.55;
+            max-width: 330px;
+        }
+
+        .hero-meta {
+            margin-top: 14px;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .meta-card {
+            border: 1px solid rgba(129, 170, 197, 0.14);
+            border-radius: 14px;
+            padding: 10px 11px;
+            background: rgba(7, 15, 22, 0.36);
+        }
+
+        .meta-label {
+            display: block;
+            font-size: 10px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin-bottom: 4px;
+        }
+
+        .meta-value {
+            display: block;
+            font-size: 12px;
+            color: var(--text-0);
+            font-weight: 600;
+        }
+
+        .panel {
+            border: 1px solid var(--panel-border);
+            border-radius: 18px;
+            padding: 15px;
+            margin-bottom: 12px;
+            background: var(--panel);
+            box-shadow: var(--panel-shadow);
+            backdrop-filter: blur(8px);
+        }
+
+        .panel-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .panel-title h2 {
+            margin: 0;
+            font-size: 13px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-1);
+        }
+
+        .panel-title span {
+            font-size: 11px;
+            color: var(--text-2);
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .status-card {
+            min-height: 82px;
+            padding: 12px;
+            border-radius: 16px;
+            border: 1px solid rgba(129, 170, 197, 0.12);
+            background:
+                linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 58%),
+                rgba(9, 17, 25, 0.56);
+        }
+
+        .status-caption {
+            font-size: 10px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin-bottom: 10px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex: 0 0 auto;
+            box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04);
+        }
+
+        .status-dot.connected {
+            background: var(--success);
+            box-shadow: 0 0 0 4px rgba(97, 232, 166, 0.12), 0 0 14px rgba(97, 232, 166, 0.35);
+        }
+
+        .status-dot.disconnected {
+            background: var(--error);
+            box-shadow: 0 0 0 4px rgba(255, 123, 123, 0.12), 0 0 14px rgba(255, 123, 123, 0.28);
+        }
+
+        .status-text {
+            display: block;
+            font-size: 13px;
+            line-height: 1.35;
+            color: var(--text-0);
+        }
+
+        .config-copy,
+        .micro-copy {
+            font-size: 11px;
+            line-height: 1.55;
+            color: var(--text-2);
+            margin-bottom: 10px;
+        }
+
+        label {
+            display: block;
+            font-size: 10px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin-bottom: 8px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px 13px;
+            border: 1px solid rgba(129, 170, 197, 0.14);
+            border-radius: 12px;
+            background: var(--input);
+            color: var(--text-0);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        input[type="text"]:focus {
+            border-color: rgba(95, 211, 255, 0.48);
+            box-shadow: 0 0 0 3px rgba(95, 211, 255, 0.1);
+        }
+
+        .button-row,
+        .button-grid {
+            display: grid;
+            gap: 10px;
+        }
+
+        .button-row {
+            grid-template-columns: 1fr;
+            margin-top: 10px;
+        }
+
+        .button-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        button {
+            appearance: none;
+            border: 0;
+            border-radius: 12px;
+            padding: 12px 14px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            color: var(--text-0);
+            cursor: pointer;
+            transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease, opacity 0.16s ease;
+            background: var(--button-dark);
+            box-shadow: inset 0 0 0 1px rgba(129, 170, 197, 0.14);
+        }
+
+        button:hover:enabled {
+            transform: translateY(-1px);
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.4;
+        }
+
+        .primary {
+            background:
+                linear-gradient(135deg, var(--accent), var(--accent-strong));
+            color: #081119;
+            box-shadow:
+                inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+                0 10px 20px rgba(17, 174, 240, 0.28);
+        }
+
+        .secondary {
+            background:
+                linear-gradient(135deg, rgba(97, 232, 166, 0.16), rgba(17, 174, 240, 0.08)),
+                var(--button-dark);
+        }
+
+        .utility {
+            background: rgba(8, 17, 26, 0.92);
+        }
+
+        .command-queue,
+        .log-container {
+            border-radius: 14px;
+            border: 1px solid rgba(129, 170, 197, 0.1);
+            background: rgba(8, 15, 22, 0.82);
+            padding: 8px;
+        }
+
+        .command-queue {
+            max-height: 164px;
+            overflow-y: auto;
+        }
+
+        .command-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 11px;
+            margin-bottom: 6px;
+            border-radius: 12px;
+            background: rgba(16, 26, 35, 0.72);
+        }
+
+        .command-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .command-label {
+            flex: 1 1 auto;
+            min-width: 0;
+            color: var(--text-1);
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .command-status {
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .command-status.pending {
+            background: rgba(255, 215, 107, 0.14);
+            color: var(--warn);
+        }
+
+        .command-status.executing {
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+
+        .command-status.completed {
+            background: rgba(97, 232, 166, 0.14);
+            color: var(--success);
+        }
+
+        .log-container {
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .log-entry {
+            font-size: 11px;
+            line-height: 1.5;
+            margin-bottom: 7px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            color: var(--text-1);
+            background: rgba(15, 24, 33, 0.5);
+            word-break: break-word;
+        }
+
+        .log-entry:last-child {
+            margin-bottom: 0;
+        }
+
+        .log-entry.info {
+            border-left: 3px solid rgba(95, 211, 255, 0.6);
+        }
+
+        .log-entry.warning {
+            border-left: 3px solid rgba(255, 215, 107, 0.75);
+            color: #f4d889;
+        }
+
+        .log-entry.error {
+            border-left: 3px solid rgba(255, 123, 123, 0.8);
+            color: #ffadad;
+        }
+
+        .footer-note {
+            text-align: center;
+            color: var(--text-2);
+            font-size: 10px;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            padding: 4px 0 2px;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>MCP Bridge (CEP)</h1>
-        <div class="status-section">
-            <div class="section-title">Connection Status</div>
-            <div class="status-indicator">
-                <div class="status-dot" id="connectionStatus"></div>
-                <span id="connectionText">Disconnected</span>
+    <div class="shell">
+        <section class="hero">
+            <div class="eyebrow">Premiere Automation</div>
+            <h1>MCP Bridge (CEP)</h1>
+            <div class="hero-copy">
+                Real-time file bridge for Codex and other MCP clients. Keep the temp path aligned, start the bridge, and the panel will execute commands inside Premiere Pro.
             </div>
-            <div class="status-indicator">
-                <div class="status-dot" id="serverStatus"></div>
-                <span id="serverText">Premiere Pro: Click Test to verify</span>
+            <div class="hero-meta">
+                <div class="meta-card">
+                    <span class="meta-label">Mode</span>
+                    <span class="meta-value">CEP Runtime</span>
+                </div>
+                <div class="meta-card">
+                    <span class="meta-label">Path</span>
+                    <span class="meta-value">/tmp bridge</span>
+                </div>
+                <div class="meta-card">
+                    <span class="meta-label">Control</span>
+                    <span class="meta-value">Live Queue</span>
+                </div>
             </div>
-        </div>
-        <div class="config-section">
-            <div class="section-title">Configuration</div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Status</h2>
+                <span>Live bridge + host checks</span>
+            </div>
+            <div class="status-grid">
+                <div class="status-card">
+                    <div class="status-caption">Bridge</div>
+                    <div class="status-indicator">
+                        <div class="status-dot disconnected" id="connectionStatus"></div>
+                        <span class="status-text" id="connectionText">Disconnected</span>
+                    </div>
+                </div>
+                <div class="status-card">
+                    <div class="status-caption">Premiere</div>
+                    <div class="status-indicator">
+                        <div class="status-dot disconnected" id="serverStatus"></div>
+                        <span class="status-text" id="serverText">Click Test to verify</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Configuration</h2>
+                <span>Shared temp directory</span>
+            </div>
+            <div class="config-copy">
+                This must match the `PREMIERE_TEMP_DIR` value used by your MCP client.
+            </div>
+            <label for="tempDirectory">Temp Directory</label>
             <input type="text" id="tempDirectory" placeholder="Temp Directory (e.g. /tmp/premiere-mcp-bridge)" value="/tmp/premiere-mcp-bridge">
-            <button onclick="saveConfig()">Save Configuration</button>
-        </div>
-        <div class="control-section">
-            <div class="section-title">Controls</div>
-            <button onclick="startBridge()" id="startButton">Start Bridge</button>
-            <button onclick="stopBridge()" id="stopButton" disabled>Stop Bridge</button>
-            <button onclick="testConnection()" id="testButton">Test Connection</button>
-            <button onclick="clearLog()" id="clearButton">Clear Log</button>
-        </div>
-        <div class="status-section">
-            <div class="section-title">Command Queue</div>
+            <div class="button-row">
+                <button class="primary" onclick="saveConfig()">Save Configuration</button>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Controls</h2>
+                <span>Start, test, inspect</span>
+            </div>
+            <div class="button-grid">
+                <button class="primary" onclick="startBridge()" id="startButton">Start Bridge</button>
+                <button class="secondary" onclick="stopBridge()" id="stopButton" disabled>Stop Bridge</button>
+                <button class="secondary" onclick="testConnection()" id="testButton">Test Connection</button>
+                <button class="utility" onclick="clearLog()" id="clearButton">Clear Log</button>
+            </div>
+            <div class="micro-copy" style="margin-top: 10px; margin-bottom: 0;">
+                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory.
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Command Queue</h2>
+                <span>Most recent tasks</span>
+            </div>
             <div class="command-queue" id="commandQueue">
-                <div class="command-item"><span>No commands in queue</span></div>
+                <div class="command-item">
+                    <span class="command-label">No commands in queue</span>
+                </div>
             </div>
-        </div>
-        <div class="log-section">
-            <div class="section-title">Activity Log</div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Activity Log</h2>
+                <span>Bridge telemetry</span>
+            </div>
             <div class="log-container" id="logContainer">
-                <div class="log-entry info">MCP Bridge (CEP) loaded. Use with release Premiere Pro.</div>
-                <div class="log-entry info">Set Temp Directory to match Claude config, then Start Bridge.</div>
+                <div class="log-entry info">MCP Bridge (CEP) loaded. This is the supported release path for Premiere automation.</div>
+                <div class="log-entry info">Set the temp directory to match your MCP client, then click Start Bridge.</div>
             </div>
-        </div>
+        </section>
+
+        <div class="footer-note">MCP Bridge CEP Panel</div>
     </div>
+
     <script src="CSInterface.js"></script>
     <script src="bridge-cep.js"></script>
 </body>

@@ -206,11 +206,11 @@
         var el = document.getElementById('commandQueue');
         if (!el) return;
         if (this.commandQueue.length === 0) {
-            el.innerHTML = '<div class="command-item"><span>No commands in queue</span></div>';
+            el.innerHTML = '<div class="command-item"><span class="command-label">No commands in queue</span></div>';
             return;
         }
         var html = this.commandQueue.slice(-5).map(function(cmd) {
-            return '<div class="command-item"><span>' + cmd.script + '</span><span class="command-status ' + cmd.status + '">' + cmd.status + '</span></div>';
+            return '<div class="command-item"><span class="command-label">' + cmd.script + '</span><span class="command-status ' + cmd.status + '">' + cmd.status + '</span></div>';
         }).join('');
         el.innerHTML = html;
     };
@@ -248,7 +248,7 @@
         this.isConnected = true;
         this.updateUI();
         var tempPath = this.getTempDirectory();
-        this.log('Watching: ' + tempPath + ' (must match Claude PREMIERE_TEMP_DIR)', 'info');
+        this.log('Watching: ' + tempPath + ' (must match your MCP client PREMIERE_TEMP_DIR)', 'info');
         this.testPremiereConnection();
     };
 

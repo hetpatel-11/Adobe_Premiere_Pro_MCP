@@ -1,10 +1,14 @@
 # Adobe Premiere Pro MCP Server
 
-Control Adobe Premiere Pro through MCP using Claude Desktop, Claude Code, or Codex.
+Control Adobe Premiere Pro through MCP using Codex, Claude Code, Claude Desktop, or any other MCP client.
 
 <a href="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP/badge" alt="Adobe Premiere Pro MCP server" />
 </a>
+
+![Current MCP Bridge (CEP) panel](images/demo.png)
+
+Current CEP panel UI inside Premiere Pro, using the refreshed bridge controls and status layout.
 
 ## Current Status
 
@@ -13,8 +17,8 @@ This repository is currently validated for:
 - macOS
 - Adobe Premiere Pro 2020+
 - Node.js 18+
-- Claude Desktop with the included installer
-- Claude Code / Codex with a manual MCP entry
+- the included macOS installer path for Claude Desktop
+- manual MCP registration for Codex, Claude Code, and similar MCP clients
 
 Current local validation as of March 4, 2026:
 
@@ -44,7 +48,7 @@ High-level workflow tools included:
 - `assemble_product_spot`
 - `build_brand_spot_from_mogrt_and_assets`
 
-## Fastest Install (Claude Desktop on macOS)
+## Fastest Install (macOS)
 
 ```bash
 git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
@@ -61,9 +65,15 @@ That installer will:
 - create `/tmp/premiere-mcp-bridge`
 - add the `premiere-pro` MCP entry to Claude Desktop
 
+Important:
+
+- the supported UI bridge in this repo is the `MCP Bridge (CEP)` extension
+- the installer enables Adobe **CEP** debug mode automatically
+- Adobe **UXP developer mode is not required** for the supported CEP install path
+
 After the installer finishes:
 
-1. Quit and reopen Claude Desktop.
+1. Quit and reopen your MCP client if it reads config on startup. If you used the installer, that means Claude Desktop.
 2. Quit and reopen Premiere Pro.
 3. Open `Window > Extensions > MCP Bridge (CEP)`.
 4. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
@@ -73,9 +83,9 @@ After the installer finishes:
 
 If the panel reports that Premiere is ready, the bridge is live.
 
-## Claude Code / Codex Setup
+## Codex / Other MCP Clients
 
-The macOS installer only updates Claude Desktop automatically. For Claude Code or Codex, build locally and add the server yourself.
+The macOS installer only updates Claude Desktop automatically. For Codex, Claude Code, or another MCP client, build locally and add the server yourself.
 
 ```bash
 npm install
@@ -94,7 +104,7 @@ Important:
 - use the real absolute path to `dist/index.js`
 - restart the client after adding or updating the MCP entry
 
-If you use Claude Code config files instead, point your MCP entry at the same `dist/index.js` and set `PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge`.
+If you use a different MCP client config file instead of `codex mcp add`, point that MCP entry at the same `dist/index.js` and set `PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge`.
 
 ## Verify the Install
 
@@ -111,7 +121,7 @@ That validates:
 - CEP extension install
 - `/tmp/premiere-mcp-bridge`
 - Adobe CEP debug mode
-- Claude Desktop config entry
+- the Claude Desktop config entry when you use the installer path
 
 For a deeper end-to-end check, use a disposable Premiere project and run:
 
@@ -126,7 +136,7 @@ This creates temporary `Sweep ...` sequences in the currently open project so th
 ```text
 +-----------+        +-----------+        +-----------+
 |  Client   |  MCP   | Node.js   | Files  | CEP Panel |
-| (Claude)  |<------>| MCP Server|<------>| (Premiere)|
+| (Codex+)  |<------>| MCP Server|<------>| (Premiere)|
 +-----------+        +-----------+        +-----------+
                                                  |
                                                  v
