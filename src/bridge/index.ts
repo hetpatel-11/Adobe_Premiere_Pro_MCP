@@ -188,8 +188,10 @@ export class PremiereProBridge {
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
 
     try {
-      // Prepend helper functions to every script
-      const fullScript = EXTENDSCRIPT_HELPERS + script;
+      // Prepend helper functions and wrap script in IIFE so that
+      // "return JSON.stringify(...)" is valid (ES3/ExtendScript forbids
+      // return statements outside of function bodies at the top level).
+      const fullScript = EXTENDSCRIPT_HELPERS + '(function(){\n' + script + '\n})();';
 
       // Write command to file
       await fs.writeFile(commandFile, JSON.stringify({
@@ -277,7 +279,7 @@ export class PremiereProBridge {
     const script = `
       // Save current project
       app.project.save();
-      JSON.stringify({ success: true });
+      return JSON.stringify({ success: true });
     `;
     
     await this.executeScript(script);
@@ -380,10 +382,10 @@ export class PremiereProBridge {
       var sequence = app.project.getSequenceByID("${sequenceId}");
       var encoder = app.encoder;
       
-      encoder.encodeSequence(sequence, "${outputPath}", "${presetPath}", 
+      encoder.encodeSequence(sequence, "${outputPath}", "${presetPath}",
         encoder.ENCODE_ENTIRE, false);
-      
-      JSON.stringify({ success: true });
+
+      return JSON.stringify({ success: true });
     `;
     
     await this.executeScript(script);
@@ -414,9 +416,9 @@ export class PremiereProBridge {
           return results;
         }
         var items = walk(app.project.rootItem);
-        JSON.stringify({ ok: true, items });
+        return JSON.stringify({ ok: true, items: items });
       } catch (e) {
-        JSON.stringify({ ok: false, error: String(e) });
+        return JSON.stringify({ ok: false, error: String(e) });
       }
     `;
     const result = await this.executeScript(script);
