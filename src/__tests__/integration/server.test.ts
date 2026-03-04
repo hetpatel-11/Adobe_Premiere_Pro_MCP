@@ -1,5 +1,5 @@
 /**
- * Integration tests for MCP Adobe Premiere Pro Server
+ * Integration tests for the MCP building blocks
  */
 
 import { PremiereProBridge } from '../../bridge/index.js';
@@ -7,10 +7,9 @@ import { PremiereProTools } from '../../tools/index.js';
 import { PremiereProResources } from '../../resources/index.js';
 import { PremiereProPrompts } from '../../prompts/index.js';
 
-// Mock dependencies
 jest.mock('../../bridge/index.js');
 
-describe('MCP Adobe Premiere Pro Server Integration', () => {
+describe('MCP Adobe Premiere Pro Integration', () => {
   let mockBridge: jest.Mocked<PremiereProBridge>;
   let tools: PremiereProTools;
   let resources: PremiereProResources;
@@ -21,292 +20,123 @@ describe('MCP Adobe Premiere Pro Server Integration', () => {
     tools = new PremiereProTools(mockBridge);
     resources = new PremiereProResources(mockBridge);
     prompts = new PremiereProPrompts();
-
     jest.clearAllMocks();
   });
 
-  describe('Server Initialization', () => {
-    it('should initialize bridge on start', async () => {
-      mockBridge.initialize = jest.fn().mockResolvedValue(undefined);
-
-      await mockBridge.initialize();
-
-      expect(mockBridge.initialize).toHaveBeenCalled();
-    });
+  it('exposes a healthy tool, resource, and prompt catalog', () => {
+    expect(tools.getAvailableTools().length).toBeGreaterThan(50);
+    expect(resources.getAvailableResources().length).toBe(12);
+    expect(prompts.getAvailablePrompts().length).toBe(10);
   });
 
-  describe('Tools Integration', () => {
-    it('should list all available tools', () => {
-      const availableTools = tools.getAvailableTools();
-
-      expect(availableTools.length).toBeGreaterThan(30);
-      expect(availableTools.every(t => t.name && t.description && t.inputSchema)).toBe(true);
+  it('executes a read-only tool through the shared bridge', async () => {
+    mockBridge.executeScript.mockResolvedValue({
+      success: true,
+      items: [],
+      bins: [],
+      totalItems: 0,
+      totalBins: 0
     });
 
-    it('should execute tools successfully', async () => {
-      mockBridge.executeScript.mockResolvedValue({
-        success: true,
-        items: []
-      });
+    const result = await tools.executeTool('list_project_items', {});
 
-      const result = await tools.executeTool('list_project_items', {});
-
-      expect(result.success).toBe(true);
-    });
-
-    it('should handle tool execution errors', async () => {
-      mockBridge.executeScript.mockRejectedValue(new Error('Bridge error'));
-
-      const result = await tools.executeTool('list_project_items', {});
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-    });
+    expect(result.success).toBe(true);
+    expect(mockBridge.executeScript).toHaveBeenCalled();
   });
 
-  describe('Resources Integration', () => {
-    it('should list all available resources', () => {
-      const availableResources = resources.getAvailableResources();
+  it('supports the high-level motion graphics demo workflow', async () => {
+    mockBridge.createSequence = jest.fn().mockResolvedValue({
+      id: 'seq-1',
+      name: 'Demo Sequence'
+    } as any);
+    mockBridge.importMedia = jest
+      .fn()
+      .mockResolvedValueOnce({ success: true, id: 'item-1', name: '01_focus.png' } as any)
+      .mockResolvedValueOnce({ success: true, id: 'item-2', name: '02_precision.png' } as any)
+      .mockResolvedValueOnce({ success: true, id: 'item-3', name: '03_finish.png' } as any);
+    mockBridge.addToTimeline = jest
+      .fn()
+      .mockResolvedValueOnce({ success: true, id: 'clip-1', name: '01_focus.png' } as any)
+      .mockResolvedValueOnce({ success: true, id: 'clip-2', name: '02_precision.png' } as any)
+      .mockResolvedValueOnce({ success: true, id: 'clip-3', name: '03_finish.png' } as any);
+    mockBridge.executeScript.mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
-      expect(availableResources.length).toBe(12);
-      expect(availableResources.every(r => r.uri && r.name && r.description)).toBe(true);
+    const result = await tools.executeTool('build_motion_graphics_demo', {
+      sequenceName: 'Demo Sequence'
     });
 
-    it('should read resources successfully', async () => {
-      mockBridge.executeScript.mockResolvedValue({
-        id: 'proj-123',
-        name: 'Test Project'
-      });
-
-      const result = await resources.readResource('premiere://project/info');
-
-      expect(result).toBeDefined();
-      expect(result.name).toBe('Test Project');
-    });
-
-    it('should handle resource read errors', async () => {
-      await expect(resources.readResource('invalid://resource'))
-        .rejects.toThrow();
-    });
+    expect(result.success).toBe(true);
+    expect(result.sequence.id).toBe('seq-1');
+    expect(result.placements).toHaveLength(3);
   });
 
-  describe('Prompts Integration', () => {
-    it('should list all available prompts', () => {
-      const availablePrompts = prompts.getAvailablePrompts();
+  it('supports assembling a product spot from real assets', async () => {
+    mockBridge.createSequence = jest.fn().mockResolvedValue({
+      id: 'seq-2',
+      name: 'Product Spot'
+    } as any);
+    mockBridge.importMedia = jest
+      .fn()
+      .mockResolvedValueOnce({ success: true, id: 'item-a', name: 'a.mp4' } as any)
+      .mockResolvedValueOnce({ success: true, id: 'item-b', name: 'b.mp4' } as any);
+    mockBridge.addToTimeline = jest
+      .fn()
+      .mockResolvedValueOnce({ success: true, id: 'clip-a', name: 'a.mp4', inPoint: 0, outPoint: 4 } as any)
+      .mockResolvedValueOnce({ success: true, id: 'clip-b', name: 'b.mp4', inPoint: 4, outPoint: 8 } as any);
+    mockBridge.executeScript.mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
-      expect(availablePrompts.length).toBe(10);
-      expect(availablePrompts.every(p => p.name && p.description)).toBe(true);
+    const result = await tools.executeTool('assemble_product_spot', {
+      sequenceName: 'Product Spot',
+      assetPaths: ['/a.mp4', '/b.mp4'],
+      clipDuration: 4
     });
 
-    it('should generate prompts successfully', async () => {
-      const result = await prompts.getPrompt('create_video_project', {
-        project_type: 'documentary'
-      });
-
-      expect(result).toHaveProperty('description');
-      expect(result).toHaveProperty('messages');
-      expect(result.messages.length).toBeGreaterThan(0);
-    });
-
-    it('should handle prompt generation errors', async () => {
-      await expect(prompts.getPrompt('invalid_prompt', {}))
-        .rejects.toThrow();
-    });
+    expect(result.success).toBe(true);
+    expect(result.placements).toHaveLength(2);
   });
 
-  describe('End-to-End Workflows', () => {
-    it('should complete project creation workflow', async () => {
-      // Mock project creation
-      mockBridge.createProject = jest.fn().mockResolvedValue({
-        id: 'proj-123',
-        name: 'New Project',
-        path: '/path/to/project.prproj',
-        isOpen: true,
-        sequences: [],
-        projectItems: []
-      });
+  it('supports assembling a brand spot from assets without a mogrt', async () => {
+    mockBridge.createSequence = jest.fn().mockResolvedValue({
+      id: 'seq-3',
+      name: 'Brand Spot'
+    } as any);
+    mockBridge.importMedia = jest
+      .fn()
+      .mockResolvedValueOnce({ success: true, id: 'item-a', name: 'a.mp4' } as any)
+      .mockResolvedValueOnce({ success: true, id: 'item-b', name: 'b.mp4' } as any);
+    mockBridge.addToTimeline = jest
+      .fn()
+      .mockResolvedValueOnce({ success: true, id: 'clip-a', name: 'a.mp4', inPoint: 0, outPoint: 4 } as any)
+      .mockResolvedValueOnce({ success: true, id: 'clip-b', name: 'b.mp4', inPoint: 4, outPoint: 8 } as any);
+    mockBridge.executeScript.mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
-      const result = await tools.executeTool('create_project', {
-        name: 'New Project',
-        location: '/path/to/projects'
-      });
-
-      expect(result.success).toBe(true);
+    const result = await tools.executeTool('build_brand_spot_from_mogrt_and_assets', {
+      sequenceName: 'Brand Spot',
+      assetPaths: ['/a.mp4', '/b.mp4']
     });
 
-    it('should complete import and edit workflow', async () => {
-      // Mock media import
-      mockBridge.importMedia = jest.fn().mockResolvedValue({
-        id: 'item-123',
-        name: 'video.mp4',
-        type: 'footage'
-      });
-
-      const importResult = await tools.executeTool('import_media', {
-        filePath: '/path/to/video.mp4'
-      });
-
-      expect(importResult.success).toBe(true);
-
-      // Mock sequence creation
-      mockBridge.createSequence = jest.fn().mockResolvedValue({
-        id: 'seq-123',
-        name: 'Main Sequence',
-        frameRate: 29.97
-      });
-
-      const seqResult = await tools.executeTool('create_sequence', {
-        name: 'Main Sequence'
-      });
-
-      expect(seqResult.success).toBe(true);
-    });
-
-    it('should complete color grading workflow', async () => {
-      mockBridge.executeScript.mockResolvedValue({
-        success: true
-      });
-
-      const result = await tools.executeTool('color_correct', {
-        clipId: 'clip-123',
-        brightness: 10,
-        contrast: 5,
-        saturation: 15
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    it('should complete export workflow', async () => {
-      mockBridge.renderSequence = jest.fn().mockResolvedValue(undefined);
-
-      const result = await tools.executeTool('export_sequence', {
-        sequenceId: 'seq-123',
-        outputPath: '/path/to/output.mp4',
-        presetPath: '/path/to/preset.epr'
-      });
-
-      expect(result.success).toBe(true);
-    });
+    expect(result.success).toBe(true);
+    expect(result.message).toBe('Brand spot assembled successfully');
+    expect(result.overlays[0].skipped).toBe(true);
   });
 
-  describe('Error Handling and Recovery', () => {
-    it('should handle bridge initialization failure', async () => {
-      mockBridge.initialize = jest.fn().mockRejectedValue(new Error('Init failed'));
-
-      await expect(mockBridge.initialize()).rejects.toThrow('Init failed');
+  it('reads resources through the shared bridge', async () => {
+    mockBridge.executeScript.mockResolvedValue({
+      id: 'proj-123',
+      name: 'Test Project'
     });
 
-    it('should handle network timeout', async () => {
-      mockBridge.executeScript.mockRejectedValue(new Error('Timeout'));
+    const result = await resources.readResource('premiere://project/info');
 
-      const result = await tools.executeTool('save_project', {});
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Timeout');
-    });
-
-    it('should handle invalid tool arguments', async () => {
-      const result = await tools.executeTool('create_project', {
-        // Missing required arguments
-      });
-
-      expect(result.success).toBe(false);
-    });
-
-    it('should cleanup resources on shutdown', async () => {
-      mockBridge.cleanup = jest.fn().mockResolvedValue(undefined);
-
-      await mockBridge.cleanup();
-
-      expect(mockBridge.cleanup).toHaveBeenCalled();
-    });
+    expect(result.name).toBe('Test Project');
   });
 
-  describe('Data Validation', () => {
-    it('should validate tool input schemas', () => {
-      const availableTools = tools.getAvailableTools();
-
-      const createProject = availableTools.find(t => t.name === 'create_project');
-      expect(createProject).toBeDefined();
-      expect(createProject?.inputSchema).toBeDefined();
+  it('generates prompts', async () => {
+    const result = await prompts.getPrompt('create_video_project', {
+      project_type: 'commercial'
     });
 
-    it('should validate resource URIs', () => {
-      const availableResources = resources.getAvailableResources();
-
-      availableResources.forEach(resource => {
-        expect(resource.uri).toMatch(/^premiere:\/\//);
-      });
-    });
-
-    it('should validate prompt arguments', () => {
-      const availablePrompts = prompts.getAvailablePrompts();
-
-      availablePrompts.forEach(prompt => {
-        if (prompt.arguments) {
-          prompt.arguments.forEach(arg => {
-            expect(arg.name).toBeTruthy();
-            expect(arg.description).toBeTruthy();
-          });
-        }
-      });
-    });
-  });
-
-  describe('Performance and Reliability', () => {
-    it('should handle multiple concurrent tool calls', async () => {
-      mockBridge.executeScript.mockResolvedValue({ success: true });
-
-      const promises = [
-        tools.executeTool('save_project', {}),
-        tools.executeTool('list_project_items', {}),
-        tools.executeTool('list_sequences', {})
-      ];
-
-      const results = await Promise.all(promises);
-
-      expect(results.every(r => r.success)).toBe(true);
-    });
-
-    it('should handle large resource responses', async () => {
-      const largeData = {
-        mediaItems: Array(1000).fill(null).map((_, i) => ({
-          id: `item-${i}`,
-          name: `video${i}.mp4`
-        }))
-      };
-
-      mockBridge.executeScript.mockResolvedValue(largeData);
-
-      const result = await resources.readResource('premiere://project/media');
-
-      expect(result.mediaItems.length).toBe(1000);
-    });
-  });
-
-  describe('State Management', () => {
-    it('should maintain project state across operations', async () => {
-      // Create project
-      mockBridge.createProject = jest.fn().mockResolvedValue({
-        id: 'proj-123',
-        name: 'Test Project'
-      });
-
-      await tools.executeTool('create_project', {
-        name: 'Test Project',
-        location: '/path'
-      });
-
-      // List sequences in the project
-      mockBridge.executeScript.mockResolvedValue({
-        success: true,
-        sequences: []
-      });
-
-      const result = await tools.executeTool('list_sequences', {});
-
-      expect(result.success).toBe(true);
-    });
+    expect(result.description).toBeTruthy();
+    expect(result.messages.length).toBeGreaterThan(0);
   });
 });

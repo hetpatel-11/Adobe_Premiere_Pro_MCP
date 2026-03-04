@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { PremiereProBridge } from '../bridge/index.js';
 import { Logger } from '../utils/logger.js';
+import { createMotionDemoAssets } from '../utils/demoAssets.js';
 
 export interface MCPTool {
   name: string;
@@ -51,6 +52,42 @@ export class PremiereProTools {
         name: 'get_project_info',
         description: 'Gets comprehensive information about the current project including name, path, settings, and status.',
         inputSchema: z.object({})
+      },
+      {
+        name: 'build_motion_graphics_demo',
+        description: 'Generates clean demo stills, creates a sequence, lays the shots out on the timeline, adds dissolves, and applies subtle scale animation for a polished minimalist ad-style demo.',
+        inputSchema: z.object({
+          sequenceName: z.string().optional().describe('Optional sequence name. Defaults to "Apple Like Motion Demo".')
+        })
+      },
+      {
+        name: 'assemble_product_spot',
+        description: 'Builds a production-oriented promo timeline from real media assets by importing them, creating a sequence, laying them out in order, adding transitions, and applying simple motion treatment. This is useful for rough cuts, product promos, and ad assembly from existing assets.',
+        inputSchema: z.object({
+          sequenceName: z.string().describe('Name for the new sequence'),
+          assetPaths: z.array(z.string()).min(1).describe('Absolute paths to video or image assets in playback order'),
+          clipDuration: z.number().optional().describe('Default placement duration in seconds for stills and rough spacing for assets. Defaults to 4.0'),
+          videoTrackIndex: z.number().optional().describe('Target video track index. Defaults to 0'),
+          transitionName: z.string().optional().describe('Transition to apply between adjacent clips. Defaults to "Cross Dissolve"'),
+          transitionDuration: z.number().optional().describe('Transition duration in seconds. Defaults to 0.5'),
+          motionStyle: z.enum(['push_in', 'pull_out', 'alternate', 'none']).optional().describe('Simple scale animation style. Defaults to "alternate"')
+        })
+      },
+      {
+        name: 'build_brand_spot_from_mogrt_and_assets',
+        description: 'Builds a more polished ad assembly from real media assets, then optionally layers in a supplied MOGRT title card and applies a light finishing pass. This is the practical workflow for reusable branded promos when you already have source media and motion templates.',
+        inputSchema: z.object({
+          sequenceName: z.string().describe('Name for the new sequence'),
+          assetPaths: z.array(z.string()).min(1).describe('Absolute paths to source assets in edit order'),
+          mogrtPath: z.string().optional().describe('Optional absolute path to a .mogrt title or branding template'),
+          clipDuration: z.number().optional().describe('Default spacing in seconds for asset placement. Defaults to 4.0'),
+          videoTrackIndex: z.number().optional().describe('Base video track for the main assets. Defaults to 0'),
+          titleTrackIndex: z.number().optional().describe('Video track for the optional MOGRT overlay. Defaults to 1'),
+          titleStartTime: z.number().optional().describe('Timeline start time in seconds for the optional MOGRT. Defaults to 0.4'),
+          transitionName: z.string().optional().describe('Transition to apply between adjacent clips. Defaults to "Cross Dissolve"'),
+          transitionDuration: z.number().optional().describe('Transition duration in seconds. Defaults to 0.5'),
+          motionStyle: z.enum(['push_in', 'pull_out', 'alternate', 'none']).optional().describe('Simple scale animation style. Defaults to "alternate"')
+        })
       },
 
       // Project Management
@@ -195,14 +232,6 @@ export class PremiereProTools {
           clipId: z.string().describe('The ID of the clip to apply the effect to'),
           effectName: z.string().describe('The name of the effect to apply (e.g., "Gaussian Blur", "Lumetri Color")'),
           parameters: z.record(z.any()).optional().describe('Key-value pairs for the effect\'s parameters')
-        })
-      },
-      {
-        name: 'remove_effect',
-        description: 'Removes an effect from a clip.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip'),
-          effectName: z.string().describe('The name of the effect to remove')
         })
       },
       {
@@ -417,23 +446,6 @@ export class PremiereProTools {
         })
       },
 
-      // Nested Sequences
-      {
-        name: 'create_nested_sequence',
-        description: 'Creates a nested sequence from selected clips.',
-        inputSchema: z.object({
-          clipIds: z.array(z.string()).describe('Array of clip IDs to nest'),
-          name: z.string().describe('Name for the nested sequence')
-        })
-      },
-      {
-        name: 'unnest_sequence',
-        description: 'Breaks apart a nested sequence into individual clips.',
-        inputSchema: z.object({
-          nestedSequenceClipId: z.string().describe('The ID of the nested sequence clip')
-        })
-      },
-
       // Additional Clip Operations
       {
         name: 'duplicate_clip',
@@ -527,7 +539,7 @@ export class PremiereProTools {
       },
       {
         name: 'get_render_queue_status',
-        description: 'Gets the status of items in the render queue.',
+        description: 'Reports whether render queue monitoring is available. This currently returns guidance for Adobe Media Encoder rather than live queue telemetry.',
         inputSchema: z.object({})
       },
 
@@ -954,6 +966,31 @@ export class PremiereProTools {
           return await this.listSequenceTracks(args.sequenceId);
         case 'get_project_info':
           return await this.getProjectInfo();
+        case 'build_motion_graphics_demo':
+          return await this.buildMotionGraphicsDemo(args.sequenceName);
+        case 'assemble_product_spot':
+          return await this.assembleProductSpot(args as {
+            sequenceName: string;
+            assetPaths: string[];
+            clipDuration?: number;
+            videoTrackIndex?: number;
+            transitionName?: string;
+            transitionDuration?: number;
+            motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
+          });
+        case 'build_brand_spot_from_mogrt_and_assets':
+          return await this.buildBrandSpotFromMogrtAndAssets(args as {
+            sequenceName: string;
+            assetPaths: string[];
+            mogrtPath?: string;
+            clipDuration?: number;
+            videoTrackIndex?: number;
+            titleTrackIndex?: number;
+            titleStartTime?: number;
+            transitionName?: string;
+            transitionDuration?: number;
+            motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
+          });
 
         // Project Management
         case 'create_project':
@@ -1406,6 +1443,296 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
+  private async buildMotionGraphicsDemo(sequenceName = 'Apple Like Motion Demo'): Promise<any> {
+    const assetBase = process.env.PREMIERE_TEMP_DIR || '/tmp';
+    const assetDir = `${assetBase.replace(/\/$/, '')}/motion-demo-${Date.now()}`;
+    const assets = await createMotionDemoAssets(assetDir);
+
+    const createdSequence = await this.createSequence(sequenceName);
+    if (!createdSequence.success || !createdSequence.id) {
+      return {
+        success: false,
+        error: createdSequence.error || 'Failed to create demo sequence',
+        assetDir,
+        assets
+      };
+    }
+
+    const imported = [];
+    for (const asset of assets) {
+      const result = await this.importMedia(asset.path);
+      imported.push(result);
+      if (!result.success || !result.id) {
+        return {
+          success: false,
+          error: result.error || `Failed to import asset ${asset.name}`,
+          assetDir,
+          assets,
+          createdSequence,
+          imported
+        };
+      }
+    }
+
+    const placements = [];
+    for (let index = 0; index < imported.length; index++) {
+      const placement = await this.addToTimeline(createdSequence.id, imported[index].id, 0, index * 5);
+      placements.push(placement);
+      if (!placement.success) {
+        return {
+          success: false,
+          error: placement.error || `Failed to place ${imported[index].name} on the timeline`,
+          assetDir,
+          assets,
+          createdSequence,
+          imported,
+          placements
+        };
+      }
+    }
+
+    const clips = placements.map((placement: any) => placement.id).filter(Boolean);
+    const transitions = [];
+    if (clips[0]) {
+      transitions.push(await this.addTransitionToClip(clips[0], 'Cross Dissolve', 'end', 0.75));
+    }
+    if (clips[1]) {
+      transitions.push(await this.addTransitionToClip(clips[1], 'Cross Dissolve', 'end', 0.75));
+    }
+
+    const animations = [];
+    const scaleFrames = [
+      { start: 0, end: 4.8, from: 100, to: 108 },
+      { start: 5.005, end: 9.8, from: 112, to: 100 },
+      { start: 10.01, end: 14.7, from: 100, to: 106 },
+    ];
+    for (let index = 0; index < clips.length && index < scaleFrames.length; index++) {
+      const frame = scaleFrames[index];
+      if (!frame) {
+        continue;
+      }
+      animations.push(await this.addKeyframe(clips[index], 'Motion', 'Scale', frame.start, frame.from));
+      animations.push(await this.addKeyframe(clips[index], 'Motion', 'Scale', frame.end, frame.to));
+    }
+
+    const tracks = await this.listSequenceTracks(createdSequence.id);
+
+    return {
+      success: true,
+      message: 'Motion graphics demo sequence created',
+      assetDir,
+      assets,
+      sequence: createdSequence,
+      imported,
+      placements,
+      transitions,
+      animations,
+      tracks
+    };
+  }
+
+  private async assembleProductSpot(args: {
+    sequenceName: string;
+    assetPaths: string[];
+    clipDuration?: number;
+    videoTrackIndex?: number;
+    transitionName?: string;
+    transitionDuration?: number;
+    motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
+  }): Promise<any> {
+    const clipDuration = args.clipDuration ?? 4;
+    const videoTrackIndex = args.videoTrackIndex ?? 0;
+    const transitionName = args.transitionName || 'Cross Dissolve';
+    const transitionDuration = args.transitionDuration ?? 0.5;
+    const motionStyle = args.motionStyle || 'alternate';
+
+    const createdSequence = await this.createSequence(args.sequenceName);
+    if (!createdSequence.success || !createdSequence.id) {
+      return {
+        success: false,
+        error: createdSequence.error || 'Failed to create sequence',
+        sequenceName: args.sequenceName
+      };
+    }
+
+    const imported = [];
+    for (const assetPath of args.assetPaths) {
+      const result = await this.importMedia(assetPath);
+      imported.push(result);
+      if (!result.success || !result.id) {
+        return {
+          success: false,
+          error: result.error || `Failed to import ${assetPath}`,
+          sequence: createdSequence,
+          imported
+        };
+      }
+    }
+
+    const placements = [];
+    for (let index = 0; index < imported.length; index++) {
+      const placementTime = index * clipDuration;
+      const result = await this.addToTimeline(
+        createdSequence.id,
+        imported[index].id,
+        videoTrackIndex,
+        placementTime,
+      );
+      placements.push(result);
+      if (!result.success || !result.id) {
+        return {
+          success: false,
+          error: result.error || `Failed to place ${imported[index].name} on the timeline`,
+          sequence: createdSequence,
+          imported,
+          placements
+        };
+      }
+    }
+
+    const transitions = [];
+    for (let index = 0; index < placements.length - 1; index++) {
+      transitions.push(
+        await this.addTransitionToClip(
+          placements[index].id,
+          transitionName,
+          'end',
+          transitionDuration,
+        ),
+      );
+    }
+
+    const animations = [];
+    if (motionStyle !== 'none') {
+      for (let index = 0; index < placements.length; index++) {
+        const placement = placements[index];
+        const start = placement.inPoint ?? index * clipDuration;
+        const end = Math.max(start + 0.1, (placement.outPoint ?? (start + clipDuration)) - 0.1);
+
+        let from = 100;
+        let to = 106;
+        if (motionStyle === 'push_in') {
+          from = 100;
+          to = 108;
+        } else if (motionStyle === 'pull_out') {
+          from = 108;
+          to = 100;
+        } else if (motionStyle === 'alternate') {
+          const invert = index % 2 === 1;
+          from = invert ? 110 : 100;
+          to = invert ? 100 : 108;
+        }
+
+        animations.push(await this.addKeyframe(placement.id, 'Motion', 'Scale', start, from));
+        animations.push(await this.addKeyframe(placement.id, 'Motion', 'Scale', end, to));
+      }
+    }
+
+    const tracks = await this.listSequenceTracks(createdSequence.id);
+
+    return {
+      success: true,
+      message: 'Product spot assembled successfully',
+      sequence: createdSequence,
+      imported,
+      placements,
+      transitions,
+      animations,
+      tracks
+    };
+  }
+
+  private async buildBrandSpotFromMogrtAndAssets(args: {
+    sequenceName: string;
+    assetPaths: string[];
+    mogrtPath?: string;
+    clipDuration?: number;
+    videoTrackIndex?: number;
+    titleTrackIndex?: number;
+    titleStartTime?: number;
+    transitionName?: string;
+    transitionDuration?: number;
+    motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
+  }): Promise<any> {
+    const assemblyArgs: {
+      sequenceName: string;
+      assetPaths: string[];
+      clipDuration?: number;
+      videoTrackIndex?: number;
+      transitionName?: string;
+      transitionDuration?: number;
+      motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
+    } = {
+      sequenceName: args.sequenceName,
+      assetPaths: args.assetPaths,
+    };
+    if (args.clipDuration !== undefined) {
+      assemblyArgs.clipDuration = args.clipDuration;
+    }
+    if (args.videoTrackIndex !== undefined) {
+      assemblyArgs.videoTrackIndex = args.videoTrackIndex;
+    }
+    if (args.transitionName !== undefined) {
+      assemblyArgs.transitionName = args.transitionName;
+    }
+    if (args.transitionDuration !== undefined) {
+      assemblyArgs.transitionDuration = args.transitionDuration;
+    }
+    if (args.motionStyle !== undefined) {
+      assemblyArgs.motionStyle = args.motionStyle;
+    }
+
+    const assembly = await this.assembleProductSpot(assemblyArgs);
+
+    if (!assembly.success || !assembly.sequence?.id) {
+      return assembly;
+    }
+
+    const overlays = [];
+    if (args.mogrtPath) {
+      overlays.push(await this.importMogrt(
+        assembly.sequence.id,
+        args.mogrtPath,
+        args.titleStartTime ?? 0.4,
+        args.titleTrackIndex ?? 1,
+        0,
+      ));
+    } else {
+      overlays.push({
+        success: true,
+        skipped: true,
+        note: 'No MOGRT supplied; brand title overlay was skipped'
+      });
+    }
+
+    const polish = [];
+    const placedClips = Array.isArray(assembly.placements) ? assembly.placements : [];
+    const middleIndex = Math.floor(placedClips.length / 2);
+    if (placedClips[middleIndex]?.id) {
+      polish.push(await this.applyEffect(placedClips[middleIndex].id, 'Gaussian Blur'));
+    }
+    const lastClip = placedClips[placedClips.length - 1];
+    if (lastClip?.id) {
+      polish.push(await this.colorCorrect(lastClip.id, {
+        clipId: lastClip.id,
+        brightness: 4,
+        contrast: 8,
+        saturation: 6
+      }));
+    }
+
+    const refreshedTracks = await this.listSequenceTracks(assembly.sequence.id);
+
+    return {
+      success: true,
+      ...assembly,
+      message: 'Brand spot assembled successfully',
+      overlays,
+      polish,
+      tracks: refreshedTracks
+    };
+  }
+
   // Project Management Implementation
   private async createProject(name: string, location: string): Promise<any> {
     try {
@@ -1483,7 +1810,14 @@ export class PremiereProTools {
   // Media Management Implementation
   private async importMedia(filePath: string, binName?: string): Promise<any> {
     try {
-      const result = await this.bridge.importMedia(filePath);
+      const result: any = await this.bridge.importMedia(filePath);
+      if (!result.success) {
+        return {
+          ...result,
+          filePath: filePath,
+          binName: binName || 'Root'
+        };
+      }
       return {
         success: true,
         message: `Media imported successfully`,
@@ -1645,7 +1979,17 @@ export class PremiereProTools {
   // Timeline Operations Implementation
   private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite'): Promise<any> {
     try {
-      const result = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time);
+      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time);
+      if (!result.success) {
+        return {
+          ...result,
+          sequenceId: sequenceId,
+          projectItemId: projectItemId,
+          trackIndex: trackIndex,
+          time: time,
+          insertMode: insertMode
+        };
+      }
       return {
         success: true,
         message: `Clip added to timeline successfully`,
@@ -2128,7 +2472,60 @@ export class PremiereProTools {
         var sequence = __findSequence("${sequenceId}");
         if (!sequence) sequence = app.project.activeSequence;
         if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
-        sequence.exportFramePNG(${time}, "${outputPath}");
+
+        if (sequence.openInTimeline) {
+          try { sequence.openInTimeline(); } catch (e0) {}
+        }
+
+        app.enableQE();
+        var qeSequence = qe.project.getActiveSequence();
+        if (!qeSequence) {
+          return JSON.stringify({ success: false, error: "QE active sequence not available for frame export" });
+        }
+
+        var methodName = "${format}" === "jpg" ? "exportFrameJPEG" : ("${format}" === "tiff" ? "exportFrameTiff" : "exportFramePNG");
+        if (typeof qeSequence[methodName] !== "function") {
+          return JSON.stringify({
+            success: false,
+            error: "Frame export format '" + "${format}" + "' is not supported by the available Premiere API"
+          });
+        }
+
+        var timeNumber = ${time};
+        var timeString = String(timeNumber);
+        var timeTicks = timeString;
+        try {
+          var exportTime = new Time();
+          exportTime.seconds = timeNumber;
+          timeTicks = exportTime.ticks;
+        } catch (e1) {}
+
+        var exportError = null;
+        function tryExport(arg1, arg2) {
+          try {
+            qeSequence[methodName](arg1, arg2);
+            return true;
+          } catch (e2) {
+            exportError = e2.toString();
+            return false;
+          }
+        }
+
+        var exported =
+          tryExport(timeNumber, "${outputPath}") ||
+          tryExport("${outputPath}", timeNumber) ||
+          tryExport(timeString, "${outputPath}") ||
+          tryExport("${outputPath}", timeString) ||
+          tryExport(timeTicks, "${outputPath}") ||
+          tryExport("${outputPath}", timeTicks);
+
+        if (!exported) {
+          return JSON.stringify({
+            success: false,
+            error: exportError || "Frame export failed"
+          });
+        }
+
         return JSON.stringify({
           success: true,
           message: "Frame exported successfully",

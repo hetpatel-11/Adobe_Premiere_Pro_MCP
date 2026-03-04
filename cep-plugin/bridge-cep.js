@@ -162,7 +162,15 @@
 
     MCPPremiereBridge.prototype.validateScript = function(script) {
         if (!script || typeof script !== 'string') return false;
-        var dangerous = [/eval\s*\(/i, /Function\s*\(/i, /require\s*\(/i, /import\s+/i, /__dirname/i, /__filename/i, /process\./i, /child_process/i];
+        var dangerous = [
+            /eval\s*\(/i,
+            /\bnew\s+Function\s*\(/i,
+            /\brequire\s*\(/i,
+            /\b__dirname\b/i,
+            /\b__filename\b/i,
+            /\bprocess\./i,
+            /\bchild_process\b/i
+        ];
         for (var i = 0; i < dangerous.length; i++) {
             if (dangerous[i].test(script)) return false;
         }

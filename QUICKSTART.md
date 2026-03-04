@@ -1,111 +1,88 @@
-# Quick Start Guide
+# Quick Start
 
-Get Adobe Premiere Pro working with Claude in 5 minutes.
+This is the shortest path to a working install.
 
-## Step 1: Enable CEP Extensions (30 seconds)
-
-Open Terminal and run:
+## Claude Desktop (macOS)
 
 ```bash
-defaults write com.adobe.CSXS.12 PlayerDebugMode 1
-defaults write com.adobe.CSXS.11 PlayerDebugMode 1
-defaults write com.adobe.CSXS.10 PlayerDebugMode 1
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm run setup:mac
 ```
 
-## Step 2: Install the CEP Plugin (1 minute)
+Then do this once inside Premiere Pro:
 
-```bash
-# Navigate to the project
-cd /Users/YOUR_USERNAME/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP
+1. Open `Window > Extensions > MCP Bridge (CEP)`.
+2. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
+3. Click `Save Configuration`.
+4. Click `Start Bridge`.
+5. Click `Test Connection`.
 
-# Install the plugin
-mkdir -p ~/Library/Application\ Support/Adobe/CEP/extensions
-cp -r cep-plugin ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP
+Then restart Claude Desktop and ask:
+
+```text
+What's my current Premiere Pro project info?
 ```
 
-Replace `YOUR_USERNAME` with your actual username!
+## Codex / Claude Code
 
-## Step 3: Build the MCP Server (1 minute)
+Build the server:
 
 ```bash
-# Install dependencies and build
 npm install
 npm run build
 ```
 
-## Step 4: Configure Claude Desktop (1 minute)
+Add the MCP entry on one line:
 
-Edit this file:
-```
-~/Library/Application Support/Claude/claude_desktop_config.json
-```
-
-Add this configuration:
-
-```json
-{
-  "mcpServers": {
-    "premiere-pro": {
-      "command": "node",
-      "args": ["/Users/YOUR_USERNAME/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP/dist/index.js"],
-      "env": {
-        "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge"
-      }
-    }
-  }
-}
+```bash
+codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
 ```
 
-⚠️ **Important:** Replace `/Users/YOUR_USERNAME/` with your actual path!
+Then:
 
-## Step 5: Restart Everything (1 minute)
+1. Restart the client.
+2. Open the Premiere CEP panel.
+3. Confirm the temp directory is `/tmp/premiere-mcp-bridge`.
+4. Click `Start Bridge`.
 
-1. **Quit Claude Desktop** completely (Cmd+Q)
-2. **Quit Premiere Pro** completely (Cmd+Q)
-3. **Reopen both applications**
+## Sanity Checks
 
-## Step 6: Start the Bridge (1 minute)
+Run:
 
-In Premiere Pro:
-
-1. Go to: **Window → Extensions → MCP Bridge (CEP)**
-2. In the panel:
-   - Temp Directory: `/tmp/premiere-mcp-bridge`
-   - Click **"Save Configuration"**
-   - Click **"Start Bridge"**
-   - Click **"Test Connection"**
-
-You should see: ✅ **Premiere Pro connection OK**
-
-## Step 7: Test It! (30 seconds)
-
-In Claude Desktop, ask:
-
-```
-"What's my current Premiere Pro project info?"
+```bash
+npm run setup:doctor
 ```
 
-If Claude responds with your project details, **you're done!** 🎉
+For a real end-to-end verification, use a scratch project and run:
 
-## Common Issues
+```bash
+node scripts/live-tool-sweep.mjs
+```
 
-### Plugin doesn't appear in Premiere Pro?
-- Restart Premiere Pro completely
-- Check if plugin is installed: `ls ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP/`
+That sweep creates disposable `Sweep ...` sequences so the live bridge is actually exercised.
 
-### Claude doesn't see the tools?
-- Restart Claude Desktop completely
-- Check the config file path is correct
-- Make sure you replaced `YOUR_USERNAME` with your actual username
+## Common Failure Cases
 
-### Connection test fails?
-- Make sure Premiere Pro has a project open
-- Make sure temp directory is exactly `/tmp/premiere-mcp-bridge`
-- Reload the CEP panel: right-click → Reload
+### The client sees the MCP server but tool calls fail
 
-### Still stuck?
-See the full README.md for detailed troubleshooting.
+- Premiere is not open
+- no project is open
+- the CEP panel is not started
+- the temp directory in the panel is not `/tmp/premiere-mcp-bridge`
+- the panel needs a right-click `Reload` after bridge updates
 
----
+### `codex mcp add` fails
 
-**Next:** See README.md for example usage and all available features!
+- the command was split across lines
+- the path to `dist/index.js` is wrong
+- the client was not restarted after config changes
+
+### `setup:doctor` fails
+
+- the CEP extension is not installed
+- `dist/index.js` was not built
+- Adobe CEP debug mode is disabled
+- the Claude Desktop config entry points to the wrong path
+
+For the full release notes and current limits, see `README.md` and `KNOWN_ISSUES.md`.

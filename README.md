@@ -1,342 +1,204 @@
 # Adobe Premiere Pro MCP Server
 
-Control Adobe Premiere Pro with natural language through Claude using the Model Context Protocol (MCP).
+Control Adobe Premiere Pro through MCP using Claude Desktop, Claude Code, or Codex.
 
 <a href="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP/badge" alt="Adobe Premiere Pro MCP server" />
 </a>
 
-## What This Does
+## Current Status
 
-This MCP server lets you control Premiere Pro by talking to Claude. With **97 tools** covering project management, timeline editing, effects, transitions, audio, color correction, markers, keyframes, export, and more:
+This repository is currently validated for:
 
-- "Add cross dissolves between all clips on track 1"
-- "List all sequences and their track counts"
-- "Apply Lumetri Color to the first clip"
-- "Set the playhead to 30 seconds"
-- "Find all clips named 'interview' in the project"
-- "Export the sequence as FCP XML"
+- macOS
+- Adobe Premiere Pro 2020+
+- Node.js 18+
+- Claude Desktop with the included installer
+- Claude Code / Codex with a manual MCP entry
 
-## Demo
+Current local validation as of March 4, 2026:
 
-![Adobe Premiere Pro MCP in Action](images/demo.png)
+- `97` tools are exposed
+- `43` tools were live-executed against a real Premiere session
+- `50` tools were schema-validated in the same sweep
+- `3` destructive no-arg tools were intentionally skipped (`save_project`, `undo`, `consolidate_duplicates`)
+- `1` live runtime limitation remains: `get_render_queue_status` requires Adobe Media Encoder integration
 
-*MCP Bridge (CEP) panel in Premiere Pro showing **Connected** and **Premiere Pro: Ready**, with Claude successfully retrieving project info via natural language.*
+The full live sweep output is written to `/tmp/premiere-mcp-bridge/live-tool-sweep.json` when you run the verifier.
 
-## Quick Start
+## What You Get
 
-### Prerequisites
+The server covers project operations, ingest, sequence creation, timeline editing, transitions, effects, keyframes, metadata, exports, and higher-level assembly workflows.
 
-- **macOS** (Windows support coming soon)
-- **Adobe Premiere Pro** 2020 or later
-- **Claude Desktop** or **Claude Code**
-- **Node.js** 18+
+Example prompts:
 
-### Installation
+- "List all sequences and show me which one is active."
+- "Import these three shots and build a rough product spot."
+- "Add cross dissolves to every cut on video track 1."
+- "Apply Gaussian Blur to the middle clip."
+- "Export the active sequence as FCP XML."
 
-**1. Clone and build:**
+High-level workflow tools included:
+
+- `build_motion_graphics_demo`
+- `assemble_product_spot`
+- `build_brand_spot_from_mogrt_and_assets`
+
+## Fastest Install (Claude Desktop on macOS)
 
 ```bash
-git clone https://github.com/dpiers/Adobe_Premiere_Pro_MCP.git
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
 cd Adobe_Premiere_Pro_MCP
+npm run setup:mac
+```
+
+That installer will:
+
+- install dependencies
+- build `dist/index.js`
+- enable Adobe CEP debug mode
+- install the `MCP Bridge (CEP)` extension
+- create `/tmp/premiere-mcp-bridge`
+- add the `premiere-pro` MCP entry to Claude Desktop
+
+After the installer finishes:
+
+1. Quit and reopen Claude Desktop.
+2. Quit and reopen Premiere Pro.
+3. Open `Window > Extensions > MCP Bridge (CEP)`.
+4. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
+5. Click `Save Configuration`.
+6. Click `Start Bridge`.
+7. Click `Test Connection`.
+
+If the panel reports that Premiere is ready, the bridge is live.
+
+## Claude Code / Codex Setup
+
+The macOS installer only updates Claude Desktop automatically. For Claude Code or Codex, build locally and add the server yourself.
+
+```bash
 npm install
 npm run build
 ```
 
-**2. Enable CEP extensions:**
+Add the MCP server on a single line:
 
 ```bash
-defaults write com.adobe.CSXS.12 PlayerDebugMode 1
-defaults write com.adobe.CSXS.11 PlayerDebugMode 1
-defaults write com.adobe.CSXS.10 PlayerDebugMode 1
+codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
 ```
 
-**3. Install the CEP plugin:**
+Important:
+
+- keep the command on one line
+- use the real absolute path to `dist/index.js`
+- restart the client after adding or updating the MCP entry
+
+If you use Claude Code config files instead, point your MCP entry at the same `dist/index.js` and set `PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge`.
+
+## Verify the Install
+
+Run the built-in checks:
 
 ```bash
-mkdir -p ~/Library/Application\ Support/Adobe/CEP/extensions
-cp -r cep-plugin ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP
+npm run setup:doctor
 ```
 
-**4. Add MCP server config:**
+That validates:
 
-For **Claude Desktop**, edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+- Node.js version
+- built server output
+- CEP extension install
+- `/tmp/premiere-mcp-bridge`
+- Adobe CEP debug mode
+- Claude Desktop config entry
 
-```json
-{
-  "mcpServers": {
-    "premiere-pro": {
-      "command": "node",
-      "args": ["/path/to/Adobe_Premiere_Pro_MCP/dist/index.js"],
-      "env": {
-        "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge"
-      }
-    }
-  }
-}
+For a deeper end-to-end check, use a disposable Premiere project and run:
+
+```bash
+node scripts/live-tool-sweep.mjs
 ```
 
-For **Claude Code**, add to `~/.claude/settings.json` or your project's `.mcp.json`.
+This creates temporary `Sweep ...` sequences in the currently open project so the toolchain is exercised against real data.
 
-**5. Restart Claude and Premiere Pro**, then open the CEP panel:
+## How the Bridge Works
 
-1. **Window > Extensions > MCP Bridge (CEP)**
-2. Set **Temp Directory** to `/tmp/premiere-mcp-bridge`
-3. Click **Save Configuration**, then **Start Bridge**
-
-**6. Test:** Ask Claude *"What's my current Premiere Pro project info?"*
-
-## How It Works
-
-```
+```text
 +-----------+        +-----------+        +-----------+
-|  Claude   |  MCP   | Node.js   | Files  | CEP Plugin|
-|  Desktop  |<------>| MCP Server|<------>| (Premiere)|
+|  Client   |  MCP   | Node.js   | Files  | CEP Panel |
+| (Claude)  |<------>| MCP Server|<------>| (Premiere)|
 +-----------+        +-----------+        +-----------+
                                                  |
                                                  v
                                           +-----------+
                                           | Premiere  |
-                                          | ExtendScript
+                                          | DOM / QE  |
                                           +-----------+
 ```
 
-1. Claude calls an MCP tool (e.g. `batch_add_transitions`)
-2. MCP server generates an ExtendScript with helper functions prepended
-3. Script is written to a command file in the temp directory
-4. CEP plugin polls for command files, wraps in IIFE, executes via `CSInterface.evalScript()`
-5. Result is written to a response file, returned to Claude
+1. The client calls an MCP tool.
+2. The Node server generates ExtendScript plus shared helpers.
+3. The script is written into `/tmp/premiere-mcp-bridge`.
+4. The CEP panel polls that directory and runs the script through `CSInterface.evalScript()`.
+5. The panel writes the result back to the response file.
+6. The server returns structured JSON to the MCP client.
 
-### ExtendScript Helpers
+## Tool Coverage
 
-Every script gets these helpers auto-prepended by the bridge:
+The `97` exposed tools are grouped roughly like this:
 
-- `__findSequence(id)` - Find sequence by ID (replaces non-existent `getSequenceByID`)
-- `__findClip(nodeId)` - Find clip across all tracks with track/index info
-- `__findProjectItem(nodeId)` - Recursive project item lookup
-- `__ticksToSeconds(ticks)` / `__secondsToTicks(seconds)` - Time conversion
+- Discovery and project inspection
+- Project and sequence management
+- Media import and bin management
+- Timeline placement and clip operations
+- Effects, transitions, color, and keyframes
+- Markers, metadata, labels, and work-area control
+- Export and interchange helpers
+- MOGRT, captions, proxies, and relink helpers
+- High-level ad / promo assembly workflows
 
-### QE DOM
+Use MCP introspection in your client to see the full tool catalog and exact schemas.
 
-Tools that need the QE DOM (effects, transitions, razor/split) call `app.enableQE()` and use `qe.project` for operations not available in the standard DOM.
+## Real Limits
 
-## Available Tools (97)
+This project is much more usable than the original prototype, but it is not magic.
 
-### Discovery & Project Info
-| Tool | Description |
-|------|-------------|
-| `list_project_items` | List all media items, bins, and assets |
-| `list_sequences` | List all sequences with properties |
-| `list_sequence_tracks` | List tracks and clips in a sequence |
-| `get_project_info` | Get project name, path, status |
-| `find_project_item_by_name` | Search for items by name |
-| `get_active_sequence` | Get the currently active sequence |
-| `get_clip_properties` | Get detailed clip properties |
-| `get_clip_at_position` | Find clip at a specific time on a track |
-| `get_selected_clips` | Get currently selected clips |
-| `get_sequence_settings` | Get sequence resolution, framerate, etc. |
-
-### Project Management
-| Tool | Description |
-|------|-------------|
-| `create_project` | Create a new project |
-| `open_project` | Open an existing project |
-| `save_project` | Save the current project |
-| `save_project_as` | Save with a new name/location |
-| `set_active_sequence` | Switch the active sequence |
-| `consolidate_duplicates` | Clean up duplicate media |
-| `undo` | Programmatic undo |
-
-### Media Management
-| Tool | Description |
-|------|-------------|
-| `import_media` | Import a media file |
-| `import_folder` | Import all files from a folder |
-| `create_bin` | Create a bin (folder) |
-| `move_item_to_bin` | Move items between bins |
-| `relink_media` | Relink offline media to new path |
-| `refresh_media` | Force-refresh media from disk |
-| `check_offline_media` | Scan for offline/missing media |
-| `import_sequences_from_project` | Import sequences from another project |
-
-### Sequence Management
-| Tool | Description |
-|------|-------------|
-| `create_sequence` | Create a new sequence |
-| `duplicate_sequence` | Clone a sequence |
-| `delete_sequence` | Delete a sequence |
-| `set_sequence_settings` | Update sequence settings |
-| `create_subsequence` | Create subsequence from current state |
-| `auto_reframe_sequence` | AI-powered reframe to new aspect ratio |
-
-### Timeline Operations
-| Tool | Description |
-|------|-------------|
-| `add_to_timeline` | Add a clip to the timeline |
-| `remove_from_timeline` | Remove a clip (ripple or lift) |
-| `move_clip` | Move a clip to a new position |
-| `trim_clip` | Adjust in/out points |
-| `split_clip` | Split a clip at a time point (QE razor) |
-| `duplicate_clip` | Duplicate a clip on the timeline |
-| `replace_clip` | Replace a clip with different media |
-| `enable_disable_clip` | Enable or disable a clip |
-| `reverse_clip` | Reverse clip playback |
-| `link_audio_video` | Link/unlink A/V components |
-| `set_clip_properties` | Set opacity, scale, rotation |
-
-### Effects & Color (QE DOM)
-| Tool | Description |
-|------|-------------|
-| `apply_effect` | Apply a video or audio effect |
-| `remove_effect` | Check if effect exists (removal unsupported) |
-| `apply_audio_effect` | Apply an audio effect |
-| `list_available_effects` | List all installed video effects |
-| `list_available_audio_effects` | List all installed audio effects |
-| `color_correct` | Apply Lumetri Color with adjustments |
-| `apply_lut` | Apply a LUT file for color grading |
-| `stabilize_clip` | Apply Warp Stabilizer |
-| `speed_change` | Change clip playback speed |
-
-### Transitions (QE DOM)
-| Tool | Description |
-|------|-------------|
-| `add_transition` | Add transition between two clips |
-| `add_transition_to_clip` | Add transition to clip start or end |
-| `batch_add_transitions` | Add transitions to ALL clips on a track |
-| `list_available_transitions` | List all installed video transitions |
-| `list_available_audio_transitions` | List all installed audio transitions |
-
-### Audio
-| Tool | Description |
-|------|-------------|
-| `adjust_audio_levels` | Set clip volume |
-| `add_audio_keyframes` | Add volume keyframes |
-| `mute_track` | Mute/unmute an audio track |
-
-### Keyframes
-| Tool | Description |
-|------|-------------|
-| `add_keyframe` | Add a keyframe to any component parameter |
-| `remove_keyframe` | Remove a keyframe |
-| `get_keyframes` | List all keyframes for a parameter |
-
-### Text & Graphics
-| Tool | Description |
-|------|-------------|
-| `add_text_overlay` | Add text via MOGRT template |
-| `import_mogrt` | Import a Motion Graphics Template |
-| `import_mogrt_from_library` | Import MOGRT from CC Libraries |
-
-### Markers
-| Tool | Description |
-|------|-------------|
-| `add_marker` | Add a marker to the timeline |
-| `delete_marker` | Delete a marker |
-| `update_marker` | Update marker properties |
-| `list_markers` | List all markers in a sequence |
-
-### Track Management
-| Tool | Description |
-|------|-------------|
-| `add_track` | Add a video or audio track |
-| `delete_track` | Delete a track |
-| `lock_track` | Lock/unlock a track |
-| `toggle_track_visibility` | Show/hide a video track |
-
-### Playhead & Work Area
-| Tool | Description |
-|------|-------------|
-| `get_playhead_position` | Get current playhead position |
-| `set_playhead_position` | Move the playhead |
-| `set_work_area` | Set work area in/out points |
-| `get_work_area` | Get work area bounds |
-| `set_sequence_in_out_points` | Set sequence in/out points |
-| `get_sequence_in_out_points` | Get sequence in/out points |
-
-### Metadata & Labels
-| Tool | Description |
-|------|-------------|
-| `get_metadata` | Get project and XMP metadata |
-| `set_metadata` | Set project metadata |
-| `set_color_label` | Set color label (0-15) |
-| `get_color_label` | Get color label |
-| `get_footage_interpretation` | Get footage interpretation settings |
-| `set_footage_interpretation` | Set frame rate, pixel aspect ratio |
-
-### Export & Interchange
-| Tool | Description |
-|------|-------------|
-| `export_sequence` | Export/render a sequence |
-| `export_frame` | Export a single frame as image |
-| `export_as_fcp_xml` | Export as Final Cut Pro XML |
-| `export_aaf` | Export AAF for Pro Tools |
-| `add_to_render_queue` | Add to Media Encoder queue |
-| `get_render_queue_status` | Check render queue status |
-
-### Advanced
-| Tool | Description |
-|------|-------------|
-| `detect_scene_edits` | Detect scene changes in clips |
-| `create_caption_track` | Create captions from SRT file |
-| `create_subclip` | Create subclip with in/out points |
-| `create_nested_sequence` | Nest clips into a sequence |
-| `unnest_sequence` | Break apart a nested sequence |
-| `manage_proxies` | Check/attach/get proxy media |
+- Premiere scripting still does not expose every UI operation cleanly.
+- Professional title design still depends on real MOGRT assets or external graphics workflows.
+- `get_render_queue_status` is only useful when Adobe Media Encoder integration is available.
+- The best results come from real source footage, real audio, and real brand assets. The automation layer assembles and manipulates them; it does not replace editorial judgment.
 
 ## Troubleshooting
 
-### CEP Plugin doesn't appear
+If the tools are visible but calls fail:
 
-**Enable UXP developer mode (required on newer Premiere Pro versions)**
+1. Confirm Premiere Pro is open with a project loaded.
+2. Open `Window > Extensions > MCP Bridge (CEP)`.
+3. Confirm the temp directory is exactly `/tmp/premiere-mcp-bridge`.
+4. Click `Start Bridge`.
+5. If you updated the bridge code, right-click the panel and choose `Reload`.
+6. Retry the command.
 
-Go to **Premiere Pro → Preferences → Plugins** and check **"Enable developer mode"**. Restart Premiere Pro after enabling it.
+If the MCP client cannot find the server:
 
-![Enable UXP developer mode in Preferences → Plugins](images/uxp-developer-mode.png)
+1. Verify the absolute path to `dist/index.js`.
+2. Verify `PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge`.
+3. Restart the MCP client after changing config.
+4. Run `npm run setup:doctor`.
+
+## Developer Notes
+
+Useful commands:
 
 ```bash
-# Verify PlayerDebugMode
-defaults read com.adobe.CSXS.12 PlayerDebugMode  # Should return: 1
-
-# Verify plugin is installed
-ls ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP/
+npm run build
+npm test -- --runInBand
+npm run setup:doctor
+node scripts/live-tool-sweep.mjs
 ```
 
-Then restart Premiere Pro completely.
+See:
 
-### Commands timeout
-
-1. CEP panel should show "Connected" - click **Start Bridge** if not
-2. Verify temp directory paths match in both CEP panel and MCP config
-3. Make sure a project is open in Premiere Pro
-
-### Claude can't see tools
-
-Restart Claude Desktop/Code completely and verify the config path to `dist/index.js` is correct.
-
-## Technical Details
-
-### Why CEP instead of UXP?
-
-CEP has full ExtendScript support in Premiere Pro. UXP support is limited and doesn't provide ExtendScript execution. CEP works on Premiere Pro 2020-2025.
-
-### ExtendScript Compatibility
-
-ExtendScript is ES3 (JavaScript 1.5), so all generated scripts use `var`, manual loops, and no modern syntax. The bridge prepends helper functions to every script for sequence/clip/item lookup.
-
-### Security
-
-- Scripts validated before execution (no `eval`, `require`, `import`, etc.)
-- 500KB script size limit
-- Temp directory restricted to owner (mode 700)
-
-## License
-
-MIT License - See LICENSE.md
-
-## Contributing
-
-Contributions welcome! Please fork, create a feature branch, test with Premiere Pro, and submit a pull request.
-
----
-
-**Built with the Model Context Protocol** | [Claude Desktop](https://claude.ai/download) | [MCP Documentation](https://modelcontextprotocol.io)
+- `QUICKSTART.md` for the shortest install path
+- `KNOWN_ISSUES.md` for current limits
+- `CONTRIBUTING.md` for development workflow

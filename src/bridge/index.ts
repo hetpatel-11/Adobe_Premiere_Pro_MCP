@@ -113,6 +113,7 @@ export class PremiereProBridge {
   private logger: Logger;
   private communicationMethod: 'uxp' | 'extendscript' | 'file';
   private tempDir: string;
+  private readonly usesExternalTempDir: boolean;
   private uxpProcess?: ChildProcess;
   private isInitialized = false;
   private sessionId: string;
@@ -123,6 +124,7 @@ export class PremiereProBridge {
     this.sessionId = uuidv4();
     // Use PREMIERE_TEMP_DIR if set (same path as UXP plugin "Temp Directory"), else session-specific
     const envDir = process.env.PREMIERE_TEMP_DIR;
+    this.usesExternalTempDir = Boolean(envDir);
     this.tempDir = envDir ? envDir.replace(/\/$/, '') : createSecureTempDir(this.sessionId);
   }
 
@@ -296,7 +298,16 @@ export class PremiereProBridge {
     const safePath = pathValidation.normalized || filePath;
     const script = `
       try {
-        // Import media file
+        function __walkItems(parent, output) {
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var child = parent.children[i];
+            output.push(child);
+            if (child.type === ProjectItemType.BIN) {
+              __walkItems(child, output);
+            }
+          }
+        }
+
         var file = new File(${JSON.stringify(safePath)});
         if (!file.exists) {
           return JSON.stringify({
@@ -305,17 +316,51 @@ export class PremiereProBridge {
           });
         }
 
-        var importedItems = app.project.importFiles([file.fsName]);
-        if (!importedItems || importedItems.length === 0) {
+        var existingItems = [];
+        __walkItems(app.project.rootItem, existingItems);
+
+        var importResult = app.project.importFiles([file.fsName], true, app.project.rootItem, false);
+        if (!importResult) {
           return JSON.stringify({
             success: false,
             error: "Failed to import file"
           });
         }
 
-        var importedItem = importedItems[0];
+        var afterItems = [];
+        __walkItems(app.project.rootItem, afterItems);
 
-        // Return imported item info
+        var importedItem = null;
+        for (var j = 0; j < afterItems.length; j++) {
+          var candidate = afterItems[j];
+          var alreadyPresent = false;
+          for (var k = 0; k < existingItems.length; k++) {
+            if (existingItems[k].nodeId === candidate.nodeId) {
+              alreadyPresent = true;
+              break;
+            }
+          }
+          if (alreadyPresent) {
+            continue;
+          }
+          try {
+            if (candidate.getMediaPath && candidate.getMediaPath() === file.fsName) {
+              importedItem = candidate;
+              break;
+            }
+          } catch (e) {}
+          if (!importedItem && candidate.name === file.name) {
+            importedItem = candidate;
+          }
+        }
+
+        if (!importedItem) {
+          return JSON.stringify({
+            success: false,
+            error: "Import completed but imported item could not be located"
+          });
+        }
+
         return JSON.stringify({
           success: true,
           id: importedItem.nodeId,
@@ -355,22 +400,56 @@ export class PremiereProBridge {
 
   async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number): Promise<PremiereProClip> {
     const script = `
-      // Add item to timeline
-      var sequence = app.project.getSequenceByID("${sequenceId}");
-      var projectItem = app.project.getProjectItemByID("${projectItemId}");
-      var track = sequence.videoTracks[${trackIndex}];
-      
-      var clip = track.insertClip(projectItem, ${time});
-      
-      // Return clip info
-      return JSON.stringify({
-        id: clip.clipID,
-        name: clip.name,
-        inPoint: clip.start,
-        outPoint: clip.end,
-        duration: clip.duration,
-        mediaPath: clip.projectItem.getMediaPath()
-      });
+      try {
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) {
+          return JSON.stringify({ success: false, error: "Sequence not found" });
+        }
+
+        var projectItem = __findProjectItem("${projectItemId}");
+        if (!projectItem) {
+          return JSON.stringify({ success: false, error: "Project item not found" });
+        }
+
+        var track = sequence.videoTracks[${trackIndex}];
+        if (!track) {
+          return JSON.stringify({ success: false, error: "Video track not found" });
+        }
+
+        track.overwriteClip(projectItem, ${time});
+
+        var placedClip = null;
+        for (var i = 0; i < track.clips.numItems; i++) {
+          var candidate = track.clips[i];
+          if (candidate && candidate.projectItem && candidate.projectItem.nodeId === projectItem.nodeId && Math.abs(candidate.start.seconds - ${time}) < 0.1) {
+            placedClip = candidate;
+            break;
+          }
+        }
+
+        if (!placedClip && track.clips.numItems > 0) {
+          placedClip = track.clips[track.clips.numItems - 1];
+        }
+
+        if (!placedClip) {
+          return JSON.stringify({ success: false, error: "Clip placement did not produce a track item" });
+        }
+
+        return JSON.stringify({
+          success: true,
+          id: placedClip.nodeId,
+          name: placedClip.name,
+          inPoint: placedClip.start.seconds,
+          outPoint: placedClip.end.seconds,
+          duration: placedClip.duration.seconds,
+          mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : ""
+        });
+      } catch (e) {
+        return JSON.stringify({
+          success: false,
+          error: e.toString()
+        });
+      }
     `;
     
     return await this.executeScript(script);
@@ -431,9 +510,12 @@ export class PremiereProBridge {
       this.uxpProcess.kill();
     }
     
-    // Clean up temp directory
+    // Only remove temp dirs created by this server. The shared bridge directory is
+    // configured externally and should persist across restarts.
     try {
-      await fs.rm(this.tempDir, { recursive: true });
+      if (!this.usesExternalTempDir) {
+        await fs.rm(this.tempDir, { recursive: true });
+      }
     } catch (error) {
       this.logger.warn('Failed to clean up temp directory:', error);
     }

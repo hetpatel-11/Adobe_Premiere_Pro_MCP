@@ -1,251 +1,128 @@
-# Contributing to Adobe Premiere Pro MCP
+# Contributing
 
-Thank you for your interest in contributing! This guide will help you get started.
+This project manipulates a live Premiere Pro session. Treat tool contracts and documentation as part of the product, not cleanup work.
 
-## Development Setup
+## Local Setup
 
-1. **Fork and clone the repository**
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-3. **Build the project:**
-   ```bash
-   npm run build
-   ```
-4. **Install the CEP plugin locally** (see QUICKSTART.md)
-
-## Project Structure
-
+```bash
+npm install
+npm run build
 ```
+
+For a full local install on macOS:
+
+```bash
+npm run setup:mac
+```
+
+That installs the CEP extension, builds the server, enables CEP debug mode, and updates Claude Desktop config.
+
+## Core Development Loop
+
+Use this order:
+
+1. Change TypeScript or CEP code.
+2. Rebuild with `npm run build`.
+3. If you changed `cep-plugin/bridge-cep.js`, reload the panel in Premiere Pro.
+4. Run tests with `npm test -- --runInBand`.
+5. Run a live sweep against a scratch project with `node scripts/live-tool-sweep.mjs`.
+6. Update docs if behavior or setup changed.
+
+Do not ship a new tool that has only been schema-validated if it claims to perform a real edit.
+
+## Project Layout
+
+```text
 src/
-├── index.ts              # MCP server entry point
-├── bridge/
-│   └── index.ts          # Communication bridge logic
-├── tools/
-│   └── index.ts          # MCP tool definitions
-├── resources/
-│   └── index.ts          # MCP resource definitions
-├── prompts/
-│   └── index.ts          # MCP prompt definitions
-└── utils/
-    ├── logger.ts         # Logging utilities
-    └── security.ts       # Security validation
+  index.ts                MCP server entry point
+  bridge/index.ts         File-based bridge and shared helpers
+  tools/index.ts          Tool catalog and implementations
+  resources/index.ts      MCP resources
+  prompts/index.ts        MCP prompts
+  utils/                  Shared helpers
 
 cep-plugin/
-├── index.html            # CEP panel UI
-├── bridge-cep.js         # CEP bridge logic (vanilla JS)
-├── CSInterface.js        # Adobe CEP library
-└── CSXS/manifest.xml     # CEP extension manifest
+  bridge-cep.js           CEP bridge runtime loaded by Premiere
+  index.html              CEP panel UI
+  CSXS/manifest.xml       CEP manifest
+
+scripts/
+  install-macos.sh        macOS installer
+  doctor-macos.sh         local installation verifier
+  uninstall-macos.sh      macOS uninstall helper
+  live-tool-sweep.mjs     end-to-end live tool verifier
 ```
 
-## Making Changes
+## Tool Design Rules
 
-### Adding New MCP Tools
+### 1. Do not advertise fake capabilities
 
-1. **Define the tool in `src/tools/index.ts`:**
-   ```typescript
-   {
-     name: 'my_new_tool',
-     description: 'What this tool does',
-     inputSchema: z.object({
-       param1: z.string().describe('Parameter description'),
-     }),
-   }
-   ```
+If Premiere cannot do something reliably through the available APIs, either:
 
-2. **Implement the handler:**
-   ```typescript
-   case 'my_new_tool':
-     return await this.bridge.executeScript(`
-       // ExtendScript code here
-       var result = app.doSomething();
-       JSON.stringify(result);
-     `);
-   ```
+- do not expose the tool, or
+- expose it with a truthful limitation and a narrow scope
 
-3. **Remember ExtendScript limitations:**
-   - Use `var` not `const`/`let`
-   - No arrow functions
-   - No modern array methods
-   - Manual date formatting (no `toISOString()`)
+Do not return fake success.
 
-### Modifying the CEP Plugin
+### 2. Validate inputs at the schema layer
 
-The CEP plugin uses **vanilla JavaScript** (no build step):
+Every tool must have a Zod schema that rejects incomplete or invalid arguments before the bridge is touched.
 
-1. **Edit `cep-plugin/bridge-cep.js`**
-2. **Copy to installed location:**
-   ```bash
-   cp cep-plugin/bridge-cep.js ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP/
-   ```
-3. **Reload in Premiere Pro:**
-   - Right-click in panel → Reload
-   - Or restart Premiere Pro
+### 3. Keep ExtendScript compatible
 
-### Testing Changes
+Use ExtendScript-safe JavaScript inside generated scripts:
 
-1. **Build the MCP server:**
-   ```bash
-   npm run build
-   ```
+- `var`, not `let` or `const`
+- no arrow functions
+- no modern syntax that ExtendScript does not support
 
-2. **Restart Claude Desktop** (Cmd+Q, then reopen)
+### 4. Prefer truthful errors over silent fallback
 
-3. **Test in Premiere Pro:**
-   - Make sure bridge is started
-   - Ask Claude to use your new tool
-   - Check Activity Log for errors
+If a Premiere API is missing or unsupported, return an explicit error that explains the dependency or limitation.
 
-4. **Run unit tests:**
-   ```bash
-   npm test
-   ```
+## Testing Expectations
 
-## Code Style
+Minimum bar before merging:
 
-- **TypeScript:** Follow existing patterns in `src/`
-- **JavaScript (CEP):** Use ES5 compatible code
-- **Formatting:** Run `npm run format` before committing
-- **Linting:** Run `npm run lint` to check for issues
+- `npm run build`
+- `npm test -- --runInBand`
 
-## ExtendScript Guidelines
+Release bar:
 
-When writing ExtendScript code:
+- `npm run setup:doctor`
+- `node scripts/live-tool-sweep.mjs`
 
-### ✅ DO:
-```javascript
-var items = [];
-for (var i = 0; i < array.length; i++) {
-  items.push(array[i]);
-}
-```
+The live sweep is intentionally mutating. Use a disposable project because it creates `Sweep ...` sequences and imports generated assets.
 
-### ❌ DON'T:
-```javascript
-const items = array.map(item => item.name); // Arrow functions don't work
-```
+## Editing the CEP Bridge
 
-### Date Formatting:
-```javascript
-// ✅ DO:
-var d = new Date();
-var timestamp = d.getFullYear() + "-" + 
-  String(d.getMonth() + 1).replace(/^(\d)$/, "0$1") + "-" + 
-  String(d.getDate()).replace(/^(\d)$/, "0$1");
+The CEP code is loaded directly by Premiere and has no build step.
 
-// ❌ DON'T:
-var timestamp = new Date().toISOString(); // Doesn't exist
-```
+If you change [bridge-cep.js](/Users/hetpatel/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP/cep-plugin/bridge-cep.js):
 
-## Commit Guidelines
+1. Re-run `npm run setup:mac`, or manually copy the updated file into the installed extension.
+2. Right-click the Premiere panel and choose `Reload`, or restart Premiere Pro.
 
-- Use clear, descriptive commit messages
-- Reference issues: `Fix #123: Description`
-- Keep commits focused (one feature/fix per commit)
+If you forget that reload, you are testing stale JavaScript in memory.
 
-Example:
-```
-Add timeline position tool
+## Documentation Rules
 
-- Implement get_playhead_position tool
-- Add set_playhead_position tool
-- Update README with new tools
-```
+When behavior changes:
 
-## Pull Request Process
+- update `README.md` if install, capability, or validation status changed
+- update `QUICKSTART.md` if the shortest working path changed
+- update `KNOWN_ISSUES.md` if a limitation was fixed or newly confirmed
 
-1. **Create a feature branch:**
-   ```bash
-   git checkout -b feature/my-new-feature
-   ```
+Stale docs are considered a bug.
 
-2. **Make your changes and commit**
+## Pull Requests
 
-3. **Test thoroughly:**
-   - Build succeeds
-   - Tests pass
-   - Works in Premiere Pro
-   - No console errors
+A good PR includes:
 
-4. **Push and create PR:**
-   ```bash
-   git push origin feature/my-new-feature
-   ```
+- what changed
+- why it changed
+- how it was tested
+- whether the tool surface changed
+- whether docs were updated
 
-5. **In your PR description:**
-   - What does this change do?
-   - Why is it needed?
-   - How did you test it?
-   - Any breaking changes?
-
-## Testing Checklist
-
-Before submitting a PR:
-
-- [ ] Code builds without errors (`npm run build`)
-- [ ] Tests pass (`npm test`)
-- [ ] Linting passes (`npm run lint`)
-- [ ] CEP plugin loads in Premiere Pro
-- [ ] Bridge connects successfully
-- [ ] New tools work as expected
-- [ ] No console errors
-- [ ] Documentation updated (README.md)
-
-## Security Considerations
-
-When adding new tools:
-
-1. **Validate all inputs** using Zod schemas
-2. **Sanitize file paths** using `validateFilePath()`
-3. **Check for dangerous patterns** in scripts
-4. **Limit script size** (current: 500KB)
-5. **Never use `eval()` or `Function()`**
-
-Example:
-```typescript
-inputSchema: z.object({
-  filePath: z.string().describe('File path'),
-}),
-
-// In handler:
-const validation = validateFilePath(args.filePath);
-if (!validation.valid) {
-  throw new Error(`Invalid path: ${validation.error}`);
-}
-```
-
-## Common Issues
-
-### "Module not found" errors
-```bash
-rm -rf node_modules package-lock.json
-npm install
-```
-
-### CEP plugin changes not reflected
-```bash
-# Copy updated file
-cp cep-plugin/bridge-cep.js ~/Library/Application\ Support/Adobe/CEP/extensions/MCPBridgeCEP/
-
-# Reload in Premiere Pro
-# Right-click panel → Reload
-```
-
-### Claude doesn't see changes
-```bash
-# Rebuild
-npm run build
-
-# Restart Claude Desktop (Cmd+Q, then reopen)
-```
-
-## Need Help?
-
-- Check existing issues: [GitHub Issues](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/issues)
-- Ask questions in discussions
-- Read the README.md for architecture details
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the MIT License.
+If you add, remove, or materially change a tool, mention it explicitly in the PR summary.

@@ -8,6 +8,9 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
+    "setup:mac": "bash ./scripts/install-macos.sh",
+    "setup:doctor": "bash ./scripts/doctor-macos.sh",
+    "uninstall:mac": "bash ./scripts/uninstall-macos.sh",
     "test": "jest",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src/**/*.ts"

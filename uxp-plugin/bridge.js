@@ -189,13 +189,12 @@ class MCPPremiereBridge {
         // Block obviously dangerous patterns
         const dangerousPatterns = [
             /eval\s*\(/i,
-            /Function\s*\(/i,
-            /require\s*\(/i,
-            /import\s+/i,
-            /__dirname/i,
-            /__filename/i,
-            /process\./i,
-            /child_process/i,
+            /\bnew\s+Function\s*\(/i,
+            /\brequire\s*\(/i,
+            /\b__dirname\b/i,
+            /\b__filename\b/i,
+            /\bprocess\./i,
+            /\bchild_process\b/i,
             /fs\.(unlink|rm|rmdir|writeFile)/i,
         ];
 

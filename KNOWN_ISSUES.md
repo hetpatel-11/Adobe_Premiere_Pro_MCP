@@ -1,173 +1,98 @@
-# Known Issues and Fixes
+# Known Issues
 
-## Current Status (as of February 2026)
+This file tracks current, confirmed limits. It is no longer a backlog of already-fixed prototype bugs.
 
-### ✅ Working Tools (Verified)
-- `get_project_info` - Retrieves project information
-- `list_project_items` - Lists all items in project
-- `get_sequence_settings` - Gets sequence settings
+## Current State (March 4, 2026)
 
-### ❌ Broken Tools (Need Fixes)
+The locally validated tool surface is:
 
-#### 1. `list_sequences` - TypeError: undefined is not an object
-**Issue:** Missing `return` statement in ExtendScript
-**Location:** `src/tools/index.ts:945`
-**Fix:**
-```typescript
-// BEFORE (line 945):
-JSON.stringify({
+- `97` exposed tools
+- `43` live-executed against a real Premiere Pro session
+- `50` schema-validated in the same sweep
+- `3` intentionally skipped because they mutate or save project state during no-arg testing
 
-// AFTER:
-return JSON.stringify({
-```
+## Confirmed Runtime Limitation
 
-#### 2. `create_bin` - ReferenceError: parentBinName is undefined
-**Issue:** Variable `parentBinName` used in ExtendScript but not defined
-**Location:** `src/tools/index.ts:1238`
-**Fix:**
-```typescript
-// BEFORE (line 1238):
-parentBin: parentBinName || "Root"
+### `get_render_queue_status`
 
-// AFTER:
-parentBin: ${parentBinName ? `"${parentBinName}"` : '"Root"'}
-```
+Status: expected runtime limitation
 
-#### 3. `list_sequence_tracks` - ExtendScript execution failed
-**Issue:** Similar to list_sequences, missing return statement
-**Location:** `src/tools/index.ts:966-970`
-**Fix:**
-```typescript
-// Add 'return' before JSON.stringify in the script
-```
+Reason:
 
-#### 4. `import_media` - Script validation failed
-**Issue:** Path validation is too strict or file path format issue
-**Location:** `src/bridge/index.ts:237-243`
-**Potential Fix:**
-```typescript
-// Check validateFilePath and sanitizeInput functions
-// They might be rejecting valid paths
-```
+- this tool depends on Adobe Media Encoder integration
+- without AME integration, the server returns a truthful failure instead of fake success
 
-## Quick Fix Guide
+Current behavior:
 
-### For Developers
+- the tool is still exposed
+- it returns an error explaining that render queue monitoring requires Adobe Media Encoder
 
-**1. Fix all ExtendScript return statements:**
+## Operational Limits
+
+These are not hidden bugs; they are boundaries of the current architecture.
+
+### Premiere scripting is incomplete
+
+Some Premiere UI operations are not cleanly exposed through the standard DOM or are only partially accessible through QE / ExtendScript.
+
+Practical consequence:
+
+- the MCP layer can automate a large amount of editing work
+- it still cannot promise parity with every click path a senior editor can use manually
+
+### Professional motion graphics still need real assets
+
+The server can assemble timelines and apply motion/effect treatments, but polished title design still depends on:
+
+- real MOGRT packages
+- real design assets
+- real footage and audio
+
+Generated demo assets are useful for verification, not for final client delivery.
+
+### The CEP panel must be live
+
+If the panel is not open and started, the tools cannot reach Premiere even if the MCP server is configured correctly.
+
+Symptoms:
+
+- tool calls timeout
+- the client sees the tool catalog but actions do not complete
+
+Fix:
+
+1. Open `Window > Extensions > MCP Bridge (CEP)`.
+2. Confirm the temp directory is `/tmp/premiere-mcp-bridge`.
+3. Click `Start Bridge`.
+4. If bridge code changed, right-click the panel and choose `Reload`.
+
+### Live verification mutates the active project
+
+`node scripts/live-tool-sweep.mjs` creates disposable `Sweep ...` sequences and imports generated assets so the bridge is tested for real.
+
+Use a scratch project if you do not want those fixtures in a working edit.
+
+## Recently Fixed
+
+These issues were real and are now resolved in the current code:
+
+- bridge script validation was incorrectly rejecting valid ExtendScript
+- `import_media` could import successfully but fail to locate the new project item
+- `add_to_timeline` used the wrong Premiere API path
+- the server could delete an externally managed temp directory on shutdown
+- `export_frame` called a non-existent API and now uses the QE export path
+- `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
+- the branded workflow response returned the wrong message due to object spread order
+
+## Release Guidance
+
+Before you call this ready for other users, verify these exact commands on a clean macOS machine:
+
 ```bash
-# Navigate to project
-cd /Users/YOUR_USERNAME/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP
-
-# Edit src/tools/index.ts
-# Add 'return' before ALL JSON.stringify() calls in ExtendScript code blocks
+npm run setup:mac
+npm run setup:doctor
+npm test -- --runInBand
+node scripts/live-tool-sweep.mjs
 ```
 
-**2. Fix createBin template literal:**
-```typescript
-// In createBin method, ensure variables are properly escaped
-// Use template literal interpolation correctly
-```
-
-**3. Test after fixes:**
-```bash
-npm run build
-# Restart Claude Desktop
-# Test each tool
-```
-
-### For Users (Workarounds)
-
-Until these are fixed:
-
-**Instead of `create_bin`:**
-- Manually create bins in Premiere Pro
-- Then use `list_project_items` to see them
-
-**Instead of `list_sequences`:**
-- Use `get_sequence_settings` with a known sequence ID
-- Manually check sequences in Premiere Pro
-
-**Instead of `import_media`:**
-- Manually drag files into Premiere Pro
-- Use File > Import in Premiere Pro
-- Then use `list_project_items` to see imported media
-
-**Instead of `list_sequence_tracks`:**
-- Use `get_sequence_settings` for basic info
-- Manually check tracks in Premiere Pro
-
-## Root Cause Analysis
-
-### Common Pattern: Missing `return` in ExtendScript
-
-Many tools have this pattern:
-```javascript
-// WRONG:
-JSON.stringify({ success: true });
-
-// CORRECT:
-return JSON.stringify({ success: true });
-```
-
-**Why it fails:**
-ExtendScript returns `undefined` if there's no explicit `return`, causing "undefined is not an object" errors.
-
-### Template Literal Variable Scope
-
-Variables in template literals are evaluated in Node.js scope, not ExtendScript scope:
-
-```javascript
-// WRONG:
-parentBin: parentBinName || "Root"  // parentBinName not defined in ExtendScript
-
-// CORRECT:
-parentBin: ${parentBinName ? `"${parentBinName}"` : '"Root"'}
-```
-
-## Fixing All Tools
-
-To fix all broken tools systematically:
-
-1. **Search for all ExtendScript blocks:**
-   ```bash
-   grep -n "const script = \`" src/tools/index.ts src/bridge/index.ts
-   ```
-
-2. **For each block, verify:**
-   - [ ] All `JSON.stringify()` calls have `return`
-   - [ ] All template literal variables are properly interpolated
-   - [ ] No use of undefined variables in ExtendScript scope
-
-3. **Test each tool:**
-   ```typescript
-   // Ask Claude:
-   "Test the [tool_name] tool"
-   ```
-
-## Progress Tracker
-
-- [ ] Fix `list_sequences` (return statement)
-- [ ] Fix `create_bin` (variable scope)
-- [ ] Fix `list_sequence_tracks` (return statement)
-- [ ] Fix `import_media` (path validation)
-- [ ] Fix `import_folder` (return statement)
-- [ ] Audit all other tools for same issues
-- [ ] Add unit tests for ExtendScript generation
-- [ ] Document all working vs broken tools
-
-## Contributing
-
-If you fix any of these issues:
-
-1. Test thoroughly in Premiere Pro
-2. Update this file to mark as fixed
-3. Add test case if possible
-4. Submit PR with clear description
-
-## See Also
-
-- `CONTRIBUTING.md` - Developer guide
-- `README.md` - Main documentation
-- `src/tools/index.ts` - Tool implementations
-- `src/bridge/index.ts` - Bridge ExtendScript code
+If any of those fail, fix the code or docs before tagging a release.
