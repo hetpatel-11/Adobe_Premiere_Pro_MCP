@@ -15,7 +15,7 @@ Current CEP panel UI inside Premiere Pro, using the refreshed bridge controls an
 This repository is currently validated for:
 
 - macOS
-- Adobe Premiere Pro 2020+
+- Adobe Premiere Pro 2020+ (actively used and tested on Premiere Pro 26.0)
 - Node.js 18+
 - the included macOS installer path for Claude Desktop
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
@@ -75,11 +75,16 @@ After the installer finishes:
 
 1. Quit and reopen your MCP client if it reads config on startup. If you used the installer, that means Claude Desktop.
 2. Quit and reopen Premiere Pro.
-3. Open `Window > Extensions > MCP Bridge (CEP)`.
-4. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
-5. Click `Save Configuration`.
-6. Click `Start Bridge`.
-7. Click `Test Connection`.
+3. In Premiere Pro on macOS, open `Premiere Pro > Preferences > Plugins` and enable **UXP Plugins > Enable developer mode**. Restart Premiere once so the change sticks.
+4. Open `Window > Extensions > MCP Bridge (CEP)`.
+5. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
+6. Click `Save Configuration`.
+7. Click `Start Bridge`.
+8. Click `Test Connection`.
+
+If you need a visual reference for the developer mode toggle, it looks like this:
+
+![Enable UXP developer mode in Premiere Pro](images/uxp-developer-mode.png)
 
 If the panel reports that Premiere is ready, the bridge is live.
 
