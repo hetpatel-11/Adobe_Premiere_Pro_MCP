@@ -117,13 +117,18 @@ class MCPPremiereProServer {
       const { uri } = request.params;
       
       try {
+        const resource = this.resources.getResource(uri);
+        if (!resource) {
+          throw new Error(`Resource '${uri}' not found`);
+        }
         const content = await this.resources.readResource(uri);
+        const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
         return {
           contents: [
             {
               uri,
-              mimeType: 'application/json',
-              text: JSON.stringify(content, null, 2)
+              mimeType: resource.mimeType,
+              text
             }
           ]
         };

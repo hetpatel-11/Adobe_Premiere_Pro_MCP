@@ -30,6 +30,8 @@ Then restart Claude Desktop and ask:
 What's my current Premiere Pro project info?
 ```
 
+For better editing behavior, attach `premiere://config/get_instructions` before asking the model to change a project.
+
 ## Codex / Claude Code
 
 Build the server:

@@ -43,6 +43,8 @@ Example prompts:
 - "Razor the interview sequence at 12.5 seconds across all audio and video tracks."
 - "Export the active sequence as FCP XML."
 
+Before editing, you can also attach the `premiere://config/get_instructions` resource to give the model Premiere-specific operating guidance.
+
 High-level workflow tools included:
 
 - `build_motion_graphics_demo`

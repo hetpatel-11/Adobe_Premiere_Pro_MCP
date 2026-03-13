@@ -25,7 +25,7 @@ describe('MCP Adobe Premiere Pro Integration', () => {
 
   it('exposes a healthy tool, resource, and prompt catalog', () => {
     expect(tools.getAvailableTools().length).toBeGreaterThan(50);
-    expect(resources.getAvailableResources().length).toBe(12);
+    expect(resources.getAvailableResources().length).toBe(13);
     expect(prompts.getAvailablePrompts().length).toBe(10);
   });
 

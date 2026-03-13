@@ -23,7 +23,7 @@ describe('PremiereProResources', () => {
       const availableResources = resources.getAvailableResources();
 
       expect(Array.isArray(availableResources)).toBe(true);
-      expect(availableResources.length).toBe(12);
+      expect(availableResources.length).toBe(13);
     });
 
     it('should return all expected resources', () => {
@@ -42,6 +42,7 @@ describe('PremiereProResources', () => {
       expect(uris).toContain('premiere://transitions/available');
       expect(uris).toContain('premiere://export/presets');
       expect(uris).toContain('premiere://project/metadata');
+      expect(uris).toContain('premiere://config/get_instructions');
     });
 
     it('should have valid resource structure', () => {
@@ -55,7 +56,7 @@ describe('PremiereProResources', () => {
         expect(typeof resource.uri).toBe('string');
         expect(typeof resource.name).toBe('string');
         expect(typeof resource.description).toBe('string');
-        expect(resource.mimeType).toBe('application/json');
+        expect(typeof resource.mimeType).toBe('string');
       });
     });
   });
@@ -388,6 +389,17 @@ describe('PremiereProResources', () => {
         const result = await resources.readResource('premiere://project/metadata');
 
         expect(result).toEqual(mockData);
+      });
+    });
+
+    describe('premiere://config/get_instructions', () => {
+      it('should return operating guidance text', async () => {
+        const result = await resources.readResource('premiere://config/get_instructions');
+
+        expect(typeof result).toBe('string');
+        expect(result).toContain('You are controlling Adobe Premiere Pro through the MCP server');
+        expect(result).toContain('razor_timeline_at_time');
+        expect(mockBridge.executeScript).not.toHaveBeenCalled();
       });
     });
   });
