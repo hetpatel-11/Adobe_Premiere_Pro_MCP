@@ -40,6 +40,7 @@ Example prompts:
 - "Import these three shots and build a rough product spot."
 - "Add cross dissolves to every cut on video track 1."
 - "Apply Gaussian Blur to the middle clip."
+- "Razor the interview sequence at 12.5 seconds across all audio and video tracks."
 - "Export the active sequence as FCP XML."
 
 High-level workflow tools included:
@@ -47,6 +48,8 @@ High-level workflow tools included:
 - `build_motion_graphics_demo`
 - `assemble_product_spot`
 - `build_brand_spot_from_mogrt_and_assets`
+
+`assemble_product_spot` and `build_brand_spot_from_mogrt_and_assets` now support an optional `clipPlan` argument so an LLM can direct per-clip timing, track placement, transitions, motion, trims, effects, and color adjustments instead of relying on fixed template defaults.
 
 ## Fastest Install (macOS)
 
@@ -70,46 +73,80 @@ Important:
 - the supported UI bridge in this repo is the `MCP Bridge (CEP)` extension
 - the installer enables Adobe **CEP** debug mode automatically
 - Adobe **UXP developer mode is not required** for the supported CEP install path
+- `npm run setup:mac` is the easiest path for Claude Desktop on macOS because it updates Claude Desktop config automatically
 
 After the installer finishes:
 
 1. Quit and reopen your MCP client if it reads config on startup. If you used the installer, that means Claude Desktop.
 2. Quit and reopen Premiere Pro.
-3. In Premiere Pro on macOS, open `Premiere Pro > Preferences > Plugins` and enable **UXP Plugins > Enable developer mode**. Restart Premiere once so the change sticks.
-4. Open `Window > Extensions > MCP Bridge (CEP)`.
-5. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
-6. Click `Save Configuration`.
-7. Click `Start Bridge`.
-8. Click `Test Connection`.
-
-If you need a visual reference for the developer mode toggle, it looks like this:
-
-![Enable UXP developer mode in Premiere Pro](images/uxp-developer-mode.png)
+3. Open `Window > Extensions > MCP Bridge (CEP)`.
+4. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
+5. Click `Save Configuration`.
+6. Click `Start Bridge`.
+7. Click `Test Connection`.
 
 If the panel reports that Premiere is ready, the bridge is live.
 
-## Codex / Other MCP Clients
+## Install By Client
 
-The macOS installer only updates Claude Desktop automatically. For Codex, Claude Code, or another MCP client, build locally and add the server yourself.
+### Claude Desktop
+
+On macOS, use:
+
+```bash
+npm run setup:mac
+```
+
+That is the only path in this repo that automatically writes the MCP entry for you.
+
+### Codex
+
+Build the server first:
 
 ```bash
 npm install
 npm run build
 ```
 
-Add the MCP server on a single line:
+Then add the MCP server on a single line:
 
 ```bash
 codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
 ```
 
-Important:
+### Claude Code
+
+Build the server the same way:
+
+```bash
+npm install
+npm run build
+```
+
+Then register the MCP server in Claude Code using the same built `dist/index.js` entrypoint and the same temp directory:
+
+```text
+command: node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
+env: PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge
+```
+
+If you use a local MCP config file instead of a helper command, point it at the same `dist/index.js` and set the same env var.
+
+### Other MCP Clients
+
+Use the same manual registration approach as Claude Code:
+
+```text
+command: node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
+env: PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge
+```
+
+Important for all manual client setups:
 
 - keep the command on one line
 - use the real absolute path to `dist/index.js`
 - restart the client after adding or updating the MCP entry
-
-If you use a different MCP client config file instead of `codex mcp add`, point that MCP entry at the same `dist/index.js` and set `PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge`.
+- start the CEP bridge inside Premiere and confirm the temp directory is exactly `/tmp/premiere-mcp-bridge`
 
 ## Verify the Install
 

@@ -168,6 +168,29 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
     });
 
+    it('supports razoring a timeline across multiple tracks', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        sequenceId: 'seq-123',
+        time: 12.5,
+        timecode: '00:00:12:15',
+        cutVideoTracks: [0, 1],
+        cutAudioTracks: [0, 2, 3]
+      });
+
+      const result = await tools.executeTool('razor_timeline_at_time', {
+        sequenceId: 'seq-123',
+        time: 12.5,
+        videoTrackIndices: [0, 1],
+        audioTrackIndices: [0, 2, 3]
+      });
+
+      expect(mockBridge.executeScript).toHaveBeenCalled();
+      expect(result.success).toBe(true);
+      expect(result.cutVideoTracks).toEqual([0, 1]);
+      expect(result.cutAudioTracks).toEqual([0, 2, 3]);
+    });
+
     it('uses current argument names for add_transition', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
@@ -251,6 +274,42 @@ describe('PremiereProTools', () => {
       expect(result.placements).toHaveLength(2);
     });
 
+    it('supports directed clip plans without forcing template transitions or motion', async () => {
+      mockBridge.createSequence = jest.fn().mockResolvedValue({
+        id: 'seq-2b',
+        name: 'Directed Spot'
+      } as any);
+      mockBridge.importMedia = jest
+        .fn()
+        .mockResolvedValueOnce({ success: true, id: 'item-a', name: 'a.mp4' } as any)
+        .mockResolvedValueOnce({ success: true, id: 'item-b', name: 'b.mp4' } as any);
+      mockBridge.addToTimeline = jest
+        .fn()
+        .mockResolvedValueOnce({ success: true, id: 'clip-a', name: 'a.mp4', inPoint: 1.5, outPoint: 3.5 } as any)
+        .mockResolvedValueOnce({ success: true, id: 'clip-b', name: 'b.mp4', inPoint: 3.6, outPoint: 6.6 } as any);
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        videoTracks: [],
+        audioTracks: []
+      });
+
+      const result = await tools.executeTool('assemble_product_spot', {
+        sequenceName: 'Directed Spot',
+        assetPaths: ['/a.mp4', '/b.mp4'],
+        clipPlan: [
+          { assetIndex: 0, time: 1.5, trackIndex: 1, transitionAfter: { name: 'none' } },
+          { assetIndex: 1, time: 3.6, trackIndex: 2 }
+        ]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('directed clip plan');
+      expect(result.transitions).toHaveLength(0);
+      expect(result.animations).toHaveLength(0);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6);
+    });
+
     it('builds a brand spot from assets without requiring a mogrt', async () => {
       mockBridge.createSequence = jest.fn().mockResolvedValue({
         id: 'seq-3',
@@ -279,7 +338,7 @@ describe('PremiereProTools', () => {
       expect(result.message).toBe('Brand spot assembled successfully');
       expect(result.sequence.id).toBe('seq-3');
       expect(result.overlays[0].skipped).toBe(true);
-      expect(result.polish).toHaveLength(2);
+      expect(result.polish[0].skipped).toBe(true);
     });
   });
 });

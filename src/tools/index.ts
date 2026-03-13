@@ -16,6 +16,109 @@ export interface MCPTool {
   inputSchema: z.ZodSchema<any>;
 }
 
+type MotionStyle = 'push_in' | 'pull_out' | 'alternate' | 'none';
+type InsertMode = 'overwrite' | 'insert';
+
+interface ClipPlanTransition {
+  name?: string;
+  duration?: number;
+}
+
+interface ClipPlanMotion {
+  style?: MotionStyle;
+  from?: number;
+  to?: number;
+  startTime?: number;
+  endTime?: number;
+  componentName?: string;
+  paramName?: string;
+}
+
+interface ClipPlanTrim {
+  inPoint?: number;
+  outPoint?: number;
+  duration?: number;
+}
+
+interface ClipPlanColor {
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  hue?: number;
+  temperature?: number;
+  tint?: number;
+  highlights?: number;
+  shadows?: number;
+}
+
+interface ClipPlanStep {
+  assetIndex?: number;
+  time?: number;
+  trackIndex?: number;
+  insertMode?: InsertMode;
+  transitionAfter?: ClipPlanTransition;
+  motion?: ClipPlanMotion;
+  trim?: ClipPlanTrim;
+  effects?: string[];
+  color?: ClipPlanColor;
+}
+
+interface AssembleProductSpotArgs {
+  sequenceName: string;
+  assetPaths: string[];
+  clipDuration?: number;
+  videoTrackIndex?: number;
+  transitionName?: string;
+  transitionDuration?: number;
+  motionStyle?: MotionStyle;
+  clipPlan?: ClipPlanStep[];
+}
+
+interface BuildBrandSpotArgs extends AssembleProductSpotArgs {
+  mogrtPath?: string;
+  titleTrackIndex?: number;
+  titleStartTime?: number;
+  applyDefaultPolish?: boolean;
+}
+
+const motionStyleSchema = z.enum(['push_in', 'pull_out', 'alternate', 'none']);
+
+const clipPlanSchema = z.object({
+  assetIndex: z.number().int().min(0).optional().describe('Index in assetPaths to place for this step. Defaults to the current step index.'),
+  time: z.number().optional().describe('Timeline position in seconds for this step.'),
+  trackIndex: z.number().int().min(0).optional().describe('Video track index for this step. Defaults to videoTrackIndex.'),
+  insertMode: z.enum(['overwrite', 'insert']).optional().describe('Placement mode for this step.'),
+  transitionAfter: z.object({
+    name: z.string().optional().describe('Transition to apply after this clip. Set "none" to skip this boundary.'),
+    duration: z.number().optional().describe('Transition duration in seconds.')
+  }).optional(),
+  motion: z.object({
+    style: motionStyleSchema.optional().describe('Simple motion style for this clip.'),
+    from: z.number().optional().describe('Starting keyframe value.'),
+    to: z.number().optional().describe('Ending keyframe value.'),
+    startTime: z.number().optional().describe('Start time for keyframe animation in seconds.'),
+    endTime: z.number().optional().describe('End time for keyframe animation in seconds.'),
+    componentName: z.string().optional().describe('Component name for keyframing. Defaults to "Motion".'),
+    paramName: z.string().optional().describe('Parameter name for keyframing. Defaults to "Scale".')
+  }).optional(),
+  trim: z.object({
+    inPoint: z.number().optional().describe('Clip in point in seconds.'),
+    outPoint: z.number().optional().describe('Clip out point in seconds.'),
+    duration: z.number().optional().describe('Target clip duration in seconds.')
+  }).optional(),
+  effects: z.array(z.string()).optional().describe('Effect names to apply to this clip.'),
+  color: z.object({
+    brightness: z.number().optional(),
+    contrast: z.number().optional(),
+    saturation: z.number().optional(),
+    hue: z.number().optional(),
+    temperature: z.number().optional(),
+    tint: z.number().optional(),
+    highlights: z.number().optional(),
+    shadows: z.number().optional()
+  }).optional()
+});
+
 export class PremiereProTools {
   private bridge: PremiereProBridge;
   private logger: Logger;
@@ -62,20 +165,21 @@ export class PremiereProTools {
       },
       {
         name: 'assemble_product_spot',
-        description: 'Builds a production-oriented promo timeline from real media assets by importing them, creating a sequence, laying them out in order, adding transitions, and applying simple motion treatment. This is useful for rough cuts, product promos, and ad assembly from existing assets.',
+        description: 'Builds a production-oriented promo timeline from real media assets. Supports either template defaults or an explicit clipPlan for LLM-directed pacing, transitions, motion, trims, and per-clip effects.',
         inputSchema: z.object({
           sequenceName: z.string().describe('Name for the new sequence'),
           assetPaths: z.array(z.string()).min(1).describe('Absolute paths to video or image assets in playback order'),
           clipDuration: z.number().optional().describe('Default placement duration in seconds for stills and rough spacing for assets. Defaults to 4.0'),
           videoTrackIndex: z.number().optional().describe('Target video track index. Defaults to 0'),
-          transitionName: z.string().optional().describe('Transition to apply between adjacent clips. Defaults to "Cross Dissolve"'),
+          transitionName: z.string().optional().describe('Default transition when clipPlan does not override it. Defaults to "Cross Dissolve" in template mode.'),
           transitionDuration: z.number().optional().describe('Transition duration in seconds. Defaults to 0.5'),
-          motionStyle: z.enum(['push_in', 'pull_out', 'alternate', 'none']).optional().describe('Simple scale animation style. Defaults to "alternate"')
+          motionStyle: motionStyleSchema.optional().describe('Fallback motion style when clipPlan does not override it. Defaults to "alternate" in template mode.'),
+          clipPlan: z.array(clipPlanSchema).optional().describe('Optional explicit edit plan. When provided, each step can override timing, track, transition, motion, trim, effects, and color.')
         })
       },
       {
         name: 'build_brand_spot_from_mogrt_and_assets',
-        description: 'Builds a more polished ad assembly from real media assets, then optionally layers in a supplied MOGRT title card and applies a light finishing pass. This is the practical workflow for reusable branded promos when you already have source media and motion templates.',
+        description: 'Builds a branded ad assembly from real media assets, supports optional MOGRT overlay, and allows explicit clipPlan control. Default polish is optional so creative direction can come from LLM planning instead of hardcoded passes.',
         inputSchema: z.object({
           sequenceName: z.string().describe('Name for the new sequence'),
           assetPaths: z.array(z.string()).min(1).describe('Absolute paths to source assets in edit order'),
@@ -84,9 +188,11 @@ export class PremiereProTools {
           videoTrackIndex: z.number().optional().describe('Base video track for the main assets. Defaults to 0'),
           titleTrackIndex: z.number().optional().describe('Video track for the optional MOGRT overlay. Defaults to 1'),
           titleStartTime: z.number().optional().describe('Timeline start time in seconds for the optional MOGRT. Defaults to 0.4'),
-          transitionName: z.string().optional().describe('Transition to apply between adjacent clips. Defaults to "Cross Dissolve"'),
+          transitionName: z.string().optional().describe('Default transition when clipPlan does not override it. Defaults to "Cross Dissolve" in template mode.'),
           transitionDuration: z.number().optional().describe('Transition duration in seconds. Defaults to 0.5'),
-          motionStyle: z.enum(['push_in', 'pull_out', 'alternate', 'none']).optional().describe('Simple scale animation style. Defaults to "alternate"')
+          motionStyle: motionStyleSchema.optional().describe('Fallback motion style when clipPlan does not override it. Defaults to "alternate" in template mode.'),
+          clipPlan: z.array(clipPlanSchema).optional().describe('Optional explicit edit plan. Reuses assemble_product_spot clipPlan semantics.'),
+          applyDefaultPolish: z.boolean().optional().describe('Whether to apply the legacy light polish pass (blur + small color tweak). Defaults to false.')
         })
       },
 
@@ -221,6 +327,16 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to split'),
           splitTime: z.number().describe('The time in seconds where to split the clip')
+        })
+      },
+      {
+        name: 'razor_timeline_at_time',
+        description: 'Cuts across multiple tracks in a sequence at an absolute timeline time. If no track arrays are provided, all video and audio tracks are cut.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.'),
+          time: z.number().describe('Absolute timeline time in seconds where the cut should occur.'),
+          videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Optional video track indices to cut. Defaults to all video tracks.'),
+          audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Optional audio track indices to cut. Defaults to all audio tracks.')
         })
       },
 
@@ -969,28 +1085,9 @@ export class PremiereProTools {
         case 'build_motion_graphics_demo':
           return await this.buildMotionGraphicsDemo(args.sequenceName);
         case 'assemble_product_spot':
-          return await this.assembleProductSpot(args as {
-            sequenceName: string;
-            assetPaths: string[];
-            clipDuration?: number;
-            videoTrackIndex?: number;
-            transitionName?: string;
-            transitionDuration?: number;
-            motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
-          });
+          return await this.assembleProductSpot(args as AssembleProductSpotArgs);
         case 'build_brand_spot_from_mogrt_and_assets':
-          return await this.buildBrandSpotFromMogrtAndAssets(args as {
-            sequenceName: string;
-            assetPaths: string[];
-            mogrtPath?: string;
-            clipDuration?: number;
-            videoTrackIndex?: number;
-            titleTrackIndex?: number;
-            titleStartTime?: number;
-            transitionName?: string;
-            transitionDuration?: number;
-            motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
-          });
+          return await this.buildBrandSpotFromMogrtAndAssets(args as BuildBrandSpotArgs);
 
         // Project Management
         case 'create_project':
@@ -1029,6 +1126,8 @@ export class PremiereProTools {
           return await this.trimClip(args.clipId, args.inPoint, args.outPoint, args.duration);
         case 'split_clip':
           return await this.splitClip(args.clipId, args.splitTime);
+        case 'razor_timeline_at_time':
+          return await this.razorTimelineAtTime(args.sequenceId, args.time, args.videoTrackIndices, args.audioTrackIndices);
 
         // Effects and Transitions
         case 'apply_effect':
@@ -1531,20 +1630,34 @@ export class PremiereProTools {
     };
   }
 
-  private async assembleProductSpot(args: {
-    sequenceName: string;
-    assetPaths: string[];
-    clipDuration?: number;
-    videoTrackIndex?: number;
-    transitionName?: string;
-    transitionDuration?: number;
-    motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
-  }): Promise<any> {
+  private getMotionRange(style: MotionStyle, index: number): { from: number; to: number } {
+    if (style === 'push_in') {
+      return { from: 100, to: 108 };
+    }
+    if (style === 'pull_out') {
+      return { from: 108, to: 100 };
+    }
+    if (style === 'alternate') {
+      const invert = index % 2 === 1;
+      return invert ? { from: 110, to: 100 } : { from: 100, to: 108 };
+    }
+    return { from: 100, to: 100 };
+  }
+
+  private hasColorAdjustments(color?: ClipPlanColor): boolean {
+    if (!color) {
+      return false;
+    }
+    return Object.values(color).some((value) => value !== undefined);
+  }
+
+  private async assembleProductSpot(args: AssembleProductSpotArgs): Promise<any> {
     const clipDuration = args.clipDuration ?? 4;
     const videoTrackIndex = args.videoTrackIndex ?? 0;
-    const transitionName = args.transitionName || 'Cross Dissolve';
+    const hasDirectedPlan = Array.isArray(args.clipPlan) && args.clipPlan.length > 0;
+    const transitionName = args.transitionName ?? (hasDirectedPlan ? undefined : 'Cross Dissolve');
     const transitionDuration = args.transitionDuration ?? 0.5;
-    const motionStyle = args.motionStyle || 'alternate';
+    const motionStyle: MotionStyle = args.motionStyle ?? (hasDirectedPlan ? 'none' : 'alternate');
 
     const createdSequence = await this.createSequence(args.sequenceName);
     if (!createdSequence.success || !createdSequence.id) {
@@ -1569,100 +1682,148 @@ export class PremiereProTools {
       }
     }
 
+    const planSteps: ClipPlanStep[] = hasDirectedPlan
+      ? args.clipPlan ?? []
+      : imported.map((_, index) => ({
+        assetIndex: index,
+        time: index * clipDuration,
+        trackIndex: videoTrackIndex,
+        insertMode: 'overwrite' as const
+      }));
+
     const placements = [];
-    for (let index = 0; index < imported.length; index++) {
-      const placementTime = index * clipDuration;
-      const result = await this.addToTimeline(
-        createdSequence.id,
-        imported[index].id,
-        videoTrackIndex,
-        placementTime,
-      );
-      placements.push(result);
-      if (!result.success || !result.id) {
+    const trims = [];
+    const clipEffects = [];
+    const colorAdjustments = [];
+
+    for (let index = 0; index < planSteps.length; index++) {
+      const step: ClipPlanStep = planSteps[index] ?? {};
+      const assetIndex = step.assetIndex ?? index;
+      const importedAsset = imported[assetIndex];
+
+      if (!importedAsset?.id) {
         return {
           success: false,
-          error: result.error || `Failed to place ${imported[index].name} on the timeline`,
+          error: `Clip plan references asset index ${assetIndex}, but only ${imported.length} asset(s) were imported.`,
           sequence: createdSequence,
           imported,
-          placements
+          planSteps
         };
+      }
+
+      const placementTime = step.time ?? (index * clipDuration);
+      const track = step.trackIndex ?? videoTrackIndex;
+      const insertMode = step.insertMode ?? 'overwrite';
+      const placement = await this.addToTimeline(
+        createdSequence.id,
+        importedAsset.id,
+        track,
+        placementTime,
+        insertMode,
+      );
+
+      placements.push(placement);
+      if (!placement.success || !placement.id) {
+        return {
+          success: false,
+          error: placement.error || `Failed to place ${importedAsset.name ?? importedAsset.id} on the timeline`,
+          sequence: createdSequence,
+          imported,
+          placements,
+          planSteps
+        };
+      }
+
+      const trimConfig = step.trim;
+      if (trimConfig && (trimConfig.inPoint !== undefined || trimConfig.outPoint !== undefined || trimConfig.duration !== undefined)) {
+        trims.push(await this.trimClip(placement.id, trimConfig.inPoint, trimConfig.outPoint, trimConfig.duration));
+      }
+
+      const effects = step.effects ?? [];
+      for (const effectName of effects) {
+        clipEffects.push(await this.applyEffect(placement.id, effectName));
+      }
+
+      if (this.hasColorAdjustments(step.color)) {
+        colorAdjustments.push(await this.colorCorrect(placement.id, {
+          clipId: placement.id,
+          ...step.color
+        }));
       }
     }
 
     const transitions = [];
     for (let index = 0; index < placements.length - 1; index++) {
-      transitions.push(
-        await this.addTransitionToClip(
+      const step: ClipPlanStep = planSteps[index] ?? {};
+      const transitionAfter = step.transitionAfter;
+      let transitionToApply: string | undefined;
+      let durationToApply = transitionDuration;
+
+      if (transitionAfter) {
+        const explicitName = transitionAfter.name ?? transitionName;
+        if (explicitName && explicitName.toLowerCase() !== 'none') {
+          transitionToApply = explicitName;
+          durationToApply = transitionAfter.duration ?? transitionDuration;
+        }
+      } else if (transitionName) {
+        transitionToApply = transitionName;
+      }
+
+      if (transitionToApply) {
+        transitions.push(await this.addTransitionToClip(
           placements[index].id,
-          transitionName,
+          transitionToApply,
           'end',
-          transitionDuration,
-        ),
-      );
+          durationToApply,
+        ));
+      }
     }
 
     const animations = [];
-    if (motionStyle !== 'none') {
-      for (let index = 0; index < placements.length; index++) {
-        const placement = placements[index];
-        const start = placement.inPoint ?? index * clipDuration;
-        const end = Math.max(start + 0.1, (placement.outPoint ?? (start + clipDuration)) - 0.1);
+    for (let index = 0; index < placements.length; index++) {
+      const placement = placements[index];
+      const step: ClipPlanStep = planSteps[index] ?? {};
+      const motion = step.motion;
+      const style: MotionStyle = motion?.style ?? motionStyle;
+      const hasExplicitRange = motion?.from !== undefined || motion?.to !== undefined;
 
-        let from = 100;
-        let to = 106;
-        if (motionStyle === 'push_in') {
-          from = 100;
-          to = 108;
-        } else if (motionStyle === 'pull_out') {
-          from = 108;
-          to = 100;
-        } else if (motionStyle === 'alternate') {
-          const invert = index % 2 === 1;
-          from = invert ? 110 : 100;
-          to = invert ? 100 : 108;
-        }
-
-        animations.push(await this.addKeyframe(placement.id, 'Motion', 'Scale', start, from));
-        animations.push(await this.addKeyframe(placement.id, 'Motion', 'Scale', end, to));
+      if (style === 'none' && !hasExplicitRange) {
+        continue;
       }
+
+      const range = this.getMotionRange(style, index);
+      const from = motion?.from ?? range.from;
+      const to = motion?.to ?? range.to;
+      const start = motion?.startTime ?? placement.inPoint ?? (step.time ?? (index * clipDuration));
+      const candidateEnd = motion?.endTime ?? ((placement.outPoint ?? (start + clipDuration)) - 0.1);
+      const end = Math.max(start + 0.1, candidateEnd);
+      const componentName = motion?.componentName ?? 'Motion';
+      const paramName = motion?.paramName ?? 'Scale';
+
+      animations.push(await this.addKeyframe(placement.id, componentName, paramName, start, from));
+      animations.push(await this.addKeyframe(placement.id, componentName, paramName, end, to));
     }
 
     const tracks = await this.listSequenceTracks(createdSequence.id);
 
     return {
       success: true,
-      message: 'Product spot assembled successfully',
+      message: hasDirectedPlan ? 'Product spot assembled from directed clip plan' : 'Product spot assembled successfully',
       sequence: createdSequence,
       imported,
+      planSteps,
       placements,
+      trims,
       transitions,
       animations,
+      clipEffects,
+      colorAdjustments,
       tracks
     };
   }
 
-  private async buildBrandSpotFromMogrtAndAssets(args: {
-    sequenceName: string;
-    assetPaths: string[];
-    mogrtPath?: string;
-    clipDuration?: number;
-    videoTrackIndex?: number;
-    titleTrackIndex?: number;
-    titleStartTime?: number;
-    transitionName?: string;
-    transitionDuration?: number;
-    motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
-  }): Promise<any> {
-    const assemblyArgs: {
-      sequenceName: string;
-      assetPaths: string[];
-      clipDuration?: number;
-      videoTrackIndex?: number;
-      transitionName?: string;
-      transitionDuration?: number;
-      motionStyle?: 'push_in' | 'pull_out' | 'alternate' | 'none';
-    } = {
+  private async buildBrandSpotFromMogrtAndAssets(args: BuildBrandSpotArgs): Promise<any> {
+    const assemblyArgs: AssembleProductSpotArgs = {
       sequenceName: args.sequenceName,
       assetPaths: args.assetPaths,
     };
@@ -1680,6 +1841,9 @@ export class PremiereProTools {
     }
     if (args.motionStyle !== undefined) {
       assemblyArgs.motionStyle = args.motionStyle;
+    }
+    if (args.clipPlan !== undefined) {
+      assemblyArgs.clipPlan = args.clipPlan;
     }
 
     const assembly = await this.assembleProductSpot(assemblyArgs);
@@ -1706,19 +1870,27 @@ export class PremiereProTools {
     }
 
     const polish = [];
-    const placedClips = Array.isArray(assembly.placements) ? assembly.placements : [];
-    const middleIndex = Math.floor(placedClips.length / 2);
-    if (placedClips[middleIndex]?.id) {
-      polish.push(await this.applyEffect(placedClips[middleIndex].id, 'Gaussian Blur'));
-    }
-    const lastClip = placedClips[placedClips.length - 1];
-    if (lastClip?.id) {
-      polish.push(await this.colorCorrect(lastClip.id, {
-        clipId: lastClip.id,
-        brightness: 4,
-        contrast: 8,
-        saturation: 6
-      }));
+    if (args.applyDefaultPolish) {
+      const placedClips = Array.isArray(assembly.placements) ? assembly.placements : [];
+      const middleIndex = Math.floor(placedClips.length / 2);
+      if (placedClips[middleIndex]?.id) {
+        polish.push(await this.applyEffect(placedClips[middleIndex].id, 'Gaussian Blur'));
+      }
+      const lastClip = placedClips[placedClips.length - 1];
+      if (lastClip?.id) {
+        polish.push(await this.colorCorrect(lastClip.id, {
+          clipId: lastClip.id,
+          brightness: 4,
+          contrast: 8,
+          saturation: 6
+        }));
+      }
+    } else {
+      polish.push({
+        success: true,
+        skipped: true,
+        note: 'Default polish disabled. Use clipPlan effects/color for directed finishing.'
+      });
     }
 
     const refreshedTracks = await this.listSequenceTracks(assembly.sequence.id);
@@ -2121,6 +2293,107 @@ export class PremiereProTools {
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         qeTrack.razor(tc);
         return JSON.stringify({ success: true, message: "Clip split at " + tc, splitTime: ${splitTime}, timecode: tc });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async razorTimelineAtTime(sequenceId?: string, time?: number, videoTrackIndices?: number[], audioTrackIndices?: number[]): Promise<any> {
+    const normalizedTime = time ?? 0;
+    const videoIndices = videoTrackIndices ?? [];
+    const audioIndices = audioTrackIndices ?? [];
+
+    const script = `
+      try {
+        app.enableQE();
+        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+
+        if (app.project.activeSequence && app.project.activeSequence.sequenceID !== sequence.sequenceID) {
+          app.project.openSequence(sequence.sequenceID);
+        }
+
+        var activeSequence = app.project.activeSequence;
+        if (!activeSequence || activeSequence.sequenceID !== sequence.sequenceID) {
+          return JSON.stringify({ success: false, error: "Unable to activate requested sequence for razor cut" });
+        }
+
+        var fps = activeSequence.timebase ? (254016000000 / parseInt(activeSequence.timebase, 10)) : 30;
+        var totalFrames = Math.round(${normalizedTime} * fps);
+        var hours = Math.floor(totalFrames / (fps * 3600));
+        var mins = Math.floor((totalFrames % (fps * 3600)) / (fps * 60));
+        var secs = Math.floor((totalFrames % (fps * 60)) / fps);
+        var frames = Math.round(totalFrames % fps);
+        function pad(n) { return n < 10 ? "0" + n : "" + n; }
+        var tc = pad(hours) + ":" + pad(mins) + ":" + pad(secs) + ":" + pad(frames);
+
+        var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence unavailable" });
+
+        function buildIndices(count, requested) {
+          if (!requested || requested.length === 0) {
+            var all = [];
+            for (var idx = 0; idx < count; idx++) all.push(idx);
+            return all;
+          }
+          return requested;
+        }
+
+        var requestedVideo = ${JSON.stringify(videoIndices)};
+        var requestedAudio = ${JSON.stringify(audioIndices)};
+        var finalVideo = buildIndices(activeSequence.videoTracks.numTracks, requestedVideo);
+        var finalAudio = buildIndices(activeSequence.audioTracks.numTracks, requestedAudio);
+        var cutVideoTracks = [];
+        var cutAudioTracks = [];
+        var skippedVideoTracks = [];
+        var skippedAudioTracks = [];
+
+        for (var i = 0; i < finalVideo.length; i++) {
+          var videoIndex = finalVideo[i];
+          if (videoIndex < 0 || videoIndex >= activeSequence.videoTracks.numTracks) {
+            skippedVideoTracks.push({ index: videoIndex, reason: "Video track index out of range" });
+            continue;
+          }
+          var qeVideoTrack = qeSeq.getVideoTrackAt(videoIndex);
+          if (!qeVideoTrack) {
+            skippedVideoTracks.push({ index: videoIndex, reason: "QE video track not found" });
+            continue;
+          }
+          qeVideoTrack.razor(tc);
+          cutVideoTracks.push(videoIndex);
+        }
+
+        for (var j = 0; j < finalAudio.length; j++) {
+          var audioIndex = finalAudio[j];
+          if (audioIndex < 0 || audioIndex >= activeSequence.audioTracks.numTracks) {
+            skippedAudioTracks.push({ index: audioIndex, reason: "Audio track index out of range" });
+            continue;
+          }
+          var qeAudioTrack = qeSeq.getAudioTrackAt(audioIndex);
+          if (!qeAudioTrack) {
+            skippedAudioTracks.push({ index: audioIndex, reason: "QE audio track not found" });
+            continue;
+          }
+          qeAudioTrack.razor(tc);
+          cutAudioTracks.push(audioIndex);
+        }
+
+        return JSON.stringify({
+          success: true,
+          message: "Timeline razored at " + tc,
+          sequenceId: activeSequence.sequenceID,
+          sequenceName: activeSequence.name,
+          time: ${normalizedTime},
+          timecode: tc,
+          cutVideoTracks: cutVideoTracks,
+          cutAudioTracks: cutAudioTracks,
+          skippedVideoTracks: skippedVideoTracks,
+          skippedAudioTracks: skippedAudioTracks
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
