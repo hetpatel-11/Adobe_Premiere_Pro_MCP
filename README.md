@@ -72,18 +72,24 @@ Important:
 
 - the supported UI bridge in this repo is the `MCP Bridge (CEP)` extension
 - the installer enables Adobe **CEP** debug mode automatically
-- Adobe **UXP developer mode is not required** for the supported CEP install path
+- if Premiere does not expose the extension cleanly on your machine, enable **UXP Plugins > Enable developer mode** in Premiere Pro preferences before opening the bridge panel
 - `npm run setup:mac` is the easiest path for Claude Desktop on macOS because it updates Claude Desktop config automatically
 
 After the installer finishes:
 
 1. Quit and reopen your MCP client if it reads config on startup. If you used the installer, that means Claude Desktop.
 2. Quit and reopen Premiere Pro.
-3. Open `Window > Extensions > MCP Bridge (CEP)`.
-4. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
-5. Click `Save Configuration`.
-6. Click `Start Bridge`.
-7. Click `Test Connection`.
+3. In Premiere Pro on macOS, open `Premiere Pro > Preferences > Plugins` and enable **UXP Plugins > Enable developer mode**.
+4. Restart Premiere Pro if the setting was changed.
+5. Open `Window > Extensions > MCP Bridge (CEP)`.
+6. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
+7. Click `Save Configuration`.
+8. Click `Start Bridge`.
+9. Click `Test Connection`.
+
+If you need a visual reference for the developer mode toggle, it looks like this:
+
+![Enable UXP developer mode in Premiere Pro](images/uxp-developer-mode.png)
 
 If the panel reports that Premiere is ready, the bridge is live.
 
