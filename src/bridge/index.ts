@@ -11,6 +11,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
+import type { PremiereProTransport } from './types.js';
 
 const EXTENDSCRIPT_HELPERS = `
 function __findSequence(id) {
@@ -109,7 +110,7 @@ export interface PremiereProEffect {
   parameters: Record<string, any>;
 }
 
-export class PremiereProBridge {
+export class PremiereProBridge implements PremiereProTransport {
   private logger: Logger;
   private communicationMethod: 'uxp' | 'extendscript' | 'file';
   private tempDir: string;

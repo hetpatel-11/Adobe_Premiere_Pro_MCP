@@ -278,6 +278,15 @@ describe('PremiereProPrompts', () => {
       expect(assistantMessages.length).toBeGreaterThan(0);
       expect(assistantMessages[0].content.text.length).toBeGreaterThan(50);
     });
+
+    it('should recommend attaching the operating instructions resource', async () => {
+      const result = await prompts.getPrompt('create_video_project', {
+        project_type: 'documentary'
+      });
+
+      const systemMessages = result.messages.filter(m => m.role === 'system');
+      expect(systemMessages[0].content.text).toContain('premiere://config/get_instructions');
+    });
   });
 
   describe('Argument Handling', () => {

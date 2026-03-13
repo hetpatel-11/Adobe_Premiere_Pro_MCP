@@ -241,6 +241,10 @@ export class PremiereProPrompts {
     }
   }
 
+  private withInstructionResource(text: string): string {
+    return `${text} Before making edits, attach the premiere://config/get_instructions resource so you follow the MCP workflow and tool guidance for this server.`;
+  }
+
   private createVideoProjectPrompt(args: Record<string, any>): GeneratedPrompt {
     const projectType = args.project_type || 'general';
     const duration = args.duration || 'unspecified';
@@ -252,7 +256,7 @@ export class PremiereProPrompts {
           role: 'system',
           content: {
             type: 'text',
-            text: `You are an expert video editor helping someone create a ${projectType} video project in Adobe Premiere Pro. Provide step-by-step guidance that is specific to their project type and requirements.`
+            text: this.withInstructionResource(`You are an expert video editor helping someone create a ${projectType} video project in Adobe Premiere Pro. Provide step-by-step guidance that is specific to their project type and requirements.`)
           }
         },
         {
@@ -315,7 +319,7 @@ Would you like me to help you with any specific step?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a music video editor expert. Help the user create a compelling music video that syncs with the beat and tells a visual story.'
+            text: this.withInstructionResource('You are a music video editor expert. Help the user create a compelling music video that syncs with the beat and tells a visual story.')
           }
         },
         {
@@ -386,7 +390,7 @@ Would you like detailed help with any of these steps?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a professional colorist. Guide the user through a comprehensive color grading workflow that will enhance their footage and achieve their desired look.'
+            text: this.withInstructionResource('You are a professional colorist. Guide the user through a comprehensive color grading workflow that will enhance their footage and achieve their desired look.')
           }
         },
         {
@@ -460,7 +464,7 @@ Would you like specific guidance for any step?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a multicam editing specialist. Help the user efficiently edit multicam footage with proper synchronization and smooth angle switching.'
+            text: this.withInstructionResource('You are a multicam editing specialist. Help the user efficiently edit multicam footage with proper synchronization and smooth angle switching.')
           }
         },
         {
@@ -536,7 +540,7 @@ Would you like help with any specific aspect of multicam editing?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a podcast production expert. Help the user create a polished podcast episode with clean audio and good pacing.'
+            text: this.withInstructionResource('You are a podcast production expert. Help the user create a polished podcast episode with clean audio and good pacing.')
           }
         },
         {
@@ -618,7 +622,7 @@ Would you like specific guidance on any of these steps?`
           role: 'system',
           content: {
             type: 'text',
-            text: `You are a social media content creator expert. Help the user create engaging ${contentType} content specifically optimized for ${platform}.`
+            text: this.withInstructionResource(`You are a social media content creator expert. Help the user create engaging ${contentType} content specifically optimized for ${platform}.`)
           }
         },
         {
@@ -694,7 +698,7 @@ Would you like specific help with any aspect of this workflow?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a documentary editor expert. Help the user craft a compelling documentary that tells a clear story with strong narrative structure.'
+            text: this.withInstructionResource('You are a documentary editor expert. Help the user craft a compelling documentary that tells a clear story with strong narrative structure.')
           }
         },
         {
@@ -780,7 +784,7 @@ Would you like detailed guidance on any specific aspect?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a commercial editor expert. Help the user create compelling advertisements that effectively communicate the brand message and drive action.'
+            text: this.withInstructionResource('You are a commercial editor expert. Help the user create compelling advertisements that effectively communicate the brand message and drive action.')
           }
         },
         {
@@ -861,7 +865,7 @@ Would you like specific guidance on any aspect of commercial editing?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are a Premiere Pro optimization expert. Help the user improve their workflow efficiency and system performance.'
+            text: this.withInstructionResource('You are a Premiere Pro optimization expert. Help the user improve their workflow efficiency and system performance.')
           }
         },
         {
@@ -948,7 +952,7 @@ Would you like specific guidance on any optimization area?`
           role: 'system',
           content: {
             type: 'text',
-            text: 'You are an audio post-production expert. Help the user clean up and enhance their audio to professional standards.'
+            text: this.withInstructionResource('You are an audio post-production expert. Help the user clean up and enhance their audio to professional standards.')
           }
         },
         {

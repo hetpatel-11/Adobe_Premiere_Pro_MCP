@@ -6,7 +6,7 @@
  */
 
 import { z } from 'zod';
-import { PremiereProBridge } from '../bridge/index.js';
+import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
 
@@ -120,10 +120,10 @@ const clipPlanSchema = z.object({
 });
 
 export class PremiereProTools {
-  private bridge: PremiereProBridge;
+  private bridge: PremiereProTransport;
   private logger: Logger;
 
-  constructor(bridge: PremiereProBridge) {
+  constructor(bridge: PremiereProTransport) {
     this.bridge = bridge;
     this.logger = new Logger('PremiereProTools');
   }

@@ -5,7 +5,7 @@
  * information about Adobe Premiere Pro projects, sequences, and media.
  */
 
-import { PremiereProBridge } from '../bridge/index.js';
+import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 
 export interface MCPResource {
@@ -16,10 +16,10 @@ export interface MCPResource {
 }
 
 export class PremiereProResources {
-  private bridge: PremiereProBridge;
+  private bridge: PremiereProTransport;
   private logger: Logger;
 
-  constructor(bridge: PremiereProBridge) {
+  constructor(bridge: PremiereProTransport) {
     this.bridge = bridge;
     this.logger = new Logger('PremiereProResources');
   }
