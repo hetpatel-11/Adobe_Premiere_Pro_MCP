@@ -19,6 +19,7 @@ Then do this once inside Premiere Pro:
 5. Click `Save Configuration`.
 6. Click `Start Bridge`.
 7. Click `Test Connection`.
+8. If it fails, click `Run Diagnostics` and send back `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`.
 
 Visual reference:
 
@@ -79,6 +80,7 @@ That sweep creates disposable `Sweep ...` sequences so the live bridge is actual
 - the CEP panel is not started
 - the temp directory in the panel is not `/tmp/premiere-mcp-bridge`
 - the panel needs a right-click `Reload` after bridge updates
+- diagnostics are available from the CEP panel via `Run Diagnostics`
 
 ### `codex mcp add` fails
 

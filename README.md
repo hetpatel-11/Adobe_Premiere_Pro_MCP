@@ -88,6 +88,7 @@ After the installer finishes:
 7. Click `Save Configuration`.
 8. Click `Start Bridge`.
 9. Click `Test Connection`.
+10. If `Test Connection` fails, click `Run Diagnostics` and send back `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`.
 
 If you need a visual reference for the developer mode toggle, it looks like this:
 
@@ -172,6 +173,7 @@ That validates:
 - `/tmp/premiere-mcp-bridge`
 - Adobe CEP debug mode
 - the Claude Desktop config entry when you use the installer path
+- CEP panel diagnostics written to `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`
 
 For a deeper end-to-end check, use a disposable Premiere project and run:
 

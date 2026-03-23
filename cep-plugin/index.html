@@ -498,10 +498,11 @@
                 <button class="primary" onclick="startBridge()" id="startButton">Start Bridge</button>
                 <button class="secondary" onclick="stopBridge()" id="stopButton" disabled>Stop Bridge</button>
                 <button class="secondary" onclick="testConnection()" id="testButton">Test Connection</button>
+                <button class="secondary" onclick="runDiagnostics()" id="diagnosticsButton">Run Diagnostics</button>
                 <button class="utility" onclick="clearLog()" id="clearButton">Clear Log</button>
             </div>
             <div class="micro-copy" style="margin-top: 10px; margin-bottom: 0;">
-                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory.
+                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory. If Test Connection fails, run diagnostics and share the generated JSON report from the temp directory.
             </div>
         </section>
 

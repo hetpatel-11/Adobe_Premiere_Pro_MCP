@@ -23,14 +23,21 @@
         this.init();
     }
 
+    MCPPremiereBridge.prototype.normalizeHostEnvironment = function(hostEnv) {
+        if (!hostEnv) return null;
+        if (typeof hostEnv === 'string') {
+            return JSON.parse(hostEnv);
+        }
+        return hostEnv;
+    };
+
     MCPPremiereBridge.prototype.init = function() {
         this.log('Initializing MCP Bridge (CEP)...', 'info');
 
         // Check host environment
         try {
-            var hostEnv = this.csInterface.getHostEnvironment();
-            if (hostEnv) {
-                var env = JSON.parse(hostEnv);
+            var env = this.normalizeHostEnvironment(this.csInterface.getHostEnvironment());
+            if (env) {
                 this.log('Premiere Pro version: ' + env.appVersion + ' (build ' + env.appId + ')', 'info');
             }
         } catch (e) {
@@ -53,6 +60,24 @@
             return defaultPath;
         } catch (e) {
             this.log('Error creating temp directory: ' + e.message, 'error');
+            return null;
+        }
+    };
+
+    MCPPremiereBridge.prototype.getDiagnosticReportPath = function() {
+        var tempDir = this.getTempDirectory();
+        if (!tempDir) return null;
+        return path.join(tempDir, 'premiere-mcp-diagnostics-latest.json');
+    };
+
+    MCPPremiereBridge.prototype.writeDiagnosticReport = function(report) {
+        try {
+            var reportPath = this.getDiagnosticReportPath();
+            if (!reportPath) return null;
+            fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+            return reportPath;
+        } catch (e) {
+            this.log('Failed to write diagnostics report: ' + e.message, 'error');
             return null;
         }
     };
@@ -129,7 +154,7 @@
             }
 
             // Get host environment info for debugging
-            var hostEnv = this.csInterface.getHostEnvironment();
+            var hostEnv = this.normalizeHostEnvironment(this.csInterface.getHostEnvironment());
             if (!hostEnv) {
                 callback(new Error('Could not get host environment. Is Premiere Pro running?'));
                 return;
@@ -139,7 +164,10 @@
                 self.log('EvalScript result: ' + result, 'info');
 
                 if (result === 'EvalScript error.' || result === 'EvalScript error') {
-                    callback(new Error('ExtendScript execution failed. This may indicate Premiere Pro does not support ExtendScript via CEP. Try using a JSX file or check Premiere Pro version.'));
+                    callback(new Error(
+                        'ExtendScript execution failed via CEP evalScript(). ' +
+                        'This is usually a host-side scripting failure or CEP compatibility issue, not a JSON parsing problem.'
+                    ));
                     return;
                 }
 
@@ -262,6 +290,84 @@
         this.testPremiereConnection();
     };
 
+    MCPPremiereBridge.prototype.runDiagnostics = function() {
+        var self = this;
+        var hostEnvironment = null;
+        var report = {
+            generatedAt: new Date().toISOString(),
+            panel: 'MCP Bridge (CEP)',
+            tempDirectory: this.getTempDirectory(),
+            hostEnvironment: null,
+            checks: []
+        };
+
+        function addCheck(name, success, details) {
+            report.checks.push({
+                name: name,
+                success: success,
+                details: details
+            });
+        }
+
+        function finalize() {
+            var reportPath = self.writeDiagnosticReport(report);
+            if (reportPath) {
+                self.log('Diagnostics report saved to ' + reportPath, 'info');
+            }
+            self.log('Diagnostics summary: ' + JSON.stringify(report), 'info');
+        }
+
+        this.log('Running CEP diagnostics...', 'info');
+
+        try {
+            hostEnvironment = this.normalizeHostEnvironment(this.csInterface.getHostEnvironment());
+            report.hostEnvironment = hostEnvironment;
+            addCheck('host_environment', !!hostEnvironment, hostEnvironment || 'No host environment returned');
+        } catch (e) {
+            addCheck('host_environment', false, e.message);
+            finalize();
+            return;
+        }
+
+        var checks = [
+            {
+                name: 'eval_string',
+                script: '(function(){ return "cep-ok"; })();'
+            },
+            {
+                name: 'eval_json_roundtrip',
+                script: '(function(){ return JSON.stringify({ ok: true, transport: "cep" }); })();'
+            },
+            {
+                name: 'app_version',
+                script: '(function(){ try { return JSON.stringify({ appVersion: app.version, appName: app.name }); } catch (e) { return JSON.stringify({ error: String(e) }); } })();'
+            },
+            {
+                name: 'project_access',
+                script: '(function(){ try { return JSON.stringify({ projectName: (app.project && app.project.name) ? app.project.name : "No project open" }); } catch (e) { return JSON.stringify({ error: String(e) }); } })();'
+            }
+        ];
+
+        function runCheck(index) {
+            if (index >= checks.length) {
+                finalize();
+                return;
+            }
+
+            var check = checks[index];
+            self.executeExtendScript(check.script, function(err, result) {
+                if (err) {
+                    addCheck(check.name, false, err.message);
+                } else {
+                    addCheck(check.name, true, result);
+                }
+                runCheck(index + 1);
+            });
+        }
+
+        runCheck(0);
+    };
+
     MCPPremiereBridge.prototype.testPremiereConnection = function() {
         var self = this;
         var script = '(function() {\
@@ -356,6 +462,7 @@
     window.startBridge = function() { if (window.bridge) window.bridge.startBridge(); };
     window.stopBridge = function() { if (window.bridge) window.bridge.stopBridge(); };
     window.testConnection = function() { if (window.bridge) window.bridge.testConnection(); };
+    window.runDiagnostics = function() { if (window.bridge) window.bridge.runDiagnostics(); };
     window.saveConfig = function() { if (window.bridge) window.bridge.saveConfig(); };
     window.clearLog = function() { if (window.bridge) window.bridge.clearLog(); };
     document.addEventListener('DOMContentLoaded', function() {
