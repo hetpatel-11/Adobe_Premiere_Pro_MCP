@@ -14,6 +14,40 @@ import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 import type { PremiereProTransport } from './types.js';
 
 const EXTENDSCRIPT_HELPERS = `
+function __mcpEscapeString(value) {
+  return String(value)
+    .replace(/\\\\/g, '\\\\\\\\')
+    .replace(/"/g, '\\\\"')
+    .replace(/\\r/g, '\\\\r')
+    .replace(/\\n/g, '\\\\n')
+    .replace(/\\t/g, '\\\\t');
+}
+function __mcpStringify(value) {
+  if (value === null) return 'null';
+  var valueType = typeof value;
+  if (valueType === 'string') return '"' + __mcpEscapeString(value) + '"';
+  if (valueType === 'number') return isFinite(value) ? String(value) : 'null';
+  if (valueType === 'boolean') return value ? 'true' : 'false';
+  if (value instanceof Array) {
+    var arrayParts = [];
+    for (var i = 0; i < value.length; i++) {
+      arrayParts.push(__mcpStringify(value[i]));
+    }
+    return '[' + arrayParts.join(',') + ']';
+  }
+  if (valueType === 'object') {
+    var objectParts = [];
+    for (var key in value) {
+      if (value.hasOwnProperty && !value.hasOwnProperty(key)) continue;
+      if (typeof value[key] === 'undefined' || typeof value[key] === 'function') continue;
+      objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(value[key]));
+    }
+    return '{' + objectParts.join(',') + '}';
+  }
+  return 'null';
+}
+if (typeof JSON === 'undefined') { JSON = {}; }
+if (typeof JSON.stringify !== 'function') { JSON.stringify = __mcpStringify; }
 function __findSequence(id) {
   for (var i = 0; i < app.project.sequences.numSequences; i++) {
     if (app.project.sequences[i].sequenceID === id) return app.project.sequences[i];

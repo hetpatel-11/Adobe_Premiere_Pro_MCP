@@ -8,6 +8,42 @@
     var fs = require('fs');
     var path = require('path');
     var os = require('os');
+    var EXTENDSCRIPT_COMPAT_HELPERS = [
+        'function __mcpEscapeString(value) {',
+        '    return String(value)',
+        '        .replace(/\\\\/g, "\\\\\\\\")',
+        "        .replace(/\"/g, '\\\\\"')",
+        '        .replace(/\\r/g, "\\\\r")',
+        '        .replace(/\\n/g, "\\\\n")',
+        '        .replace(/\\t/g, "\\\\t");',
+        '}',
+        'function __mcpStringify(value) {',
+        '    if (value === null) return "null";',
+        '    var valueType = typeof value;',
+        '    if (valueType === "string") return "\\"" + __mcpEscapeString(value) + "\\"";',
+        '    if (valueType === "number") return isFinite(value) ? String(value) : "null";',
+        '    if (valueType === "boolean") return value ? "true" : "false";',
+        '    if (value instanceof Array) {',
+        '        var arrayParts = [];',
+        '        for (var i = 0; i < value.length; i++) {',
+        '            arrayParts.push(__mcpStringify(value[i]));',
+        '        }',
+        '        return "[" + arrayParts.join(",") + "]";',
+        '    }',
+        '    if (valueType === "object") {',
+        '        var objectParts = [];',
+        '        for (var key in value) {',
+        '            if (value.hasOwnProperty && !value.hasOwnProperty(key)) continue;',
+        '            if (typeof value[key] === "undefined" || typeof value[key] === "function") continue;',
+        '            objectParts.push(__mcpStringify(String(key)) + ":" + __mcpStringify(value[key]));',
+        '        }',
+        '        return "{" + objectParts.join(",") + "}";',
+        '    }',
+        '    return "null";',
+        '}',
+        'if (typeof JSON === "undefined") { JSON = {}; }',
+        'if (typeof JSON.stringify !== "function") { JSON.stringify = __mcpStringify; }'
+    ].join('\n');
 
     function getDefaultTempPath() {
         var base = (os.platform() === 'win32') ? (process.env.TEMP || 'C:\\Temp') : '/tmp';
@@ -160,7 +196,8 @@
                 return;
             }
 
-            this.csInterface.evalScript(script, function(result) {
+            var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + script;
+            this.csInterface.evalScript(fullScript, function(result) {
                 self.log('EvalScript result: ' + result, 'info');
 
                 if (result === 'EvalScript error.' || result === 'EvalScript error') {
@@ -333,6 +370,10 @@
             {
                 name: 'eval_string',
                 script: '(function(){ return "cep-ok"; })();'
+            },
+            {
+                name: 'app_version_raw',
+                script: '(function(){ try { return app.version; } catch (e) { return "ERROR: " + String(e); } })();'
             },
             {
                 name: 'eval_json_roundtrip',
