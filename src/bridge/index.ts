@@ -215,6 +215,20 @@ export class PremiereProBridge implements PremiereProTransport {
     this.logger.info(`Using ${this.communicationMethod} communication method`);
   }
 
+  private isSelfInvokingScript(script: string): boolean {
+    const trimmed = script.trim();
+    return /^\(function\s*\(\)\s*\{[\s\S]*\}\)\s*\(\)\s*;?$/.test(trimmed);
+  }
+
+  private buildExecutableScript(script: string): string {
+    if (this.isSelfInvokingScript(script)) {
+      return EXTENDSCRIPT_HELPERS + script.trim();
+    }
+
+    // Wrap script bodies so top-level "return ..." remains valid in ExtendScript.
+    return EXTENDSCRIPT_HELPERS + '(function(){\n' + script + '\n})();';
+  }
+
   async executeScript(script: string): Promise<any> {
     if (!this.isInitialized) {
       throw new Error('Bridge not initialized. Call initialize() first.');
@@ -225,10 +239,7 @@ export class PremiereProBridge implements PremiereProTransport {
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
 
     try {
-      // Prepend helper functions and wrap script in IIFE so that
-      // "return JSON.stringify(...)" is valid (ES3/ExtendScript forbids
-      // return statements outside of function bodies at the top level).
-      const fullScript = EXTENDSCRIPT_HELPERS + '(function(){\n' + script + '\n})();';
+      const fullScript = this.buildExecutableScript(script);
 
       // Write command to file
       await fs.writeFile(commandFile, JSON.stringify({

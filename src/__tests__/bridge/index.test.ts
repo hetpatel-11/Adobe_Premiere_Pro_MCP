@@ -65,6 +65,27 @@ describe('PremiereProBridge', () => {
     expect(mockFs.unlink).toHaveBeenCalledWith('/tmp/premiere-mcp-bridge-test/response-test-uuid-1234.json');
   });
 
+  it('preserves self-invoking scripts instead of double-wrapping them', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ ok: true }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.executeScript('(function(){ return JSON.stringify({ ok: true }); })();');
+
+    expect(mockFs.writeFile).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      expect.stringContaining('(function(){ return JSON.stringify({ ok: true }); })();')
+    );
+    expect(mockFs.writeFile).not.toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      expect.stringContaining('(function(){\n(function(){ return JSON.stringify({ ok: true }); })();\n})();')
+    );
+  });
+
   it('passes through importMedia responses', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
