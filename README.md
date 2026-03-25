@@ -8,6 +8,16 @@ Control Adobe Premiere Pro through MCP using Codex, Claude Code, Claude Desktop,
 
 ![Current MCP Bridge (CEP) panel](images/demo.png)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=hetpatel-11%2FAdobe_Premiere_Pro_MCP&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=hetpatel-11/Adobe_Premiere_Pro_MCP&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=hetpatel-11/Adobe_Premiere_Pro_MCP&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=hetpatel-11/Adobe_Premiere_Pro_MCP&type=date&legend=top-left" />
+ </picture>
+</a>
+
 Current CEP panel UI inside Premiere Pro, using the refreshed bridge controls and status layout.
 
 ## Current Status
