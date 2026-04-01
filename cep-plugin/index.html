@@ -468,7 +468,7 @@
                     <div class="status-caption">Premiere</div>
                     <div class="status-indicator">
                         <div class="status-dot disconnected" id="serverStatus"></div>
-                        <span class="status-text" id="serverText">Click Test to verify</span>
+                        <span class="status-text" id="serverText">Start Bridge to enable</span>
                     </div>
                 </div>
             </div>
@@ -492,17 +492,16 @@
         <section class="panel">
             <div class="panel-title">
                 <h2>Controls</h2>
-                <span>Start, test, inspect</span>
+                <span>Start, stop, inspect</span>
             </div>
             <div class="button-grid">
                 <button class="primary" onclick="startBridge()" id="startButton">Start Bridge</button>
                 <button class="secondary" onclick="stopBridge()" id="stopButton" disabled>Stop Bridge</button>
-                <button class="secondary" onclick="testConnection()" id="testButton">Test Connection</button>
                 <button class="secondary" onclick="runDiagnostics()" id="diagnosticsButton">Run Diagnostics</button>
                 <button class="utility" onclick="clearLog()" id="clearButton">Clear Log</button>
             </div>
             <div class="micro-copy" style="margin-top: 10px; margin-bottom: 0;">
-                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory. If Test Connection fails, run diagnostics and share the generated JSON report from the temp directory.
+                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory. Once Start Bridge is on, connect from Codex, Claude, or another MCP client using the same temp directory. If commands fail, run diagnostics and share the generated JSON report from the temp directory.
             </div>
         </section>
 
@@ -525,7 +524,7 @@
             </div>
             <div class="log-container" id="logContainer">
                 <div class="log-entry info">MCP Bridge (CEP) loaded. This is the supported release path for Premiere automation.</div>
-                <div class="log-entry info">Set the temp directory to match your MCP client, then click Start Bridge.</div>
+                <div class="log-entry info">Set the temp directory to match your MCP client, then click Start Bridge and connect from Codex or Claude.</div>
             </div>
         </section>
 

@@ -99,14 +99,14 @@ After the installer finishes:
 6. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
 7. Click `Save Configuration`.
 8. Click `Start Bridge`.
-9. Click `Test Connection`.
-10. If `Test Connection` fails, click `Run Diagnostics` and send back `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`.
+9. Connect from Codex, Claude Code, Claude Desktop, or another MCP client using the same temp directory.
+10. If commands fail, click `Run Diagnostics` and send back `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`.
 
 If you need a visual reference for the developer mode toggle, it looks like this:
 
 ![Enable UXP developer mode in Premiere Pro](images/uxp-developer-mode.png)
 
-If the panel reports that Premiere is ready, the bridge is live.
+If the panel reports that Premiere is ready after `Start Bridge`, the bridge is live.
 
 ## Install By Client
 

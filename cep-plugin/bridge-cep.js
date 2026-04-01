@@ -314,17 +314,15 @@
         this.updateUI();
         var tempPath = this.getTempDirectory();
         this.log('Watching: ' + tempPath + ' (must match your MCP client PREMIERE_TEMP_DIR)', 'info');
-        this.testPremiereConnection();
+        this.updateServerStatus(true);
+        this.log('Bridge ready. Connect from Codex, Claude, or another MCP client using this same temp directory.', 'info');
     };
 
     MCPPremiereBridge.prototype.stopBridge = function() {
         this.log('Stopping MCP Bridge...', 'info');
         this.isConnected = false;
         this.updateUI();
-    };
-
-    MCPPremiereBridge.prototype.testConnection = function() {
-        this.testPremiereConnection();
+        this.updateServerStatus(false);
     };
 
     MCPPremiereBridge.prototype.runDiagnostics = function() {
@@ -475,7 +473,7 @@
                 serverText.textContent = 'Premiere Pro: Ready';
             } else {
                 serverStatus.className = 'status-dot disconnected';
-                serverText.textContent = 'Premiere Pro: Click Test to verify';
+                serverText.textContent = 'Premiere Pro: Start Bridge to enable';
             }
         }
     };
@@ -502,7 +500,6 @@
     window.bridge = null;
     window.startBridge = function() { if (window.bridge) window.bridge.startBridge(); };
     window.stopBridge = function() { if (window.bridge) window.bridge.stopBridge(); };
-    window.testConnection = function() { if (window.bridge) window.bridge.testConnection(); };
     window.runDiagnostics = function() { if (window.bridge) window.bridge.runDiagnostics(); };
     window.saveConfig = function() { if (window.bridge) window.bridge.saveConfig(); };
     window.clearLog = function() { if (window.bridge) window.bridge.clearLog(); };
