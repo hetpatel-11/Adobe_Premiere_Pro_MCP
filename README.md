@@ -4,13 +4,31 @@ English | [日本語](README.ja.md) | [Tiếng Việt](README.vi.md) | [简体�
 
 Control Adobe Premiere Pro through MCP using Codex, Claude Code, Claude Desktop, or any other MCP client.
 
-<a href="https://github.com/Monet-AI-Editor/Monet">
-  <img src="images/monet-logo.svg" width="88" height="88" alt="Monet logo" />
-</a>
+---
 
-> Want something built for AI Agents from the ground up? Adobe is still powerful, but it is not AI-first. I am now building [Monet](https://github.com/Monet-AI-Editor/Monet), an AI-first video editor designed for full coding-agent control from day one.
->
-> If you want the AI-native path, use Monet. If you need Adobe Premiere Pro today, this project is still for you.
+## 🎨 Building Something Better
+
+<table>
+<tr>
+<td width="100" align="center">
+<a href="https://github.com/Monet-AI-Editor/Monet">
+  <img src="images/monet-logo.svg" width="80" height="80" alt="Monet logo" />
+</a>
+</td>
+<td>
+
+**Adobe Premiere Pro was not built for AI agents — and it shows.**
+
+I'm building **[Monet](https://github.com/Monet-AI-Editor/Monet)**, an AI-first video editor designed from day one for full coding-agent control. No workarounds. No scripting hacks. Just a clean API built for the way agents actually work.
+
+➡️ **[Star Monet on GitHub](https://github.com/Monet-AI-Editor/Monet)** if you want the AI-native path.
+_This project is still here if you need Premiere Pro today._
+
+</td>
+</tr>
+</table>
+
+---
 
 <a href="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP/badge" alt="Adobe Premiere Pro MCP server" />
