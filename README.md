@@ -29,10 +29,6 @@ I'm building **[Monet](https://github.com/Monet-AI-Editor/Monet)**, an AI-first 
 
 ---
 
-<a href="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@hetpatel-11/Adobe_Premiere_Pro_MCP/badge" alt="Adobe Premiere Pro MCP server" />
-</a>
-
 ![Current MCP Bridge (CEP) panel](images/demo.png)
 
 ## Star History
