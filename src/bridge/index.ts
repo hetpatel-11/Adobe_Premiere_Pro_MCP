@@ -501,19 +501,70 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<void> {
+  async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<any> {
+    // Escape backslashes and quotes in paths so JSX string-eval is safe
+    const safePath = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = `
-      // Render sequence
-      var sequence = app.project.getSequenceByID("${sequenceId}");
-      var encoder = app.encoder;
-      
-      encoder.encodeSequence(sequence, "${outputPath}", "${presetPath}",
-        encoder.ENCODE_ENTIRE, false);
+      try {
+        // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) {
+          // Fallback: try active sequence if ID lookup fails
+          sequence = app.project.activeSequence;
+        }
+        if (!sequence) {
+          return JSON.stringify({ success: false, error: "Sequence not found by id ${sequenceId} and no active sequence" });
+        }
+        if (typeof app.encoder === "undefined") {
+          return JSON.stringify({ success: false, error: "app.encoder not available in this Premiere build" });
+        }
 
-      return JSON.stringify({ success: true });
+        // Boot AME if not already running so it can pick up the queue
+        try { app.encoder.launchEncoder(); } catch (e1) {}
+
+        // Queue range constants on app.encoder: ENCODE_ENTIRE / ENCODE_IN_TO_OUT / ENCODE_WORKAREA
+        var range = (typeof app.encoder.ENCODE_ENTIRE !== "undefined") ? app.encoder.ENCODE_ENTIRE : 0;
+
+        // 5th arg "removeOnCompletion": 1=remove, 0=keep. We use 1 to avoid AME queue clutter.
+        var jobID = app.encoder.encodeSequence(
+          sequence,
+          "${safePath(outputPath)}",
+          "${safePath(presetPath)}",
+          range,
+          1
+        );
+
+        if (!jobID) {
+          return JSON.stringify({
+            success: false,
+            error: "encodeSequence returned no jobID — preset path may be invalid or AME not connected",
+            outputPath: "${safePath(outputPath)}",
+            presetPath: "${safePath(presetPath)}"
+          });
+        }
+
+        // Trigger AME to actually start processing the queued job
+        try { app.encoder.startBatch(); } catch (e2) {}
+
+        return JSON.stringify({
+          success: true,
+          queued: true,
+          jobID: String(jobID),
+          outputPath: "${safePath(outputPath)}",
+          presetPath: "${safePath(presetPath)}"
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: "encodeSequence threw: " + e.toString() });
+      }
     `;
-    
-    await this.executeScript(script);
+
+    const raw = await this.executeScript(script);
+    // CEP returns the JSON.stringify'd object; bridge.executeScript returns parsed.result if present.
+    // Some CEP plugins wrap as string; handle both.
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw); } catch { return { success: false, error: "Bridge returned unparseable string: " + raw }; }
+    }
+    return raw;
   }
 
   async listProjectItems(): Promise<PremiereProProjectItem[]> {

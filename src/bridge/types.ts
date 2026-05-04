@@ -13,5 +13,5 @@ export interface PremiereProTransport {
   importMedia(filePath: string): Promise<PremiereProProjectItem>;
   createSequence(name: string, presetPath?: string): Promise<PremiereProSequence>;
   addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number): Promise<PremiereProClip>;
-  renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<void>;
+  renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<{ success: boolean; jobID?: string; queued?: boolean; error?: string; outputPath?: string; presetPath?: string }>;
 }
