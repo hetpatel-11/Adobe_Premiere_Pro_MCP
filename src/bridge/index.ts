@@ -506,14 +506,13 @@ export class PremiereProBridge implements PremiereProTransport {
     const safePath = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = `
       try {
-        // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper
+        // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper.
+        // Fail hard if the requested sequence isn't found — silently falling back to
+        // app.project.activeSequence would queue/render the wrong timeline while still
+        // reporting success, masking caller bugs (stale IDs, etc.).
         var sequence = __findSequence("${sequenceId}");
         if (!sequence) {
-          // Fallback: try active sequence if ID lookup fails
-          sequence = app.project.activeSequence;
-        }
-        if (!sequence) {
-          return JSON.stringify({ success: false, error: "Sequence not found by id ${sequenceId} and no active sequence" });
+          return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         }
         if (typeof app.encoder === "undefined") {
           return JSON.stringify({ success: false, error: "app.encoder not available in this Premiere build" });
