@@ -291,7 +291,8 @@ export class PremiereProTools {
           projectItemId: z.string().describe('The ID of the project item (clip) to add'),
           trackIndex: z.number().describe('The index of the video or audio track (0-based)'),
           time: z.number().describe('The time in seconds where the clip should be placed on the timeline'),
-          insertMode: z.enum(['overwrite', 'insert']).optional().describe('Whether to overwrite existing content or insert and shift')
+          insertMode: z.enum(['overwrite', 'insert']).optional().describe('Whether to overwrite existing content or insert and shift'),
+          linkAudio: z.boolean().optional().describe('When false, removes the auto-linked audio counterpart that Premiere places on audio tracks for video-track clips. Useful for video overlays whose source media (e.g. Remotion .mov outputs) carry silent PCM that would overwrite existing audio. Default true (preserves Premiere\'s native linking behavior).')
         })
       },
       {
@@ -1117,7 +1118,7 @@ export class PremiereProTools {
 
         // Timeline Operations
         case 'add_to_timeline':
-          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode);
+          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio);
         case 'remove_from_timeline':
           return await this.removeFromTimeline(args.clipId, args.deleteMode);
         case 'move_clip':
@@ -2149,9 +2150,9 @@ export class PremiereProTools {
   }
 
   // Timeline Operations Implementation
-  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite'): Promise<any> {
+  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite', linkAudio: boolean = true): Promise<any> {
     try {
-      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time);
+      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio);
       if (!result.success) {
         return {
           ...result,
@@ -2159,7 +2160,8 @@ export class PremiereProTools {
           projectItemId: projectItemId,
           trackIndex: trackIndex,
           time: time,
-          insertMode: insertMode
+          insertMode: insertMode,
+          linkAudio: linkAudio
         };
       }
       return {
@@ -2170,6 +2172,7 @@ export class PremiereProTools {
         trackIndex: trackIndex,
         time: time,
         insertMode: insertMode,
+        linkAudio: linkAudio,
         ...result
       };
     } catch (error) {

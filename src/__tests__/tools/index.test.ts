@@ -306,8 +306,8 @@ describe('PremiereProTools', () => {
       expect(result.message).toContain('directed clip plan');
       expect(result.transitions).toHaveLength(0);
       expect(result.animations).toHaveLength(0);
-      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5);
-      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5, true);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6, true);
     });
 
     it('builds a brand spot from assets without requiring a mogrt', async () => {

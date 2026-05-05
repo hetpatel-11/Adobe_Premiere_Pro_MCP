@@ -444,7 +444,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number): Promise<PremiereProClip> {
+  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true): Promise<PremiereProClip> {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
@@ -497,6 +497,36 @@ export class PremiereProBridge implements PremiereProTransport {
           return JSON.stringify({ success: false, error: "Clip placement did not produce a track item" });
         }
 
+        // linkAudio=false post-processing: when placing a video-track clip whose source
+        // media has an embedded audio stream (e.g. Remotion .mov outputs with silent PCM),
+        // Premiere auto-links and places the audio counterpart on the next available
+        // audio track via overwriteClip. This can DESTROY existing audio (Sprint 3 v14g
+        // bug: silent overlay PCM overwrote founder voice on A1). Pass linkAudio=false
+        // to scan audio tracks for the linked counterpart at the same start time and
+        // remove it. The video on the target track is untouched.
+        var unlinkedAudioRemoved = 0;
+        if (!isAudioOnly && ${linkAudio} === false) {
+          var videoStart = placedClip.start.seconds;
+          var tolerance = 0.1;
+          for (var at = 0; at < sequence.audioTracks.numTracks; at++) {
+            var audioTrack = sequence.audioTracks[at];
+            // iterate backwards because remove() may shift indices
+            for (var ai = audioTrack.clips.numItems - 1; ai >= 0; ai--) {
+              var audioClip = audioTrack.clips[ai];
+              if (audioClip && audioClip.projectItem &&
+                  audioClip.projectItem.nodeId === projectItem.nodeId &&
+                  Math.abs(audioClip.start.seconds - videoStart) < tolerance) {
+                try {
+                  audioClip.remove(false, false); // ripple=false, alignToVideo=false
+                  unlinkedAudioRemoved++;
+                } catch (rmErr) {
+                  // best effort — log but don't fail the whole add_to_timeline
+                }
+              }
+            }
+          }
+        }
+
         return JSON.stringify({
           success: true,
           id: placedClip.nodeId,
@@ -505,7 +535,9 @@ export class PremiereProBridge implements PremiereProTransport {
           inPoint: placedClip.start.seconds,
           outPoint: placedClip.end.seconds,
           duration: placedClip.duration.seconds,
-          mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : ""
+          mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : "",
+          linkAudio: ${linkAudio},
+          unlinkedAudioRemoved: unlinkedAudioRemoved
         });
       } catch (e) {
         return JSON.stringify({
