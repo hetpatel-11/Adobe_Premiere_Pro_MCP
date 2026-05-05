@@ -2545,38 +2545,90 @@ export class PremiereProTools {
   }
 
   private async addAudioKeyframes(clipId: string, keyframes: Array<{time: number, level: number}>): Promise<any> {
-    const keyframeCode = keyframes.map(kf => `
+    // CALIBRATION (matches adjustAudioLevels): Premiere's clip Volume Level property is linear amplitude.
+    // The displayed "0 dB" in Effects Controls corresponds to internal linear value ~0.17783.
+    // Relationship: linear = 10^((dB - 15) / 20). Verified empirically on Premiere Pro 2026 macOS es_ES.
+    const DB_CALIBRATION_OFFSET = 15;
+    const keyframeCode = keyframes.map(kf => {
+      const linearValue = Math.pow(10, (kf.level - DB_CALIBRATION_OFFSET) / 20);
+      return `
         try {
-          volumeProperty.addKey(${kf.time});
-          volumeProperty.setValueAtKey(${kf.time}, ${kf.level});
-          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level} });
-        } catch (e2) {}
-    `).join('\n');
+          levelProp.addKey(${kf.time});
+          levelProp.setValueAtKey(${kf.time}, ${linearValue}, true);
+          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level}, linearValue: ${linearValue} });
+        } catch (e2) {
+          failedKeyframes.push({ time: ${kf.time}, level: ${kf.level}, error: e2.toString() });
+        }
+    `;
+    }).join('\n');
 
     const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
-        var volumeProperty = null;
+
+        // Locale-aware Volume component / Level property detection (matches adjustAudioLevels patch).
+        // Without this, the function fails with "Volume property not found" on non-English Premiere
+        // installs (e.g., Spanish "Volumen"/"Nivel", German "Lautstärke"/"Pegel", etc.).
+        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
+        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
+        function isOneOf(name, list) {
+          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
+          return false;
+        }
+
+        var volumeComp = null;
+        var dump = [];
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
+          var compName = String(comp.displayName);
+          var propsList = [];
           for (var j = 0; j < comp.properties.numItems; j++) {
-            if (comp.properties[j].displayName === "Volume") {
-              volumeProperty = comp.properties[j];
-              break;
-            }
+            propsList.push(String(comp.properties[j].displayName));
           }
-          if (volumeProperty) break;
+          dump.push({ idx: i, component: compName, properties: propsList });
+          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
+            volumeComp = comp;
+          }
         }
-        if (!volumeProperty) return JSON.stringify({ success: false, error: "Volume property not found" });
+        if (!volumeComp) {
+          return JSON.stringify({
+            success: false,
+            error: "Volume component not found on clip (locale-aware lookup failed)",
+            components_dump: dump
+          });
+        }
+
+        var levelProp = null;
+        for (var k = 0; k < volumeComp.properties.numItems; k++) {
+          var pName = String(volumeComp.properties[k].displayName);
+          if (isOneOf(pName, LEVEL_NAMES)) {
+            levelProp = volumeComp.properties[k];
+            break;
+          }
+        }
+        if (!levelProp) {
+          return JSON.stringify({
+            success: false,
+            error: "Level property not found inside Volume component",
+            volume_component: String(volumeComp.displayName)
+          });
+        }
+
+        levelProp.setTimeVarying(true);
         var addedKeyframes = [];
+        var failedKeyframes = [];
         ${keyframeCode}
         return JSON.stringify({
           success: true,
-          message: "Audio keyframes added",
+          message: "Audio keyframes added (locale-aware Volume detection, calibrated dB scale)",
           clipId: ${JSON.stringify(clipId)},
+          volumeComponent: String(volumeComp.displayName),
+          levelProperty: String(levelProp.displayName),
+          calibrationOffset: ${DB_CALIBRATION_OFFSET},
           addedKeyframes: addedKeyframes,
+          failedKeyframes: failedKeyframes,
           totalKeyframes: addedKeyframes.length
         });
       } catch (e) {
