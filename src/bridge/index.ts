@@ -457,9 +457,25 @@ export class PremiereProBridge implements PremiereProTransport {
           return JSON.stringify({ success: false, error: "Project item not found" });
         }
 
-        var track = sequence.videoTracks[${trackIndex}];
-        if (!track) {
-          return JSON.stringify({ success: false, error: "Video track not found" });
+        // Audio-only routing: detect by file extension and route to audioTracks instead of
+        // videoTracks. Without this, mp3/wav/aif/m4a/aac/flac/ogg clips fail with
+        // "Video track not found" because addToTimeline always indexed sequence.videoTracks.
+        var mediaPath = projectItem.getMediaPath ? projectItem.getMediaPath() : "";
+        var isAudioOnly = /\\.(mp3|wav|aif|aiff|m4a|aac|flac|ogg|wma)$/i.test(mediaPath);
+        var trackKind;
+        var track;
+        if (isAudioOnly) {
+          trackKind = "audio";
+          track = sequence.audioTracks[${trackIndex}];
+          if (!track) {
+            return JSON.stringify({ success: false, error: "Audio track not found at index ${trackIndex}", audioTrackCount: sequence.audioTracks.numTracks });
+          }
+        } else {
+          trackKind = "video";
+          track = sequence.videoTracks[${trackIndex}];
+          if (!track) {
+            return JSON.stringify({ success: false, error: "Video track not found at index ${trackIndex}", videoTrackCount: sequence.videoTracks.numTracks });
+          }
         }
 
         track.overwriteClip(projectItem, ${time});
@@ -485,6 +501,7 @@ export class PremiereProBridge implements PremiereProTransport {
           success: true,
           id: placedClip.nodeId,
           name: placedClip.name,
+          trackKind: trackKind,
           inPoint: placedClip.start.seconds,
           outPoint: placedClip.end.seconds,
           duration: placedClip.duration.seconds,
@@ -497,7 +514,7 @@ export class PremiereProBridge implements PremiereProTransport {
         });
       }
     `;
-    
+
     return await this.executeScript(script);
   }
 
