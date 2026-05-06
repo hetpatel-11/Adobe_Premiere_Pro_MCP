@@ -502,7 +502,7 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
       expect(result.jobID).toBe('job-abc-123');
       expect(result.queued).toBe(true);
-      expect(result.message).toMatch(/queued to AME/);
+      expect(result.message).toMatch(/queued in Adobe Media Encoder/);
       expect(mockBridge.renderSequence).toHaveBeenCalledWith(
         'seq-1',
         '/tmp/out.mp4',
