@@ -393,6 +393,38 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'setup_ducking',
+        description:
+          'High-level wrapper around add_audio_keyframes that builds a ducking curve from a base level + ducking windows. ' +
+          'Computes 4 keyframes per window (pre-fade, duck-in, duck-out, post-fade) plus boundary keyframes at clip start/end. ' +
+          'Replaces the manual "8 keyframes per video" pattern from Sprint 3. Times are clip-source-time absolute (same convention as add_audio_keyframes).',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the music/SFX clip to apply ducking to'),
+          baseDb: z.number().describe('Sustained level in dB (e.g. -25 for music bed under voice)'),
+          duckingWindows: z
+            .array(
+              z.object({
+                startTime: z.number().describe('When to begin ducking, in seconds (clip-source-time absolute)'),
+                endTime: z.number().describe('When to recover from ducking, in seconds'),
+                duckedDb: z.number().describe('Lower level in dB during this window (e.g. -38 for narrative pause)'),
+              })
+            )
+            .describe('Windows where the clip should duck below baseDb. Empty array = sustained baseDb only.'),
+          fadeSeconds: z
+            .number()
+            .optional()
+            .describe('Ramp time for each transition (default 0.2s = 6 frames @30fps)'),
+          clipStartTime: z
+            .number()
+            .optional()
+            .describe('Clip start time anchor for first keyframe (default 0)'),
+          clipEndTime: z
+            .number()
+            .optional()
+            .describe('Clip end time anchor for last keyframe; if omitted, last duck window endTime + 1s is used'),
+        }),
+      },
+      {
         name: 'mute_track',
         description: 'Mutes or unmutes an entire audio track.',
         inputSchema: z.object({
@@ -1145,6 +1177,15 @@ export class PremiereProTools {
           return await this.adjustAudioLevels(args.clipId, args.level);
         case 'add_audio_keyframes':
           return await this.addAudioKeyframes(args.clipId, args.keyframes);
+        case 'setup_ducking':
+          return await this.setupDucking(
+            args.clipId,
+            args.baseDb,
+            args.duckingWindows,
+            args.fadeSeconds,
+            args.clipStartTime,
+            args.clipEndTime
+          );
         case 'mute_track':
           return await this.muteTrack(args.sequenceId, args.trackIndex, args.muted);
 
@@ -2511,6 +2552,70 @@ export class PremiereProTools {
   }
 
   // Audio Operations Implementation
+  /**
+   * High-level ducking helper. Computes a keyframe curve and delegates to
+   * addAudioKeyframes (single source of truth for the locale-aware + calibrated
+   * keyframe write).
+   *
+   * For each ducking window, emits 4 keyframes:
+   *   - pre-fade  (window.startTime - fadeSeconds): baseDb
+   *   - duck-in   (window.startTime):               duckedDb
+   *   - duck-out  (window.endTime):                 duckedDb
+   *   - post-fade (window.endTime + fadeSeconds):   baseDb
+   *
+   * Plus boundary keyframes at clipStartTime (or 0) and clipEndTime
+   * (or last window.endTime + 1s) anchored to baseDb. Result: a continuous
+   * curve that sits at baseDb except inside duck windows.
+   *
+   * Replaces the manual Sprint 3 "8 keyframes per video" pattern.
+   */
+  private async setupDucking(
+    clipId: string,
+    baseDb: number,
+    duckingWindows: Array<{ startTime: number; endTime: number; duckedDb: number }>,
+    fadeSeconds: number = 0.2,
+    clipStartTime?: number,
+    clipEndTime?: number
+  ): Promise<any> {
+    const fade = fadeSeconds ?? 0.2;
+    const start = clipStartTime ?? 0;
+    const lastWindow = duckingWindows.length > 0 ? duckingWindows[duckingWindows.length - 1] : undefined;
+    const end = clipEndTime ?? (lastWindow ? lastWindow.endTime + 1 : start + 1);
+
+    // Collect all keyframes and dedupe-by-time (later writes win for same time)
+    const map = new Map<number, number>();
+    const upsert = (t: number, db: number) => {
+      // Quantize to ms to avoid duplicate-but-not-equal floats
+      const key = Math.round(t * 1000) / 1000;
+      map.set(key, db);
+    };
+
+    upsert(start, baseDb);
+
+    for (const w of duckingWindows) {
+      upsert(Math.max(start, w.startTime - fade), baseDb);
+      upsert(w.startTime, w.duckedDb);
+      upsert(w.endTime, w.duckedDb);
+      upsert(Math.min(end, w.endTime + fade), baseDb);
+    }
+
+    upsert(end, baseDb);
+
+    const keyframes = Array.from(map.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([time, level]) => ({ time, level }));
+
+    const result = await this.addAudioKeyframes(clipId, keyframes);
+    return {
+      ...(typeof result === 'object' && result !== null ? result : {}),
+      ducking_windows: duckingWindows.length,
+      fade_seconds: fade,
+      keyframes_emitted: keyframes.length,
+      base_db: baseDb,
+      computed_keyframes: keyframes,
+    };
+  }
+
   private async adjustAudioLevels(clipId: string, level: number): Promise<any> {
     const script = `
       try {

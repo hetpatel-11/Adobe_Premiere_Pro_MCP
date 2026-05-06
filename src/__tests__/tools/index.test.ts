@@ -30,6 +30,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('import_media');
       expect(toolNames).toContain('add_to_timeline');
       expect(toolNames).toContain('import_mogrt');
+      expect(toolNames).toContain('setup_ducking');
       expect(toolNames).not.toContain('create_nested_sequence');
       expect(toolNames).not.toContain('unnest_sequence');
     });
@@ -339,6 +340,96 @@ describe('PremiereProTools', () => {
       expect(result.sequence.id).toBe('seq-3');
       expect(result.overlays[0].skipped).toBe(true);
       expect(result.polish[0].skipped).toBe(true);
+    });
+  });
+
+  describe('setup_ducking', () => {
+    it('emits 4 keyframes per duck window plus boundaries (sustained-base curve)', async () => {
+      // Bridge.executeScript is what addAudioKeyframes ultimately invokes; capture and inspect.
+      mockBridge.executeScript.mockResolvedValue({ success: true, addedKeyframes: [], failedKeyframes: [] });
+
+      const result = await tools.executeTool('setup_ducking', {
+        clipId: 'music-1',
+        baseDb: -25,
+        duckingWindows: [
+          { startTime: 40.5, endTime: 41.4, duckedDb: -38 },
+          { startTime: 60.0, endTime: 61.5, duckedDb: -38 },
+        ],
+        fadeSeconds: 0.2,
+        clipStartTime: 0,
+        clipEndTime: 132,
+      });
+
+      // Expected keyframe times (sorted, deduped): 0, 40.3, 40.5, 41.4, 41.6, 59.8, 60.0, 61.5, 61.7, 132
+      // → 10 keyframes total: 2 boundaries + 4×2 duck windows = 10
+      expect(result.keyframes_emitted).toBe(10);
+      expect(result.ducking_windows).toBe(2);
+      expect(result.fade_seconds).toBe(0.2);
+      expect(result.base_db).toBe(-25);
+
+      const computed = result.computed_keyframes as Array<{ time: number; level: number }>;
+      const times = computed.map((k) => k.time);
+
+      // Boundaries sit at baseDb
+      expect(computed[0]).toEqual({ time: 0, level: -25 });
+      expect(computed[computed.length - 1]).toEqual({ time: 132, level: -25 });
+
+      // Duck-in/out points sit at duckedDb
+      const at = (t: number) => computed.find((k) => Math.abs(k.time - t) < 1e-9);
+      expect(at(40.5)?.level).toBe(-38);
+      expect(at(41.4)?.level).toBe(-38);
+      expect(at(60.0)?.level).toBe(-38);
+      expect(at(61.5)?.level).toBe(-38);
+
+      // Fade points sit at baseDb
+      expect(at(40.3)?.level).toBe(-25);
+      expect(at(41.6)?.level).toBe(-25);
+      expect(at(59.8)?.level).toBe(-25);
+      expect(at(61.7)?.level).toBe(-25);
+
+      // Times are monotonic
+      for (let i = 1; i < times.length; i++) {
+        expect(times[i]).toBeGreaterThan(times[i - 1]!);
+      }
+    });
+
+    it('handles empty duckingWindows (sustained baseDb only, 2 boundary keyframes)', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, addedKeyframes: [], failedKeyframes: [] });
+
+      const result = await tools.executeTool('setup_ducking', {
+        clipId: 'music-empty',
+        baseDb: -22,
+        duckingWindows: [],
+        clipStartTime: 0,
+        clipEndTime: 60,
+      });
+
+      expect(result.keyframes_emitted).toBe(2);
+      expect(result.computed_keyframes).toEqual([
+        { time: 0, level: -22 },
+        { time: 60, level: -22 },
+      ]);
+    });
+
+    it('clamps pre-fade to clipStartTime when window starts before fadeSeconds', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, addedKeyframes: [], failedKeyframes: [] });
+
+      const result = await tools.executeTool('setup_ducking', {
+        clipId: 'music-clamp',
+        baseDb: -25,
+        duckingWindows: [{ startTime: 0.1, endTime: 1.0, duckedDb: -38 }], // fade 0.2 would push pre-fade to -0.1
+        fadeSeconds: 0.2,
+        clipStartTime: 0,
+        clipEndTime: 5,
+      });
+
+      const computed = result.computed_keyframes as Array<{ time: number; level: number }>;
+      // The dedup map collapses pre-fade@0 with boundary@0 — both want baseDb so it's fine
+      const at = (t: number) => computed.find((k) => Math.abs(k.time - t) < 1e-9);
+      expect(at(0)?.level).toBe(-25); // boundary + pre-fade collapsed
+      expect(at(0.1)?.level).toBe(-38); // duck-in
+      expect(at(1.0)?.level).toBe(-38); // duck-out
+      expect(at(1.2)?.level).toBe(-25); // post-fade
     });
   });
 });
