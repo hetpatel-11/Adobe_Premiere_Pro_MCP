@@ -2876,25 +2876,58 @@ export class PremiereProTools {
 
   // Export and Rendering Implementation
   private async exportSequence(sequenceId: string, outputPath: string, presetPath?: string, format?: string, quality?: string, resolution?: string): Promise<any> {
+    // app.encoder.encodeSequence() expects an absolute path to a .epr preset file.
+    // Passing a string name like "H.264" silently fails: encodeSequence returns
+    // no jobID and the JSX bridge reports {success:false}. Reject early with a
+    // clear error rather than letting the user think a queue happened.
+    if (!presetPath) {
+      return {
+        success: false,
+        error: 'presetPath required — must be absolute path to a .epr preset file (Adobe encodeSequence does not accept format names like "H.264" or "ProRes")',
+        hint: 'Create the preset in AME UI: File → Export Settings → configure → Save Preset → exports to ~/Library/Application Support/Adobe/Common/AME/<version>/Presets/. Pass that .epr path as presetPath.',
+        sequenceId,
+        outputPath,
+        format,
+        quality,
+        resolution,
+      };
+    }
+
     try {
-      const defaultPreset = format === 'mp4' ? 'H.264' : 'ProRes';
-      const preset = presetPath || defaultPreset;
-      
-      await this.bridge.renderSequence(sequenceId, outputPath, preset);
-      return { 
-        success: true, 
-        message: 'Sequence exported successfully',
-        outputPath: outputPath, 
-        format: preset,
-        quality: quality,
-        resolution: resolution
+      // bridge.renderSequence returns a structured response; propagate it instead
+      // of unconditionally claiming success. Pre-fix wrapper reported success even
+      // when AME never received the job (false-success false positives).
+      const result = await this.bridge.renderSequence(sequenceId, outputPath, presetPath);
+
+      if (result && result.success === false) {
+        return {
+          ...result,
+          sequenceId,
+          outputPath,
+          format,
+          quality,
+          resolution,
+        };
+      }
+
+      return {
+        success: true,
+        message: 'Sequence queued to AME render queue',
+        sequenceId,
+        outputPath,
+        presetPath,
+        format,
+        quality,
+        resolution,
+        jobID: result?.jobID,
+        queued: result?.queued,
       };
     } catch (error) {
       return {
         success: false,
         error: `Failed to export sequence: ${error instanceof Error ? error.message : String(error)}`,
-        sequenceId: sequenceId,
-        outputPath: outputPath
+        sequenceId,
+        outputPath,
       };
     }
   }

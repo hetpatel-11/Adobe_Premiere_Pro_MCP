@@ -432,4 +432,112 @@ describe('PremiereProTools', () => {
       expect(at(1.2)?.level).toBe(-25); // post-fade
     });
   });
+
+  describe('export_sequence', () => {
+    // Pre-fix bugs (commit 6 of PR #14):
+    //   1. Wrapper accepted no presetPath and silently substituted "H.264" / "ProRes"
+    //      string literals — Adobe encodeSequence requires absolute .epr path.
+    //   2. Wrapper unconditionally returned {success:true} even when bridge.renderSequence
+    //      reported {success:false} — false-positive that hid AME-never-received errors.
+
+    it('rejects calls without presetPath instead of substituting a string literal', async () => {
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/out.mp4',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/presetPath required/);
+      expect(result.hint).toMatch(/\.epr/);
+      expect(mockBridge.renderSequence).not.toHaveBeenCalled();
+    });
+
+    it('rejects calls without presetPath even when format is "mp4" (no H.264 fallback)', async () => {
+      // Pre-fix: format=mp4 → defaultPreset="H.264" string literal sent to encodeSequence.
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/out.mp4',
+        format: 'mp4',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/presetPath required/);
+      expect(mockBridge.renderSequence).not.toHaveBeenCalled();
+    });
+
+    it('propagates bridge {success:false} response instead of claiming success', async () => {
+      mockBridge.renderSequence.mockResolvedValue({
+        success: false,
+        error: 'encodeSequence returned no jobID — preset path may be invalid or AME not connected',
+        outputPath: '/tmp/out.mp4',
+        presetPath: '/path/that/does/not/exist.epr',
+      });
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/out.mp4',
+        presetPath: '/path/that/does/not/exist.epr',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/encodeSequence returned no jobID/);
+      expect(result.sequenceId).toBe('seq-1');
+    });
+
+    it('returns success with jobID when bridge confirms AME queue accepted', async () => {
+      mockBridge.renderSequence.mockResolvedValue({
+        success: true,
+        queued: true,
+        jobID: 'job-abc-123',
+        outputPath: '/tmp/out.mp4',
+        presetPath: '/Users/me/preset.epr',
+      });
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/out.mp4',
+        presetPath: '/Users/me/preset.epr',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.jobID).toBe('job-abc-123');
+      expect(result.queued).toBe(true);
+      expect(result.message).toMatch(/queued to AME/);
+      expect(mockBridge.renderSequence).toHaveBeenCalledWith(
+        'seq-1',
+        '/tmp/out.mp4',
+        '/Users/me/preset.epr',
+      );
+    });
+  });
+
+  describe('add_to_render_queue', () => {
+    // add_to_render_queue delegates to exportSequence — same fixes apply transitively.
+    it('rejects calls without presetPath (delegates to exportSequence guard)', async () => {
+      const result = await tools.executeTool('add_to_render_queue', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/out.mp4',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/presetPath required/);
+      expect(mockBridge.renderSequence).not.toHaveBeenCalled();
+    });
+
+    it('propagates bridge failure responses through the delegation', async () => {
+      mockBridge.renderSequence.mockResolvedValue({
+        success: false,
+        error: 'app.encoder not available in this Premiere build',
+      });
+
+      const result = await tools.executeTool('add_to_render_queue', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/out.mp4',
+        presetPath: '/Users/me/preset.epr',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/app.encoder not available/);
+    });
+  });
 });
