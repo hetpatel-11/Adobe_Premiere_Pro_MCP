@@ -244,10 +244,9 @@ export class PremiereProTools {
       },
       {
         name: 'import_edl',
-        description: 'Imports a CMX 3600 EDL file into the current project. Premiere prompts for sequence settings and source media, then creates a new sequence with all cuts applied atomically. Use for atomic timeline import from cut-list-based pipelines.',
+        description: 'Imports a CMX 3600 EDL file into the current project. Premiere prompts for sequence settings and source media, then creates a new sequence with all cuts applied atomically. Use for atomic timeline import from cut-list-based pipelines. Note: the resulting sequence inherits its timebase/video standard from the project defaults or from the interactive sequence-settings dialog Premiere shows on import — `app.importEDL` does not accept a video-standard argument.',
         inputSchema: z.object({
-          filePath: z.string().describe('The absolute path to the .edl file'),
-          videoStandard: z.enum(['NTSC', 'PAL', '24P']).optional().describe('Video standard for EDL parsing (default: NTSC)')
+          filePath: z.string().describe('The absolute path to the .edl file')
         })
       },
       {
@@ -463,7 +462,7 @@ export class PremiereProTools {
           startTime: z.number().describe('The time in seconds when the text should appear'),
           duration: z.number().describe('How long the text should remain on screen in seconds (best-effort; the MOGRT\'s natural duration may take precedence)'),
           mogrtPath: z.string().optional().describe('Absolute path to a .mogrt template file (required for text overlays)'),
-          textPropertyName: z.string().optional().describe('Override: explicit displayName of the property to set (only when auto-detection picks the wrong field)')
+          textPropertyName: z.string().optional().describe('Override: explicit displayName of the property to write into. When set, only `text` is written (text2/text3/text4 are ignored) and the call fails if no property with that displayName exists. Use only when auto-detection picks the wrong field.')
         })
       },
 
@@ -1166,7 +1165,7 @@ export class PremiereProTools {
         case 'import_fcp_xml':
           return await this.importFcpXml(args.filePath);
         case 'import_edl':
-          return await this.importEdl(args.filePath, args.videoStandard);
+          return await this.importEdl(args.filePath);
         case 'import_folder':
           return await this.importFolder(args.folderPath, args.binName, args.recursive);
         case 'create_bin':
@@ -2151,9 +2150,10 @@ export class PremiereProTools {
   /**
    * Import a CMX 3600 EDL file via app.importEDL.
    * Premiere prompts for sequence settings + source media in interactive mode.
-   * For non-interactive use, this MCP method passes hints via JSX globals if supported.
+   * The resulting sequence's timebase/video standard comes from the project defaults
+   * or the interactive dialog — app.importEDL has no video-standard argument.
    */
-  private async importEdl(filePath: string, videoStandard: string = 'NTSC'): Promise<any> {
+  private async importEdl(filePath: string): Promise<any> {
     try {
       const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const script = `
@@ -2181,7 +2181,6 @@ export class PremiereProTools {
       const parsed = typeof result === 'string' ? JSON.parse(result) : result;
       return {
         ...parsed,
-        videoStandard,
         message: parsed.success
           ? `EDL imported successfully — check project for new sequence`
           : `Failed to import EDL — try import_fcp_xml as alternative`,
@@ -2502,8 +2501,7 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: ${sequenceId ? `"Sequence not found by id: ${sequenceId}"` : '"No active sequence"'} });
 
         if (app.project.activeSequence && app.project.activeSequence.sequenceID !== sequence.sequenceID) {
           app.project.openSequence(sequence.sequenceID);
@@ -3064,8 +3062,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var track = sequence.audioTracks[${trackIndex}];
         if (!track) return JSON.stringify({ success: false, error: "Audio track not found" });
         track.setMute(${muted ? 1 : 0});
@@ -3099,8 +3096,12 @@ export class PremiereProTools {
       //      b. Or by displayName match against args.textPropertyName (optional override)
       //   Premiere stores text values as JSON: '{"mTextString":"...", ...}'
       const textJson = args.text !== undefined ? JSON.stringify(args.text) : 'null';
-      // textPropertyName is reserved for future use (override which property to write into).
-      void args.textPropertyName;
+      // When set, the script restricts the write to the property whose displayName matches
+      // (instead of running the auto-detect). text2/text3/text4 are ignored in override mode
+      // — the override targets a single field by name.
+      const textPropNameJson = args.textPropertyName !== undefined
+        ? JSON.stringify(args.textPropertyName)
+        : 'null';
       const script = `
         try {
           var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
@@ -3200,33 +3201,79 @@ export class PremiereProTools {
             // some MOGRTs and tokens are opaque single-char references in Premiere-native MOGRTs.
             var textComps = [];
             var textCompsViaMGT = false;
-            try {
-              var mgtComp = trackItem.getMGTComponent();
-              if (mgtComp && mgtComp.properties) {
-                for (var mi = 0; mi < mgtComp.properties.numItems; mi++) {
-                  var mp = mgtComp.properties[mi];
-                  var mpVal = null;
-                  try { mpVal = mp.getValue(); } catch (eMPv) {}
-                  // A "text" param has a JSON string value containing textEditValue or mTextString
-                  if (typeof mpVal === "string" && mpVal.length > 50 &&
-                      (mpVal.indexOf("textEditValue") >= 0 || mpVal.indexOf("mTextString") >= 0 || mpVal.indexOf("capPropTextRunCount") >= 0)) {
-                    textComps.push({ comp: mgtComp, compIndex: -1, prop: mp, propIndex: mi, displayName: String(mp.displayName) });
+            var textPropNameOverride = ${textPropNameJson};
+            // OVERRIDE PATH: caller named a specific property by displayName.
+            // Search both the MGT component and all trackItem components for an exact
+            // displayName match, then restrict textComps to that single hit.
+            // text2/text3/text4 are ignored in override mode — caller targeted one field.
+            if (textPropNameOverride) {
+              try {
+                var mgtCompO = trackItem.getMGTComponent();
+                if (mgtCompO && mgtCompO.properties) {
+                  for (var miO = 0; miO < mgtCompO.properties.numItems; miO++) {
+                    var mpO = mgtCompO.properties[miO];
+                    if (String(mpO.displayName) === textPropNameOverride) {
+                      textComps.push({ comp: mgtCompO, compIndex: -1, prop: mpO, propIndex: miO, displayName: String(mpO.displayName) });
+                      textCompsViaMGT = true;
+                      break;
+                    }
                   }
                 }
-                if (textComps.length > 0) textCompsViaMGT = true;
-              }
-            } catch (eMGTC) {}
-            // Fallback to component iteration if MGT didn't yield text params
-            if (textComps.length === 0) {
-              for (var ci3 = 0; ci3 < trackItem.components.numItems; ci3++) {
-                var c3 = trackItem.components[ci3];
-                var mn = (c3.matchName !== undefined) ? String(c3.matchName) : "";
-                if (mn === "AE.ADBE Text") {
-                  textComps.push({ comp: c3, compIndex: ci3, prop: c3.properties[0], propIndex: 0, displayName: "Source Text (legacy)" });
+              } catch (eOMG) {}
+              if (textComps.length === 0) {
+                for (var ciO = 0; ciO < trackItem.components.numItems && textComps.length === 0; ciO++) {
+                  var cO = trackItem.components[ciO];
+                  for (var piO = 0; piO < cO.properties.numItems; piO++) {
+                    var pO = cO.properties[piO];
+                    if (String(pO.displayName) === textPropNameOverride) {
+                      textComps.push({ comp: cO, compIndex: ciO, prop: pO, propIndex: piO, displayName: String(pO.displayName) });
+                      break;
+                    }
+                  }
                 }
               }
+              if (textComps.length === 0) {
+                return JSON.stringify({
+                  success: false,
+                  error: "textPropertyName override did not match any property displayName: " + textPropNameOverride,
+                  componentCount: componentsDump.length,
+                  components: componentsDump
+                });
+              }
+              // In override mode keep only the first text (named-target write).
+              textsByIndex = [textsByIndex[0]];
+              setResults.push({ _strategy: "textPropertyName_override", overrideName: textPropNameOverride });
             }
-            setResults.push({ _strategy: textCompsViaMGT ? "getMGTComponent" : "components_fallback", textCompsFound: textComps.length });
+            // AUTO-DETECT PATH (only when no override).
+            if (textComps.length === 0) {
+              try {
+                var mgtComp = trackItem.getMGTComponent();
+                if (mgtComp && mgtComp.properties) {
+                  for (var mi = 0; mi < mgtComp.properties.numItems; mi++) {
+                    var mp = mgtComp.properties[mi];
+                    var mpVal = null;
+                    try { mpVal = mp.getValue(); } catch (eMPv) {}
+                    // A "text" param has a JSON string value containing textEditValue or mTextString
+                    if (typeof mpVal === "string" && mpVal.length > 50 &&
+                        (mpVal.indexOf("textEditValue") >= 0 || mpVal.indexOf("mTextString") >= 0 || mpVal.indexOf("capPropTextRunCount") >= 0)) {
+                      textComps.push({ comp: mgtComp, compIndex: -1, prop: mp, propIndex: mi, displayName: String(mp.displayName) });
+                    }
+                  }
+                  if (textComps.length > 0) textCompsViaMGT = true;
+                }
+              } catch (eMGTC) {}
+              // Fallback to component iteration if MGT didn't yield text params
+              if (textComps.length === 0) {
+                for (var ci3 = 0; ci3 < trackItem.components.numItems; ci3++) {
+                  var c3 = trackItem.components[ci3];
+                  var mn = (c3.matchName !== undefined) ? String(c3.matchName) : "";
+                  if (mn === "AE.ADBE Text") {
+                    textComps.push({ comp: c3, compIndex: ci3, prop: c3.properties[0], propIndex: 0, displayName: "Source Text (legacy)" });
+                  }
+                }
+              }
+              setResults.push({ _strategy: textCompsViaMGT ? "getMGTComponent" : "components_fallback", textCompsFound: textComps.length });
+            }
             for (var ti2 = 0; ti2 < textsByIndex.length && ti2 < textComps.length; ti2++) {
               var tc = textComps[ti2];
               var sourceTextProp = tc.prop;
@@ -3500,8 +3547,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
 
         if (sequence.openInTimeline) {
           try { sequence.openInTimeline(); } catch (e0) {}
@@ -4112,11 +4158,10 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(_sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found by id: " + ${JSON.stringify(_sequenceId)}
           });
         }
         var settings = sequence.getSettings();
@@ -4229,8 +4274,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var pos = sequence.getPlayerPosition();
         return JSON.stringify({
           success: true,
@@ -4248,8 +4292,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var ticks = __secondsToTicks(${time});
         sequence.setPlayerPosition(ticks);
         return JSON.stringify({
@@ -4268,8 +4311,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var selection = sequence.getSelection();
         var clips = [];
         for (var i = 0; i < selection.length; i++) {
@@ -4491,8 +4533,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         sequence.setWorkAreaInPoint(__secondsToTicks(${inPoint}));
         sequence.setWorkAreaOutPoint(__secondsToTicks(${outPoint}));
         return JSON.stringify({
@@ -4512,8 +4553,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var inTime = sequence.getWorkAreaInPointAsTime();
         var outTime = sequence.getWorkAreaOutPointAsTime();
         return JSON.stringify({
@@ -4534,8 +4574,7 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var track = sequence.videoTracks[${trackIndex}];
         if (!track) return JSON.stringify({ success: false, error: "Track not found at index ${trackIndex}" });
         var clipCount = track.clips.numItems;
@@ -4678,8 +4717,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var tracks = ${JSON.stringify(trackType)} === "video" ? sequence.videoTracks : sequence.audioTracks;
         if (${trackIndex} < 0 || ${trackIndex} >= tracks.numTracks) return JSON.stringify({ success: false, error: "Track index out of range" });
         var track = tracks[${trackIndex}];
@@ -4722,8 +4760,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var reframedName = ${newName ? JSON.stringify(newName) : 'sequence.name + " Reframed"'};
         sequence.autoReframeSequence(${numerator}, ${denominator}, ${JSON.stringify(preset)}, reframedName, false);
         return JSON.stringify({
@@ -4748,8 +4785,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         sequence.performSceneEditDetectionOnSelection(${JSON.stringify(actionVal)}, ${audioVal}, ${JSON.stringify(sensitivityVal)});
         return JSON.stringify({
           success: true,
@@ -4771,8 +4807,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
         var startAtTime = ${startTimeVal};
