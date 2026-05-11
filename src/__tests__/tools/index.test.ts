@@ -70,6 +70,40 @@ describe('PremiereProTools', () => {
   });
 
   describe('bridge-backed wrappers', () => {
+    it('surfaces create_project bridge failures instead of claiming success', async () => {
+      mockBridge.createProject = jest.fn().mockResolvedValue({
+        success: false,
+        error: 'Premiere Pro did not create or activate the requested project',
+        projectPath: '/tmp/Test.prproj'
+      } as any);
+
+      const result = await tools.executeTool('create_project', {
+        name: 'Test',
+        location: '/tmp'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('did not create');
+      expect(result.projectPath).toBe('/tmp/Test.prproj');
+    });
+
+    it('surfaces open_project bridge failures instead of claiming success', async () => {
+      mockBridge.openProject = jest.fn().mockResolvedValue({
+        success: false,
+        error: 'Premiere Pro did not activate the requested project',
+        projectPath: '/tmp/Target.prproj',
+        actualPath: '/tmp/AlreadyOpen.prproj'
+      } as any);
+
+      const result = await tools.executeTool('open_project', {
+        path: '/tmp/Target.prproj'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('did not activate');
+      expect(result.actualPath).toBe('/tmp/AlreadyOpen.prproj');
+    });
+
     it('passes through successful imports', async () => {
       mockBridge.importMedia = jest.fn().mockResolvedValue({
         success: true,
@@ -207,6 +241,32 @@ describe('PremiereProTools', () => {
 
       expect(mockBridge.executeScript).toHaveBeenCalled();
       expect(result.success).toBe(true);
+    });
+
+    it('looks up clip properties in the requested sequence', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, properties: {} });
+
+      const result = await tools.executeTool('get_clip_properties', {
+        clipId: 'clip-123',
+        sequenceId: 'seq-456'
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockBridge.executeScript).toHaveBeenCalledWith(expect.stringContaining('__findClip("clip-123", "seq-456")'));
+    });
+
+    it('removes clips from the requested sequence', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, clipId: 'clip-123' });
+
+      const result = await tools.executeTool('remove_from_timeline', {
+        clipId: 'clip-123',
+        sequenceId: 'seq-456',
+        deleteMode: 'lift'
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockBridge.executeScript).toHaveBeenCalledWith(expect.stringContaining('__findClip("clip-123", "seq-456")'));
+      expect(mockBridge.executeScript).toHaveBeenCalledWith(expect.stringContaining('var isRipple = "lift" === "ripple";'));
     });
   });
 

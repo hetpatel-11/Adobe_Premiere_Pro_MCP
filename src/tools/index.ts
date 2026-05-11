@@ -311,9 +311,10 @@ export class PremiereProTools {
       },
       {
         name: 'remove_from_timeline',
-        description: 'Removes a clip from the timeline.',
+        description: 'Removes a clip from the timeline. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip on the timeline to remove'),
+          sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
           deleteMode: z.enum(['ripple', 'lift']).optional().describe('Whether to ripple delete (close gap) or lift (leave gap)')
         })
       },
@@ -680,9 +681,10 @@ export class PremiereProTools {
       },
       {
         name: 'get_clip_properties',
-        description: 'Gets detailed properties of a clip.',
+        description: 'Gets detailed properties of a clip. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
         inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip')
+          clipId: z.string().describe('The ID of the clip'),
+          sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.')
         })
       },
       {
@@ -1202,7 +1204,7 @@ export class PremiereProTools {
         case 'add_to_timeline':
           return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio);
         case 'remove_from_timeline':
-          return await this.removeFromTimeline(args.clipId, args.deleteMode);
+          return await this.removeFromTimeline(args.clipId, args.sequenceId, args.deleteMode);
         case 'move_clip':
           return await this.moveClip(args.clipId, args.newTime, args.newTrackIndex);
         case 'trim_clip':
@@ -1304,7 +1306,7 @@ export class PremiereProTools {
         case 'set_sequence_settings':
           return await this.setSequenceSettings(args.sequenceId, args.settings);
         case 'get_clip_properties':
-          return await this.getClipProperties(args.clipId);
+          return await this.getClipProperties(args.clipId, args.sequenceId);
         case 'set_clip_properties':
           return await this.setClipProperties(args.clipId, args.properties);
 
@@ -2002,11 +2004,19 @@ export class PremiereProTools {
   // Project Management Implementation
   private async createProject(name: string, location: string): Promise<any> {
     try {
-      const result = await this.bridge.createProject(name, location);
+      const result: any = await this.bridge.createProject(name, location);
+      const projectPath = `${location.replace(/[\\/]+$/, '')}/${name.endsWith('.prproj') ? name : `${name}.prproj`}`;
+      if (result?.success === false) {
+        return {
+          ...result,
+          projectPath: result.projectPath || projectPath
+        };
+      }
+
       return {
         success: true,
         message: `Project "${name}" created successfully`,
-        projectPath: `${location}/${name}.prproj`,
+        projectPath,
         ...result
       };
     } catch (error) {
@@ -2019,7 +2029,14 @@ export class PremiereProTools {
 
   private async openProject(path: string): Promise<any> {
     try {
-      const result = await this.bridge.openProject(path);
+      const result: any = await this.bridge.openProject(path);
+      if (result?.success === false) {
+        return {
+          ...result,
+          projectPath: result.projectPath || path
+        };
+      }
+
       return {
         success: true,
         message: `Project opened successfully`,
@@ -2538,21 +2555,23 @@ export class PremiereProTools {
     }
   }
 
-  private async removeFromTimeline(clipId: string, deleteMode = 'ripple'): Promise<any> {
+  private async removeFromTimeline(clipId: string, sequenceId?: string, deleteMode = 'ripple'): Promise<any> {
     const script = `
       try {
-        var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var info = __findClip(${JSON.stringify(clipId)}, ${sequenceId ? JSON.stringify(sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${sequenceId ? JSON.stringify(`Clip not found in sequence: ${sequenceId}`) : '"Clip not found"'} });
         var clip = info.clip;
         var clipName = clip.name;
-        var isRipple = "${deleteMode}" === "ripple";
+        var isRipple = ${JSON.stringify(deleteMode)} === "ripple";
         clip.remove(isRipple, true);
         return JSON.stringify({
           success: true,
           message: "Clip removed from timeline",
-          clipId: "${clipId}",
+          clipId: ${JSON.stringify(clipId)},
           clipName: clipName,
-          deleteMode: "${deleteMode}"
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          deleteMode: ${JSON.stringify(deleteMode)}
         });
       } catch (e) {
         return JSON.stringify({
@@ -4359,11 +4378,11 @@ export class PremiereProTools {
     };
   }
 
-  private async getClipProperties(clipId: string): Promise<any> {
+  private async getClipProperties(clipId: string, sequenceId?: string): Promise<any> {
     const script = `
       try {
-        var info = __findClip(${JSON.stringify(clipId)});
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var info = __findClip(${JSON.stringify(clipId)}, ${sequenceId ? JSON.stringify(sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${sequenceId ? JSON.stringify(`Clip not found in sequence: ${sequenceId}`) : '"Clip not found"'} });
         var clip = info.clip;
         return JSON.stringify({
           success: true,
@@ -4377,6 +4396,8 @@ export class PremiereProTools {
             enabled: !clip.disabled,
             trackIndex: info.trackIndex,
             trackType: info.trackType,
+            sequenceId: info.sequenceId,
+            sequenceName: info.sequenceName,
             speed: clip.getSpeed()
           }
         });
