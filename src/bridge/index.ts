@@ -49,31 +49,52 @@ function __mcpStringify(value) {
 if (typeof JSON === 'undefined') { JSON = {}; }
 if (typeof JSON.stringify !== 'function') { JSON.stringify = __mcpStringify; }
 function __findSequence(id) {
+  if (!app.project || !app.project.sequences) return null;
   for (var i = 0; i < app.project.sequences.numSequences; i++) {
     if (app.project.sequences[i].sequenceID === id) return app.project.sequences[i];
   }
   return null;
 }
-function __findClip(nodeId) {
-  var seq = app.project.activeSequence;
+function __findClipInSequence(seq, nodeId) {
   if (!seq) return null;
   for (var t = 0; t < seq.videoTracks.numTracks; t++) {
     var track = seq.videoTracks[t];
     for (var c = 0; c < track.clips.numItems; c++) {
       if (track.clips[c].nodeId === nodeId)
-        return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'video' };
+        return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'video', sequence: seq, sequenceId: seq.sequenceID, sequenceName: seq.name };
     }
   }
   for (var t = 0; t < seq.audioTracks.numTracks; t++) {
     var track = seq.audioTracks[t];
     for (var c = 0; c < track.clips.numItems; c++) {
       if (track.clips[c].nodeId === nodeId)
-        return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'audio' };
+        return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'audio', sequence: seq, sequenceId: seq.sequenceID, sequenceName: seq.name };
     }
   }
   return null;
 }
+function __findClip(nodeId, sequenceId) {
+  if (!app.project) return null;
+  if (sequenceId) return __findClipInSequence(__findSequence(sequenceId), nodeId);
+
+  var found = __findClipInSequence(app.project.activeSequence, nodeId);
+  if (found) return found;
+
+  if (!app.project.sequences) return null;
+  for (var i = 0; i < app.project.sequences.numSequences; i++) {
+    found = __findClipInSequence(app.project.sequences[i], nodeId);
+    if (found) return found;
+  }
+  return null;
+}
+function __samePath(a, b) {
+  function normalize(value) {
+    return String(value || '').replace(/\\\\/g, '/').replace(/\\/+$/g, '');
+  }
+  return normalize(a) === normalize(b);
+}
 function __findProjectItem(nodeId) {
+  if (!app.project || !app.project.rootItem) return null;
   function walk(item) {
     if (item.nodeId === nodeId) return item;
     if (item.children) {
@@ -284,13 +305,45 @@ export class PremiereProBridge implements PremiereProTransport {
 
   // Project Management
   async createProject(name: string, location: string): Promise<PremiereProProject> {
+    const normalizedLocation = location.replace(/[\\/]+$/, '');
+    const projectFileName = name.endsWith('.prproj') ? name : `${name}.prproj`;
+    const projectPath = `${normalizedLocation}/${projectFileName}`;
     const script = `
-      // Create new project
-      app.newProject("${name}", "${location}");
+      var projectPath = ${JSON.stringify(projectPath)};
+      var projectFolder = new Folder(${JSON.stringify(normalizedLocation)});
+
+      if (!projectFolder.exists && !projectFolder.create()) {
+        return JSON.stringify({
+          success: false,
+          error: "Could not create project folder",
+          projectPath: projectPath
+        });
+      }
+
+      var createdResult = app.newProject(projectPath);
+      var projectFile = new File(projectPath);
+
+      if (!projectFile.exists && app.project && app.project.saveAs) {
+        try {
+          app.project.saveAs(projectPath);
+        } catch (saveError) {}
+      }
+
       var project = app.project;
-      
-      // Return project info
+      var actualPath = project && project.path ? String(project.path) : "";
+
+      if (!projectFile.exists || !__samePath(actualPath, projectPath)) {
+        return JSON.stringify({
+          success: false,
+          error: "Premiere Pro did not create or activate the requested project",
+          projectPath: projectPath,
+          actualPath: actualPath,
+          createdResult: createdResult
+        });
+      }
+
       return JSON.stringify({
+        success: true,
         id: project.documentID,
         name: project.name,
         path: project.path,
@@ -305,12 +358,33 @@ export class PremiereProBridge implements PremiereProTransport {
 
   async openProject(path: string): Promise<PremiereProProject> {
     const script = `
-      // Open existing project
-      app.openDocument("${path}");
+      var projectPath = ${JSON.stringify(path)};
+      var projectFile = new File(projectPath);
+
+      if (!projectFile.exists) {
+        return JSON.stringify({
+          success: false,
+          error: "Project file does not exist",
+          projectPath: projectPath
+        });
+      }
+
+      var openResult = app.openDocument(projectPath);
       var project = app.project;
-      
-      // Return project info
+      var actualPath = project && project.path ? String(project.path) : "";
+
+      if (!project || !__samePath(actualPath, projectPath)) {
+        return JSON.stringify({
+          success: false,
+          error: "Premiere Pro did not activate the requested project",
+          projectPath: projectPath,
+          actualPath: actualPath,
+          openResult: openResult
+        });
+      }
+
       return JSON.stringify({
+        success: true,
         id: project.documentID,
         name: project.name,
         path: project.path,

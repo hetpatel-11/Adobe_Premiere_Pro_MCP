@@ -105,6 +105,61 @@ describe('PremiereProBridge', () => {
     expect(result.id).toBe('item-123');
   });
 
+  it('creates projects using a concrete .prproj path and verifies activation', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({
+      success: false,
+      error: 'Premiere Pro did not create or activate the requested project',
+      projectPath: '/tmp/projects/Test.prproj'
+    }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    const result: any = await bridge.createProject('Test', '/tmp/projects/');
+
+    expect(result.success).toBe(false);
+    expect(result.projectPath).toBe('/tmp/projects/Test.prproj');
+    expect(mockFs.writeFile).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      expect.stringContaining('app.newProject(projectPath)')
+    );
+    expect(mockFs.writeFile).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      expect.stringContaining('Premiere Pro did not create or activate the requested project')
+    );
+  });
+
+  it('opens projects only after verifying the requested path became active', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({
+      success: false,
+      error: 'Premiere Pro did not activate the requested project',
+      projectPath: '/tmp/projects/Target.prproj',
+      actualPath: '/tmp/projects/AlreadyOpen.prproj'
+    }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    const result: any = await bridge.openProject('/tmp/projects/Target.prproj');
+
+    expect(result.success).toBe(false);
+    expect(result.actualPath).toBe('/tmp/projects/AlreadyOpen.prproj');
+    expect(mockFs.writeFile).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      expect.stringContaining('app.openDocument(projectPath)')
+    );
+    expect(mockFs.writeFile).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      expect.stringContaining('Premiere Pro did not activate the requested project')
+    );
+  });
+
   it('does not delete externally managed temp directories during cleanup', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
