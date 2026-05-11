@@ -927,6 +927,21 @@ export class PremiereProTools {
           captionFormat: z.string().optional().describe('Caption format (e.g., "Subtitle Default")')
         })
       },
+      {
+        name: 'read_sequence_captions',
+        description: 'Reads all caption tracks of a sequence and returns each caption clip as { start, end, text }, with timestamps in seconds. Use this to find the timecodes of specific spoken phrases.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.')
+        })
+      },
+      {
+        name: 'rename_project_item',
+        description: 'Renames a project item (sequence, bin, clip) by setting its name. Use this when duplicate_sequence does not propagate the new name to the project panel.',
+        inputSchema: z.object({
+          projectItemId: z.string().describe('The ID of the project item to rename'),
+          newName: z.string().describe('The new name for the project item')
+        })
+      },
 
       // Subclip
       {
@@ -1178,6 +1193,10 @@ export class PremiereProTools {
           return await this.duplicateSequence(args.sequenceId, args.newName);
         case 'delete_sequence':
           return await this.deleteSequence(args.sequenceId);
+        case 'read_sequence_captions':
+          return await this.readSequenceCaptions(args.sequenceId);
+        case 'rename_project_item':
+          return await this.renameProjectItem(args.projectItemId, args.newName);
 
         // Timeline Operations
         case 'add_to_timeline':
@@ -2296,23 +2315,167 @@ export class PremiereProTools {
   }
 
   private async duplicateSequence(sequenceId: string, newName: string): Promise<any> {
+    const safeName = JSON.stringify(newName);
     const script = `
       try {
-        var originalSeq = __findSequence("${sequenceId}");
+        var originalSeq = __findSequence(${JSON.stringify(sequenceId)});
         if (!originalSeq) return JSON.stringify({ success: false, error: "Sequence not found" });
+
         var newSeq = originalSeq.clone();
-        newSeq.name = "${newName}";
+        newSeq.name = ${safeName};
+
+        // Sequence.name does NOT propagate to the project panel — find and rename
+        // the matching ProjectItem so the rename is visible to the user and to
+        // future MCP calls.
+        function __findItemForSequence(parent, seqId) {
+          if (!parent || !parent.children) return null;
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            if (!item) continue;
+            try {
+              var seq = item.getSequence && item.getSequence();
+              if (seq && seq.sequenceID === seqId) return item;
+            } catch (_) { /* not a sequence-bearing item */ }
+            if (item.type === 2 /* BIN */) {
+              var nested = __findItemForSequence(item, seqId);
+              if (nested) return nested;
+            }
+          }
+          return null;
+        }
+
+        var renamedAtItem = false;
+        var newItem = __findItemForSequence(app.project.rootItem, newSeq.sequenceID);
+        if (newItem) {
+          try {
+            newItem.name = ${safeName};
+            renamedAtItem = true;
+          } catch (_) { /* fall through */ }
+        }
+
         return JSON.stringify({
           success: true,
-          originalSequenceId: "${sequenceId}",
+          originalSequenceId: ${JSON.stringify(sequenceId)},
           newSequenceId: newSeq.sequenceID,
-          newName: "${newName}"
+          newName: ${safeName},
+          newProjectItemId: newItem ? newItem.nodeId : null,
+          renamedAtProjectItem: renamedAtItem
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
 
+    return await this.bridge.executeScript(script);
+  }
+
+  private async renameProjectItem(projectItemId: string, newName: string): Promise<any> {
+    const safeName = JSON.stringify(newName);
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) return JSON.stringify({ success: false, error: "Project item not found" });
+        var oldName = item.name;
+        item.name = ${safeName};
+        return JSON.stringify({
+          success: true,
+          projectItemId: ${JSON.stringify(projectItemId)},
+          oldName: oldName,
+          newName: ${safeName}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private async readSequenceCaptions(sequenceId?: string): Promise<any> {
+    const seqArg = sequenceId ? JSON.stringify(sequenceId) : 'null';
+    const script = `
+      try {
+        var sequence = ${seqArg} ? __findSequence(${seqArg}) : null;
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+
+        // Premiere caption tracks live alongside video/audio tracks. Different
+        // Premiere versions expose them differently:
+        //   - sequence.getCaptionTracks() (newer)
+        //   - sequence.captionTracks (some builds)
+        //   - sequence.videoTracks[i] with isCaptioning style flag
+        // Try in that order, return whatever yields {start, end, text} clips.
+
+        var tracks = [];
+        try {
+          if (sequence.getCaptionTracks) {
+            tracks = sequence.getCaptionTracks();
+          } else if (sequence.captionTracks) {
+            tracks = sequence.captionTracks;
+          }
+        } catch (_) { /* fall through to track scan */ }
+
+        // Fallback: scan video tracks for caption clip data
+        if ((!tracks || tracks.length === 0) && sequence.videoTracks) {
+          for (var v = 0; v < sequence.videoTracks.numTracks; v++) {
+            var t = sequence.videoTracks[v];
+            if (t && (t.isCaption || t.captionTrack || (t.name && /caption/i.test(t.name)))) {
+              tracks.push(t);
+            }
+          }
+        }
+
+        var trackCount = tracks ? tracks.length : 0;
+        var output = [];
+
+        for (var i = 0; i < trackCount; i++) {
+          var trk = tracks[i];
+          if (!trk) continue;
+          var clips = trk.clips || trk.captions || [];
+          var clipCount = clips.numItems !== undefined ? clips.numItems : (clips.length || 0);
+          for (var c = 0; c < clipCount; c++) {
+            var clip = clips[c];
+            if (!clip) continue;
+            var startSec = null;
+            var endSec = null;
+            try {
+              if (clip.start && clip.start.seconds !== undefined) startSec = clip.start.seconds;
+              else if (clip.start && clip.start.ticks) startSec = parseFloat(clip.start.ticks) / 254016000000.0;
+              else if (typeof clip.startTime === 'number') startSec = clip.startTime;
+            } catch (_) {}
+            try {
+              if (clip.end && clip.end.seconds !== undefined) endSec = clip.end.seconds;
+              else if (clip.end && clip.end.ticks) endSec = parseFloat(clip.end.ticks) / 254016000000.0;
+              else if (typeof clip.endTime === 'number') endSec = clip.endTime;
+            } catch (_) {}
+
+            var text = "";
+            try {
+              if (typeof clip.text === 'string') text = clip.text;
+              else if (clip.captionText) text = clip.captionText;
+              else if (clip.name) text = clip.name;
+            } catch (_) {}
+
+            output.push({
+              trackIndex: i,
+              start: startSec,
+              end: endSec,
+              text: text
+            });
+          }
+        }
+
+        return JSON.stringify({
+          success: true,
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          trackCount: trackCount,
+          captionCount: output.length,
+          captions: output
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
     return await this.bridge.executeScript(script);
   }
 
