@@ -236,6 +236,20 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'import_fcp_xml',
+        description: 'Imports a Final Cut Pro 7 XML (XMEML) file into the current project. Premiere creates a new sequence with the cuts/clips defined in the XML, atomically. Use for importing pre-built timelines from external tools (NOT for FCPXML 1.x modern format from Final Cut Pro X — only legacy FCP7 XML is supported by app.openFCPXML).',
+        inputSchema: z.object({
+          filePath: z.string().describe('The absolute path to the FCP7 XML file (.xml extension typical)')
+        })
+      },
+      {
+        name: 'import_edl',
+        description: 'Imports a CMX 3600 EDL file into the current project. Premiere prompts for sequence settings and source media, then creates a new sequence with all cuts applied atomically. Use for atomic timeline import from cut-list-based pipelines. Note: the resulting sequence inherits its timebase/video standard from the project defaults or from the interactive sequence-settings dialog Premiere shows on import — `app.importEDL` does not accept a video-standard argument.',
+        inputSchema: z.object({
+          filePath: z.string().describe('The absolute path to the .edl file')
+        })
+      },
+      {
         name: 'import_folder',
         description: 'Imports all media files from a folder into the current Premiere Pro project.',
         inputSchema: z.object({
@@ -291,7 +305,8 @@ export class PremiereProTools {
           projectItemId: z.string().describe('The ID of the project item (clip) to add'),
           trackIndex: z.number().describe('The index of the video or audio track (0-based)'),
           time: z.number().describe('The time in seconds where the clip should be placed on the timeline'),
-          insertMode: z.enum(['overwrite', 'insert']).optional().describe('Whether to overwrite existing content or insert and shift')
+          insertMode: z.enum(['overwrite', 'insert']).optional().describe('Whether to overwrite existing content or insert and shift'),
+          linkAudio: z.boolean().optional().describe('When false, removes the auto-linked audio counterpart that Premiere places on audio tracks for video-track clips. Useful for video overlays whose source media (e.g. Remotion .mov outputs) carry silent PCM that would overwrite existing audio. Default true (preserves Premiere\'s native linking behavior).')
         })
       },
       {
@@ -392,6 +407,38 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'setup_ducking',
+        description:
+          'High-level wrapper around add_audio_keyframes that builds a ducking curve from a base level + ducking windows. ' +
+          'Computes 4 keyframes per window (pre-fade, duck-in, duck-out, post-fade) plus boundary keyframes at clip start/end. ' +
+          'Replaces the manual "8 keyframes per video" pattern from Sprint 3. Times are clip-source-time absolute (same convention as add_audio_keyframes).',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the music/SFX clip to apply ducking to'),
+          baseDb: z.number().describe('Sustained level in dB (e.g. -25 for music bed under voice)'),
+          duckingWindows: z
+            .array(
+              z.object({
+                startTime: z.number().describe('When to begin ducking, in seconds (clip-source-time absolute)'),
+                endTime: z.number().describe('When to recover from ducking, in seconds'),
+                duckedDb: z.number().describe('Lower level in dB during this window (e.g. -38 for narrative pause)'),
+              })
+            )
+            .describe('Windows where the clip should duck below baseDb. Empty array = sustained baseDb only.'),
+          fadeSeconds: z
+            .number()
+            .optional()
+            .describe('Ramp time for each transition (default 0.2s = 6 frames @30fps)'),
+          clipStartTime: z
+            .number()
+            .optional()
+            .describe('Clip start time anchor for first keyframe (default 0)'),
+          clipEndTime: z
+            .number()
+            .optional()
+            .describe('Clip end time anchor for last keyframe; if omitted, last duck window endTime + 1s is used'),
+        }),
+      },
+      {
         name: 'mute_track',
         description: 'Mutes or unmutes an entire audio track.',
         inputSchema: z.object({
@@ -404,14 +451,18 @@ export class PremiereProTools {
       // Text and Graphics
       {
         name: 'add_text_overlay',
-        description: 'Adds a text layer (title) over the video timeline. Requires a MOGRT (.mogrt) template file path for text graphics.',
+        description: 'Adds a text layer (title) over the video timeline. Requires a MOGRT (.mogrt) template file path. Supports up to 4 text fields (text, text2, text3, text4) — each populates the Nth "AE.ADBE Text" component in the MOGRT (e.g., for Basic Lower Third: text=main title, text2=subtitle).',
         inputSchema: z.object({
-          text: z.string().describe('The text content to display'),
+          text: z.string().describe('Text for the first AE text component in the MOGRT (typically the main title)'),
+          text2: z.string().optional().describe('Text for the second AE text component (e.g., subtitle of a lower third)'),
+          text3: z.string().optional().describe('Text for the third AE text component (if present)'),
+          text4: z.string().optional().describe('Text for the fourth AE text component (if present)'),
           sequenceId: z.string().describe('The sequence to add the text to'),
-          trackIndex: z.number().describe('The video track to place the text on'),
+          trackIndex: z.number().describe('The video track to place the text on (0-indexed; create the track first via add_track if needed)'),
           startTime: z.number().describe('The time in seconds when the text should appear'),
-          duration: z.number().describe('How long the text should remain on screen in seconds'),
-          mogrtPath: z.string().optional().describe('Absolute path to a .mogrt template file (required for text overlays)')
+          duration: z.number().describe('How long the text should remain on screen in seconds (best-effort; the MOGRT\'s natural duration may take precedence)'),
+          mogrtPath: z.string().optional().describe('Absolute path to a .mogrt template file (required for text overlays)'),
+          textPropertyName: z.string().optional().describe('Override: explicit displayName of the property to write into. When set, only `text` is written (text2/text3/text4 are ignored) and the call fails if no property with that displayName exists. Use only when auto-detection picks the wrong field.')
         })
       },
 
@@ -559,6 +610,15 @@ export class PremiereProTools {
           clipId: z.string().describe('The ID of the audio clip'),
           effectName: z.string().describe('Name of the audio effect (e.g., "Compressor", "EQ", "Reverb")'),
           parameters: z.record(z.any()).optional().describe('Effect parameters')
+        })
+      },
+      {
+        name: 'apply_audio_effect_to_all_clips',
+        description: 'Bulk: applies a single audio effect to ALL audio clips of a sequence in one ExtendScript call. Returns per-clip results. Saves N MCP roundtrips when calibrating or applying same chain.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('Target sequence ID (must be the active sequence in Premiere)'),
+          effectName: z.string().describe('Audio effect display name (e.g., "Limitador forzado", "Compresor multibanda")'),
+          parameters: z.record(z.any()).optional().describe('Effect parameters by displayName (exact or normalized)')
         })
       },
 
@@ -1102,6 +1162,10 @@ export class PremiereProTools {
         // Media Management
         case 'import_media':
           return await this.importMedia(args.filePath, args.binName);
+        case 'import_fcp_xml':
+          return await this.importFcpXml(args.filePath);
+        case 'import_edl':
+          return await this.importEdl(args.filePath);
         case 'import_folder':
           return await this.importFolder(args.folderPath, args.binName, args.recursive);
         case 'create_bin':
@@ -1117,7 +1181,7 @@ export class PremiereProTools {
 
         // Timeline Operations
         case 'add_to_timeline':
-          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode);
+          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio);
         case 'remove_from_timeline':
           return await this.removeFromTimeline(args.clipId, args.deleteMode);
         case 'move_clip':
@@ -1144,6 +1208,15 @@ export class PremiereProTools {
           return await this.adjustAudioLevels(args.clipId, args.level);
         case 'add_audio_keyframes':
           return await this.addAudioKeyframes(args.clipId, args.keyframes);
+        case 'setup_ducking':
+          return await this.setupDucking(
+            args.clipId,
+            args.baseDb,
+            args.duckingWindows,
+            args.fadeSeconds,
+            args.clipStartTime,
+            args.clipEndTime
+          );
         case 'mute_track':
           return await this.muteTrack(args.sequenceId, args.trackIndex, args.muted);
 
@@ -1187,6 +1260,8 @@ export class PremiereProTools {
           return await this.linkAudioVideo(args.clipId, args.linked);
         case 'apply_audio_effect':
           return await this.applyAudioEffect(args.clipId, args.effectName, args.parameters);
+        case 'apply_audio_effect_to_all_clips':
+          return await this.applyAudioEffectToAllClips(args.sequenceId, args.effectName, args.parameters);
 
         // Nested Sequences
         case 'create_nested_sequence':
@@ -2006,6 +2081,120 @@ export class PremiereProTools {
     }
   }
 
+  /**
+   * Import a Final Cut Pro 7 XML (XMEML) file.
+   *
+   * Premiere 2026 requires project.importFiles (not the legacy openFCPXML which
+   * needs additional args like project context). importFiles handles XML/EDL/AAF
+   * detection automatically and creates a new sequence atomically.
+   *
+   * Fallback chain: importFiles → openFCPXML(path,suppressUI) → openFCPXML(path).
+   */
+  private async importFcpXml(filePath: string): Promise<any> {
+    try {
+      const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `
+        try {
+          var f = new File("${escapedPath}");
+          if (!f.exists) {
+            return JSON.stringify({ success: false, error: "File not found: ${escapedPath}" });
+          }
+          var attempts = [];
+
+          // Attempt 1: project.importFiles (modern Premiere 2026 preferred)
+          if (typeof app.project !== 'undefined' && typeof app.project.importFiles === 'function') {
+            try {
+              var ok = app.project.importFiles(["${escapedPath}"], false, app.project.rootItem, false);
+              attempts.push({ method: "importFiles", ok: ok });
+              if (ok) return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "importFiles", attempts: attempts });
+            } catch (e1) { attempts.push({ method: "importFiles", error: e1.toString() }); }
+          }
+
+          // Attempt 2: openFCPXML with suppressUI flag (Premiere 2026)
+          if (typeof app.openFCPXML === 'function') {
+            try {
+              app.openFCPXML("${escapedPath}", true);
+              return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "openFCPXML(path,true)", attempts: attempts });
+            } catch (e2) {
+              attempts.push({ method: "openFCPXML(path,true)", error: e2.toString() });
+              try {
+                app.openFCPXML("${escapedPath}");
+                return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "openFCPXML(path)", attempts: attempts });
+              } catch (e3) { attempts.push({ method: "openFCPXML(path)", error: e3.toString() }); }
+            }
+          }
+
+          return JSON.stringify({ success: false, error: "All import methods failed", attempts: attempts });
+        } catch (e) {
+          return JSON.stringify({ success: false, error: e.toString() });
+        }
+      `;
+      const result: any = await this.bridge.executeScript(script);
+      const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+      return {
+        ...parsed,
+        message: parsed.success
+          ? `FCP XML imported successfully via ${parsed.method} — Premiere created new sequence atomically`
+          : `Failed to import FCP XML — see attempts for details`,
+        filePath
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to import FCP XML: ${error instanceof Error ? error.message : String(error)}`,
+        filePath
+      };
+    }
+  }
+
+  /**
+   * Import a CMX 3600 EDL file via app.importEDL.
+   * Premiere prompts for sequence settings + source media in interactive mode.
+   * The resulting sequence's timebase/video standard comes from the project defaults
+   * or the interactive dialog — app.importEDL has no video-standard argument.
+   */
+  private async importEdl(filePath: string): Promise<any> {
+    try {
+      const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `
+        try {
+          var f = new File("${escapedPath}");
+          if (!f.exists) {
+            return JSON.stringify({ success: false, error: "File not found: ${escapedPath}" });
+          }
+          // Premiere's EDL import API: app.importEDL(filePath, sequence, project)
+          // If no sequence provided, Premiere creates a new one with prompted settings.
+          // Note: this may pop up an interactive sequence-settings dialog.
+          if (typeof app.importEDL === 'function') {
+            app.importEDL("${escapedPath}");
+            return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", mode: "importEDL" });
+          } else {
+            // Fallback: try app.openDocument or app.project.importFiles
+            var imported = app.project.importFiles(["${escapedPath}"], false, app.project.rootItem, false);
+            return JSON.stringify({ success: !!imported, imported: !!imported, path: "${escapedPath}", mode: "importFiles_fallback" });
+          }
+        } catch (e) {
+          return JSON.stringify({ success: false, error: e.toString() });
+        }
+      `;
+      const result: any = await this.bridge.executeScript(script);
+      const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+      return {
+        ...parsed,
+        message: parsed.success
+          ? `EDL imported successfully — check project for new sequence`
+          : `Failed to import EDL — try import_fcp_xml as alternative`,
+        filePath
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to import EDL: ${error instanceof Error ? error.message : String(error)}`,
+        filePath
+      };
+    }
+  }
+
   private async importFolder(folderPath: string, binName?: string, recursive = false): Promise<any> {
     const script = `
       try {
@@ -2149,9 +2338,9 @@ export class PremiereProTools {
   }
 
   // Timeline Operations Implementation
-  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite'): Promise<any> {
+  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite', linkAudio: boolean = true): Promise<any> {
     try {
-      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time);
+      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio);
       if (!result.success) {
         return {
           ...result,
@@ -2159,7 +2348,8 @@ export class PremiereProTools {
           projectItemId: projectItemId,
           trackIndex: trackIndex,
           time: time,
-          insertMode: insertMode
+          insertMode: insertMode,
+          linkAudio: linkAudio
         };
       }
       return {
@@ -2170,6 +2360,7 @@ export class PremiereProTools {
         trackIndex: trackIndex,
         time: time,
         insertMode: insertMode,
+        linkAudio: linkAudio,
         ...result
       };
     } catch (error) {
@@ -2310,8 +2501,7 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: ${sequenceId ? `"Sequence not found by id: ${sequenceId}"` : '"No active sequence"'} });
 
         if (app.project.activeSequence && app.project.activeSequence.sequenceID !== sequence.sequenceID) {
           app.project.openSequence(sequence.sequenceID);
@@ -2403,12 +2593,25 @@ export class PremiereProTools {
   }
 
   // Effects and Transitions Implementation
-  private async applyEffect(clipId: string, effectName: string, _parameters?: Record<string, any>): Promise<any> {
+  // FIX vs upstream: upstream silently ignored `parameters` (typed as `_parameters`).
+  // This version:
+  //   1. Adds the effect (current behavior)
+  //   2. Locates the newly added component (matched by index = before+0; effects append)
+  //   3. Dumps that component's properties (displayName + current value) so callers can see
+  //      exactly which params are settable via flat property access (some effects hide their
+  //      real params behind "Custom Setup / Editar..." dialogs and won't be settable this way)
+  //   4. For each entry in `parameters`, attempts to set the matching property by displayName
+  //      (exact match first, then case-insensitive whitespace-stripped match)
+  //   5. Returns dump + per-param result so debugging is one round-trip
+  private async applyEffect(clipId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
+    const paramJson = JSON.stringify(parameters || {});
     const script = `
       try {
         app.enableQE();
         var info = __findClip("${clipId}");
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var clip = info.clip;
+        var beforeCount = clip.components.numItems;
         var qeSeq = qe.project.getActiveSequence();
         var qeTrack, effect;
         if (info.trackType === 'video') {
@@ -2421,7 +2624,86 @@ export class PremiereProTools {
         if (!effect) return JSON.stringify({ success: false, error: "Effect not found: ${effectName}. Use list_available_effects to see available effects." });
         var qeClip = qeTrack.getItemAt(info.clipIndex);
         if (info.trackType === 'video') { qeClip.addVideoEffect(effect); } else { qeClip.addAudioEffect(effect); }
-        return JSON.stringify({ success: true, message: "Effect applied", clipId: "${clipId}", effectName: "${effectName}" });
+
+        // Find the newly added component (last in the array)
+        var afterCount = clip.components.numItems;
+        var newCompIdx = afterCount - 1;
+        var newComp = clip.components[newCompIdx];
+
+        // Dump every property name + current value
+        var propsDump = [];
+        for (var i = 0; i < newComp.properties.numItems; i++) {
+          var prop = newComp.properties[i];
+          var dn = String(prop.displayName);
+          var val = null;
+          try { val = prop.getValue(); } catch (e1) { val = "<getValue threw: " + e1.toString() + ">"; }
+          propsDump.push({ index: i, displayName: dn, value: val });
+        }
+
+        // Apply parameters by displayName match (exact first, then normalized)
+        var requestedParams = ${paramJson};
+        var paramResults = [];
+        function normalize(s) { return String(s).toLowerCase().replace(/[\\s_-]+/g, ''); }
+        for (var pName in requestedParams) {
+          if (requestedParams.hasOwnProperty && !requestedParams.hasOwnProperty(pName)) continue;
+          var requestedVal = requestedParams[pName];
+          var matched = null;
+          // Pass 1: exact displayName match
+          for (var k = 0; k < newComp.properties.numItems; k++) {
+            if (String(newComp.properties[k].displayName) === pName) {
+              matched = { idx: k, prop: newComp.properties[k], strategy: "exact" };
+              break;
+            }
+          }
+          // Pass 2: normalized match (strip case/whitespace/underscores/dashes)
+          if (!matched) {
+            var nameN = normalize(pName);
+            for (var k = 0; k < newComp.properties.numItems; k++) {
+              if (normalize(String(newComp.properties[k].displayName)) === nameN) {
+                matched = { idx: k, prop: newComp.properties[k], strategy: "normalized" };
+                break;
+              }
+            }
+          }
+          if (matched) {
+            try {
+              var valueBefore = null;
+              try { valueBefore = matched.prop.getValue(); } catch (eB) {}
+              matched.prop.setValue(requestedVal, true);
+              var valueAfter = null;
+              try { valueAfter = matched.prop.getValue(); } catch (eA) {}
+              var clamped = (valueAfter !== null && Math.abs(valueAfter - requestedVal) > 0.0001);
+              paramResults.push({
+                requestedName: pName,
+                matchedDisplayName: String(matched.prop.displayName),
+                strategy: matched.strategy,
+                valueRequested: requestedVal,
+                valueBefore: valueBefore,
+                valueAfter: valueAfter,
+                clamped: clamped,
+                ok: true
+              });
+            } catch (e2) {
+              paramResults.push({ requestedName: pName, ok: false, error: "setValue threw: " + e2.toString() });
+            }
+          } else {
+            paramResults.push({ requestedName: pName, ok: false, error: "no property matches this displayName (exact or normalized)" });
+          }
+        }
+
+        return JSON.stringify({
+          success: true,
+          message: "Effect applied",
+          clipId: "${clipId}",
+          effectName: "${effectName}",
+          addedComponent: {
+            displayName: String(newComp.displayName),
+            componentIndex: newCompIdx,
+            propertyCount: propsDump.length,
+            properties: propsDump
+          },
+          paramResults: paramResults
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -2508,31 +2790,168 @@ export class PremiereProTools {
   }
 
   // Audio Operations Implementation
+  /**
+   * High-level ducking helper. Computes a keyframe curve and delegates to
+   * addAudioKeyframes (single source of truth for the locale-aware + calibrated
+   * keyframe write).
+   *
+   * For each ducking window, emits 4 keyframes:
+   *   - pre-fade  (window.startTime - fadeSeconds): baseDb
+   *   - duck-in   (window.startTime):               duckedDb
+   *   - duck-out  (window.endTime):                 duckedDb
+   *   - post-fade (window.endTime + fadeSeconds):   baseDb
+   *
+   * Plus boundary keyframes at clipStartTime (or 0) and clipEndTime
+   * (or last window.endTime + 1s) anchored to baseDb. Result: a continuous
+   * curve that sits at baseDb except inside duck windows.
+   *
+   * Replaces the manual Sprint 3 "8 keyframes per video" pattern.
+   */
+  private async setupDucking(
+    clipId: string,
+    baseDb: number,
+    duckingWindows: Array<{ startTime: number; endTime: number; duckedDb: number }>,
+    fadeSeconds: number = 0.2,
+    clipStartTime?: number,
+    clipEndTime?: number
+  ): Promise<any> {
+    const fade = fadeSeconds ?? 0.2;
+    const start = clipStartTime ?? 0;
+    const lastWindow = duckingWindows.length > 0 ? duckingWindows[duckingWindows.length - 1] : undefined;
+    const end = clipEndTime ?? (lastWindow ? lastWindow.endTime + 1 : start + 1);
+
+    // Collect all keyframes and dedupe-by-time (later writes win for same time)
+    const map = new Map<number, number>();
+    const upsert = (t: number, db: number) => {
+      // Quantize to ms to avoid duplicate-but-not-equal floats
+      const key = Math.round(t * 1000) / 1000;
+      map.set(key, db);
+    };
+
+    upsert(start, baseDb);
+
+    for (const w of duckingWindows) {
+      upsert(Math.max(start, w.startTime - fade), baseDb);
+      upsert(w.startTime, w.duckedDb);
+      upsert(w.endTime, w.duckedDb);
+      upsert(Math.min(end, w.endTime + fade), baseDb);
+    }
+
+    upsert(end, baseDb);
+
+    const keyframes = Array.from(map.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([time, level]) => ({ time, level }));
+
+    const result = await this.addAudioKeyframes(clipId, keyframes);
+    return {
+      ...(typeof result === 'object' && result !== null ? result : {}),
+      ducking_windows: duckingWindows.length,
+      fade_seconds: fade,
+      keyframes_emitted: keyframes.length,
+      base_db: baseDb,
+      computed_keyframes: keyframes,
+    };
+  }
+
+  //
+  // Sets the audio clip volume in dB (relative gain on the clip's Volume component, NOT track mixer).
+  //
+  // FIX vs upstream:
+  //   - Upstream looked for property `displayName === "Volume"` iterating ALL component properties.
+  //     That's wrong: "Volume" is a COMPONENT name, and its level property is "Level" (en) / "Nivel" (es).
+  //   - Upstream passed `level` (dB) directly to setValue, but Premiere ExtendScript expects a
+  //     linear scale (1.0 = 0 dB, 1.4454 = +3.2 dB). Conversion: linear = 10^(dB/20).
+  //   - Now supports localized component names (Spanish "Volumen", English "Volume", others).
+  //   - On not-found, returns a dump of clip components+properties for debugging.
   private async adjustAudioLevels(clipId: string, level: number): Promise<any> {
     const script = `
       try {
         var info = __findClip("${clipId}");
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
-        var found = false;
+
+        // Localized display names for the Volume component
+        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
+        // Localized display names for the Level property inside Volume
+        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
+
+        function isOneOf(name, list) {
+          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
+          return false;
+        }
+
+        // Build dump for debug fallback
+        var dump = [];
+        var volumeComp = null;
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
+          var compName = String(comp.displayName);
+          var propsList = [];
           for (var j = 0; j < comp.properties.numItems; j++) {
-            if (comp.properties[j].displayName === "Volume") {
-              var oldLevel = comp.properties[j].getValue();
-              comp.properties[j].setValue(${level}, true);
-              found = true;
-              return JSON.stringify({
-                success: true,
-                message: "Audio level adjusted successfully",
-                clipId: "${clipId}",
-                oldLevel: oldLevel,
-                newLevel: ${level}
-              });
-            }
+            propsList.push(String(comp.properties[j].displayName));
+          }
+          dump.push({ idx: i, component: compName, properties: propsList });
+          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
+            volumeComp = comp;
           }
         }
-        if (!found) return JSON.stringify({ success: false, error: "Volume property not found on clip" });
+        if (!volumeComp) {
+          return JSON.stringify({
+            success: false,
+            error: "Volume component not found on clip",
+            components_dump: dump
+          });
+        }
+
+        var levelProp = null;
+        for (var j = 0; j < volumeComp.properties.numItems; j++) {
+          var pName = String(volumeComp.properties[j].displayName);
+          if (isOneOf(pName, LEVEL_NAMES)) {
+            levelProp = volumeComp.properties[j];
+            break;
+          }
+        }
+        if (!levelProp) {
+          return JSON.stringify({
+            success: false,
+            error: "Level property not found inside Volume component",
+            volume_component: String(volumeComp.displayName),
+            properties_in_volume: dump.length > 0 ? dump : []
+          });
+        }
+
+        // CALIBRATION (empirical, Premiere Pro 2026 macOS, locale es_ES):
+        //   Premiere's clip Volume Level property uses a linear amplitude scale where the
+        //   displayed "0 dB" in the Effects Controls panel corresponds to internal linear value
+        //   ~0.17783. The relationship is: linear = 0.17783 × 10^(dB/20),
+        //   equivalently: linear = 10^((dB - 15) / 20).
+        //   Verified by measurement: setting linear = 1.4454 (which standard audio convention
+        //   says is +3.2 dB) actually produced ~+13 dB of broadcast loudness gain. With this
+        //   calibrated formula, requesting +3.2 dB now sets linear = 0.2571 ≈ matches Premiere's
+        //   displayed value.
+        var DB_CALIBRATION_OFFSET = 15;  // Premiere ES-locale, PrPro 2026.x
+        var dB = ${level};
+        var linearValue = Math.pow(10, (dB - DB_CALIBRATION_OFFSET) / 20);
+        var oldLinear = levelProp.getValue();
+        var oldDB = (oldLinear > 0)
+          ? (20 * Math.log(oldLinear) / Math.log(10) + DB_CALIBRATION_OFFSET)
+          : -Infinity;
+        levelProp.setValue(linearValue, true);
+
+        return JSON.stringify({
+          success: true,
+          message: "Audio level adjusted (clip Volume component, locale-aware, calibrated dB scale)",
+          clipId: "${clipId}",
+          requestedDB: dB,
+          oldLinearValue: oldLinear,
+          oldDB: oldDB,
+          newLinearValue: linearValue,
+          newDB: dB,
+          calibrationOffset: DB_CALIBRATION_OFFSET,
+          volumeComponent: String(volumeComp.displayName),
+          levelProperty: String(levelProp.displayName)
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -2545,38 +2964,90 @@ export class PremiereProTools {
   }
 
   private async addAudioKeyframes(clipId: string, keyframes: Array<{time: number, level: number}>): Promise<any> {
-    const keyframeCode = keyframes.map(kf => `
+    // CALIBRATION (matches adjustAudioLevels): Premiere's clip Volume Level property is linear amplitude.
+    // The displayed "0 dB" in Effects Controls corresponds to internal linear value ~0.17783.
+    // Relationship: linear = 10^((dB - 15) / 20). Verified empirically on Premiere Pro 2026 macOS es_ES.
+    const DB_CALIBRATION_OFFSET = 15;
+    const keyframeCode = keyframes.map(kf => {
+      const linearValue = Math.pow(10, (kf.level - DB_CALIBRATION_OFFSET) / 20);
+      return `
         try {
-          volumeProperty.addKey(${kf.time});
-          volumeProperty.setValueAtKey(${kf.time}, ${kf.level});
-          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level} });
-        } catch (e2) {}
-    `).join('\n');
+          levelProp.addKey(${kf.time});
+          levelProp.setValueAtKey(${kf.time}, ${linearValue}, true);
+          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level}, linearValue: ${linearValue} });
+        } catch (e2) {
+          failedKeyframes.push({ time: ${kf.time}, level: ${kf.level}, error: e2.toString() });
+        }
+    `;
+    }).join('\n');
 
     const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
-        var volumeProperty = null;
+
+        // Locale-aware Volume component / Level property detection (matches adjustAudioLevels patch).
+        // Without this, the function fails with "Volume property not found" on non-English Premiere
+        // installs (e.g., Spanish "Volumen"/"Nivel", German "Lautstärke"/"Pegel", etc.).
+        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
+        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
+        function isOneOf(name, list) {
+          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
+          return false;
+        }
+
+        var volumeComp = null;
+        var dump = [];
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
+          var compName = String(comp.displayName);
+          var propsList = [];
           for (var j = 0; j < comp.properties.numItems; j++) {
-            if (comp.properties[j].displayName === "Volume") {
-              volumeProperty = comp.properties[j];
-              break;
-            }
+            propsList.push(String(comp.properties[j].displayName));
           }
-          if (volumeProperty) break;
+          dump.push({ idx: i, component: compName, properties: propsList });
+          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
+            volumeComp = comp;
+          }
         }
-        if (!volumeProperty) return JSON.stringify({ success: false, error: "Volume property not found" });
+        if (!volumeComp) {
+          return JSON.stringify({
+            success: false,
+            error: "Volume component not found on clip (locale-aware lookup failed)",
+            components_dump: dump
+          });
+        }
+
+        var levelProp = null;
+        for (var k = 0; k < volumeComp.properties.numItems; k++) {
+          var pName = String(volumeComp.properties[k].displayName);
+          if (isOneOf(pName, LEVEL_NAMES)) {
+            levelProp = volumeComp.properties[k];
+            break;
+          }
+        }
+        if (!levelProp) {
+          return JSON.stringify({
+            success: false,
+            error: "Level property not found inside Volume component",
+            volume_component: String(volumeComp.displayName)
+          });
+        }
+
+        levelProp.setTimeVarying(true);
         var addedKeyframes = [];
+        var failedKeyframes = [];
         ${keyframeCode}
         return JSON.stringify({
           success: true,
-          message: "Audio keyframes added",
+          message: "Audio keyframes added (locale-aware Volume detection, calibrated dB scale)",
           clipId: ${JSON.stringify(clipId)},
+          volumeComponent: String(volumeComp.displayName),
+          levelProperty: String(levelProp.displayName),
+          calibrationOffset: ${DB_CALIBRATION_OFFSET},
           addedKeyframes: addedKeyframes,
+          failedKeyframes: failedKeyframes,
           totalKeyframes: addedKeyframes.length
         });
       } catch (e) {
@@ -2591,8 +3062,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var track = sequence.audioTracks[${trackIndex}];
         if (!track) return JSON.stringify({ success: false, error: "Audio track not found" });
         track.setMute(${muted ? 1 : 0});
@@ -2614,6 +3084,24 @@ export class PremiereProTools {
   // Text and Graphics Implementation
   private async addTextOverlay(args: any): Promise<any> {
     if (args.mogrtPath) {
+      // FIX vs upstream: upstream silently ignored args.text; the MOGRT was imported but
+      // its text properties stayed at default placeholders ("Su nombre aquí", etc.)
+      // This version:
+      //   1. importMGT (existing)
+      //   2. After import, get trackItem.getMGTComponent() — the special MGT component
+      //      that exposes the parameters defined in the Essential Graphics template
+      //   3. Dump those properties for debugging (so callers see what's available)
+      //   4. If args.text is provided, attempt to set it by:
+      //      a. The first text-typed property whose value JSON-parses to {mTextString: ...}
+      //      b. Or by displayName match against args.textPropertyName (optional override)
+      //   Premiere stores text values as JSON: '{"mTextString":"...", ...}'
+      const textJson = args.text !== undefined ? JSON.stringify(args.text) : 'null';
+      // When set, the script restricts the write to the property whose displayName matches
+      // (instead of running the auto-detect). text2/text3/text4 are ignored in override mode
+      // — the override targets a single field by name.
+      const textPropNameJson = args.textPropertyName !== undefined
+        ? JSON.stringify(args.textPropertyName)
+        : 'null';
       const script = `
         try {
           var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
@@ -2621,7 +3109,289 @@ export class PremiereProTools {
           var timeTicks = __secondsToTicks(${args.startTime});
           var trackItem = sequence.importMGT(${JSON.stringify(args.mogrtPath)}, timeTicks, ${args.trackIndex}, 0);
           if (!trackItem) return JSON.stringify({ success: false, error: "Failed to import MOGRT. Ensure the .mogrt file exists." });
-          return JSON.stringify({ success: true, message: "MOGRT imported as text overlay", clipId: trackItem.nodeId });
+
+          // First, probe ALL plausible MGT-access APIs (so we know what's available)
+          var apiProbe = {};
+          apiProbe.hasGetMGTComponent = (typeof trackItem.getMGTComponent === "function");
+          apiProbe.hasGetMGT = (typeof trackItem.getMGT === "function");
+          apiProbe.hasGetMogrtComponent = (typeof trackItem.getMogrtComponent === "function");
+          apiProbe.hasGetComponentParameters = (typeof trackItem.getComponentParameters === "function");
+          // App-level
+          apiProbe.appHasMOGRTAPI = (app.project && typeof app.project.openMGT === "function");
+          // Try calling getMGTComponent and capture more detail
+          if (apiProbe.hasGetMGTComponent) {
+            try {
+              var mgtTry = trackItem.getMGTComponent();
+              apiProbe.getMGTComponent_returned = (mgtTry === null) ? "null" : (typeof mgtTry);
+              if (mgtTry) {
+                apiProbe.getMGTComponent_displayName = String(mgtTry.displayName || "");
+                apiProbe.getMGTComponent_propertyCount = (mgtTry.properties ? mgtTry.properties.numItems : -1);
+                // Dump first 3 properties of MGT comp
+                var mgtPropsSample = [];
+                if (mgtTry.properties) {
+                  for (var mp = 0; mp < Math.min(5, mgtTry.properties.numItems); mp++) {
+                    var mprop = mgtTry.properties[mp];
+                    var mval = null;
+                    try { mval = mprop.getValue(); } catch (eMg) { mval = "<getValue threw>"; }
+                    mgtPropsSample.push({
+                      index: mp,
+                      displayName: String(mprop.displayName),
+                      valueType: typeof mval,
+                      valuePreview: (typeof mval === "string" ? mval.substring(0, 80) : mval)
+                    });
+                  }
+                }
+                apiProbe.getMGTComponent_propertiesSample = mgtPropsSample;
+              }
+            } catch (eMG) {
+              apiProbe.getMGTComponent_threw = eMG.toString();
+            }
+          }
+          // Probe trackItem.name (some MOGRT-specific stuff might surface here)
+          try { apiProbe.trackItemName = String(trackItem.name); } catch (e) {}
+          // Probe sequence-level methods
+          try { apiProbe.sequenceHasGetSelection = (typeof sequence.getSelection === "function"); } catch (e) {}
+
+          // Iterate ALL components of the imported trackItem (MOGRT params live as
+          // properties on one of its components, not always via getMGTComponent)
+          var componentsDump = [];
+          var textPropsFound = [];  // {compIndex, propIndex, displayName, currentValue}
+          for (var ci = 0; ci < trackItem.components.numItems; ci++) {
+            var comp = trackItem.components[ci];
+            var compName = String(comp.displayName);
+            var compMatch = (comp.matchName !== undefined) ? String(comp.matchName) : "";
+            var compProps = [];
+            for (var i = 0; i < comp.properties.numItems; i++) {
+              var prop = comp.properties[i];
+              var dn = String(prop.displayName);
+              var val = null;
+              try { val = prop.getValue(); } catch (eV) { val = "<getValue threw>"; }
+              var truncatedVal = (typeof val === "string" ? val.substring(0, 250) : val);
+              compProps.push({ index: i, displayName: dn, value: truncatedVal });
+              // Heuristic: text properties contain "mTextString" in their JSON value
+              if (typeof val === "string" && val.indexOf("mTextString") >= 0) {
+                textPropsFound.push({ compIndex: ci, propIndex: i, compDisplayName: compName, propDisplayName: dn, currentValue: val });
+              }
+            }
+            componentsDump.push({ index: ci, displayName: compName, matchName: compMatch, propertyCount: compProps.length, properties: compProps });
+          }
+
+          // Set custom text(s). Each "AE.ADBE Text" component in the MOGRT exposes its
+          // editable text as property 0 (display name "Texto de origen" / "Source Text").
+          // Only one setValue per property — raw_string strategy worked in earlier tests; no
+          // JSON wrapping (that broke rendering).
+          //
+          // Inputs:
+          //   args.text  → first text component (e.g., main title in Basic Lower Third)
+          //   args.text2 → second text component (e.g., subtitle)
+          //   args.text3 → third (if MOGRT has more)
+          //   ...
+          // Auto-collected from numbered keys.
+          var textsByIndex = [];
+          if (${textJson} !== null) textsByIndex.push(${textJson});
+          ${args.text2 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text2)});` : ''}
+          ${args.text3 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text3)});` : ''}
+          ${args.text4 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text4)});` : ''}
+          var setResults = [];
+          if (textsByIndex.length > 0) {
+            // PREFERRED PATH: getMGTComponent() for AE-exported MOGRTs (Adobe-CEP canonical).
+            // Properties exposed there are the Essential Graphics parameters and contain
+            // FULL JSON values that ARE editable.
+            // FALLBACK PATH: iterate trackItem.components for "AE.ADBE Text" — only works for
+            // some MOGRTs and tokens are opaque single-char references in Premiere-native MOGRTs.
+            var textComps = [];
+            var textCompsViaMGT = false;
+            var textPropNameOverride = ${textPropNameJson};
+            // OVERRIDE PATH: caller named a specific property by displayName.
+            // Search both the MGT component and all trackItem components for an exact
+            // displayName match, then restrict textComps to that single hit.
+            // text2/text3/text4 are ignored in override mode — caller targeted one field.
+            if (textPropNameOverride) {
+              try {
+                var mgtCompO = trackItem.getMGTComponent();
+                if (mgtCompO && mgtCompO.properties) {
+                  for (var miO = 0; miO < mgtCompO.properties.numItems; miO++) {
+                    var mpO = mgtCompO.properties[miO];
+                    if (String(mpO.displayName) === textPropNameOverride) {
+                      textComps.push({ comp: mgtCompO, compIndex: -1, prop: mpO, propIndex: miO, displayName: String(mpO.displayName) });
+                      textCompsViaMGT = true;
+                      break;
+                    }
+                  }
+                }
+              } catch (eOMG) {}
+              if (textComps.length === 0) {
+                for (var ciO = 0; ciO < trackItem.components.numItems && textComps.length === 0; ciO++) {
+                  var cO = trackItem.components[ciO];
+                  for (var piO = 0; piO < cO.properties.numItems; piO++) {
+                    var pO = cO.properties[piO];
+                    if (String(pO.displayName) === textPropNameOverride) {
+                      textComps.push({ comp: cO, compIndex: ciO, prop: pO, propIndex: piO, displayName: String(pO.displayName) });
+                      break;
+                    }
+                  }
+                }
+              }
+              if (textComps.length === 0) {
+                return JSON.stringify({
+                  success: false,
+                  error: "textPropertyName override did not match any property displayName: " + textPropNameOverride,
+                  componentCount: componentsDump.length,
+                  components: componentsDump
+                });
+              }
+              // In override mode keep only the first text (named-target write).
+              textsByIndex = [textsByIndex[0]];
+              setResults.push({ _strategy: "textPropertyName_override", overrideName: textPropNameOverride });
+            }
+            // AUTO-DETECT PATH (only when no override).
+            if (textComps.length === 0) {
+              try {
+                var mgtComp = trackItem.getMGTComponent();
+                if (mgtComp && mgtComp.properties) {
+                  for (var mi = 0; mi < mgtComp.properties.numItems; mi++) {
+                    var mp = mgtComp.properties[mi];
+                    var mpVal = null;
+                    try { mpVal = mp.getValue(); } catch (eMPv) {}
+                    // A "text" param has a JSON string value containing textEditValue or mTextString
+                    if (typeof mpVal === "string" && mpVal.length > 50 &&
+                        (mpVal.indexOf("textEditValue") >= 0 || mpVal.indexOf("mTextString") >= 0 || mpVal.indexOf("capPropTextRunCount") >= 0)) {
+                      textComps.push({ comp: mgtComp, compIndex: -1, prop: mp, propIndex: mi, displayName: String(mp.displayName) });
+                    }
+                  }
+                  if (textComps.length > 0) textCompsViaMGT = true;
+                }
+              } catch (eMGTC) {}
+              // Fallback to component iteration if MGT didn't yield text params
+              if (textComps.length === 0) {
+                for (var ci3 = 0; ci3 < trackItem.components.numItems; ci3++) {
+                  var c3 = trackItem.components[ci3];
+                  var mn = (c3.matchName !== undefined) ? String(c3.matchName) : "";
+                  if (mn === "AE.ADBE Text") {
+                    textComps.push({ comp: c3, compIndex: ci3, prop: c3.properties[0], propIndex: 0, displayName: "Source Text (legacy)" });
+                  }
+                }
+              }
+              setResults.push({ _strategy: textCompsViaMGT ? "getMGTComponent" : "components_fallback", textCompsFound: textComps.length });
+            }
+            for (var ti2 = 0; ti2 < textsByIndex.length && ti2 < textComps.length; ti2++) {
+              var tc = textComps[ti2];
+              var sourceTextProp = tc.prop;
+              var newText = String(textsByIndex[ti2]);
+              try {
+                // Source Text in Premiere/After Effects MOGRTs is stored as:
+                //   <4 bytes binary header> + <JSON payload of mTextParam structure>
+                // Source: Adobe Community (Kurt_Clark) + Adobe-CEP samples + reproduced
+                // independently across multiple Premiere versions (incl. 2026).
+                // The agent investigation confirmed this format. Direct setValue("text")
+                // stores the value but the renderer cannot parse it → no visual update.
+                // Correct mutation: parse JSON (skipping header), patch
+                // mTextParam.mStyleSheet.mText, re-prepend header, setValue(...).
+                var rawVal = sourceTextProp.getValue();
+                var rawValStr = String(rawVal);
+                var rawValLen = rawValStr.length;
+                var headerBytes = "";
+                var jsonStr = "";
+                var textObj = null;
+                var parseStrategy = "";
+                // Strategy 1: 4-byte header + JSON
+                try {
+                  headerBytes = rawValStr.substring(0, 4);
+                  jsonStr = rawValStr.substring(4);
+                  textObj = JSON.parse(jsonStr);
+                  parseStrategy = "header4+json";
+                } catch (eP1) {
+                  // Strategy 2: pure JSON (AE 14.3+ no header)
+                  try {
+                    textObj = JSON.parse(rawValStr);
+                    headerBytes = "";
+                    parseStrategy = "pure_json";
+                  } catch (eP2) {
+                    setResults.push({
+                      textIndex: ti2, compIndex: tc.compIndex, requestedText: newText,
+                      ok: false,
+                      error: "Both JSON parse strategies failed",
+                      rawValLength: rawValLen,
+                      rawValPreview: rawValStr.substring(0, 50),
+                      parseError1: eP1.toString(),
+                      parseError2: eP2.toString()
+                    });
+                    continue;
+                  }
+                }
+                // Mutate the text in the proper nested path(s)
+                var mutated = [];
+                if (textObj.mTextParam && textObj.mTextParam.mStyleSheet) {
+                  textObj.mTextParam.mStyleSheet.mText = newText;
+                  mutated.push("mTextParam.mStyleSheet.mText");
+                }
+                // AE 14.3+ alternate: textEditValue + fontTextRunLength
+                if (textObj.textEditValue !== undefined) {
+                  textObj.textEditValue = newText;
+                  textObj.fontTextRunLength = [newText.length];
+                  mutated.push("textEditValue+fontTextRunLength");
+                }
+                if (mutated.length === 0) {
+                  setResults.push({
+                    textIndex: ti2, compIndex: tc.compIndex, requestedText: newText,
+                    ok: false,
+                    error: "Parsed JSON but no known text field found",
+                    parseStrategy: parseStrategy,
+                    jsonKeys: (function(){ var ks=[]; for (var k in textObj) ks.push(k); return ks; })()
+                  });
+                  continue;
+                }
+                // Re-encode + write back
+                var newRawVal = headerBytes + JSON.stringify(textObj);
+                sourceTextProp.setValue(newRawVal, true);
+                // Verify
+                var afterRaw = "";
+                try { afterRaw = String(sourceTextProp.getValue()); } catch (eVA) {}
+                var afterParseOk = false;
+                var afterText = "";
+                try {
+                  var afterObj = JSON.parse(afterRaw.substring(headerBytes.length));
+                  if (afterObj.mTextParam && afterObj.mTextParam.mStyleSheet) {
+                    afterText = afterObj.mTextParam.mStyleSheet.mText;
+                    afterParseOk = true;
+                  } else if (afterObj.textEditValue) {
+                    afterText = afterObj.textEditValue;
+                    afterParseOk = true;
+                  }
+                } catch (eAP) {}
+                setResults.push({
+                  textIndex: ti2,
+                  compIndex: tc.compIndex,
+                  requestedText: newText,
+                  parseStrategy: parseStrategy,
+                  fieldsMutated: mutated,
+                  rawValLength: rawValLen,
+                  newRawValLength: newRawVal.length,
+                  readbackParseOk: afterParseOk,
+                  readbackText: afterText,
+                  ok: (afterText === newText)
+                });
+              } catch (eS) {
+                setResults.push({ textIndex: ti2, compIndex: tc.compIndex, requestedText: newText, ok: false, error: eS.toString() });
+              }
+            }
+            if (textComps.length === 0) {
+              setResults.push({ ok: false, error: "No 'AE.ADBE Text' components found in MOGRT" });
+            } else if (textsByIndex.length > textComps.length) {
+              setResults.push({ ok: false, warning: "More texts requested (" + textsByIndex.length + ") than text components in MOGRT (" + textComps.length + ")" });
+            }
+          }
+
+          return JSON.stringify({
+            success: true,
+            message: "MOGRT imported as text overlay",
+            clipId: trackItem.nodeId,
+            apiProbe: apiProbe,
+            componentCount: componentsDump.length,
+            components: componentsDump,
+            textPropsAutoDetected: textPropsFound,
+            textInjectionResults: setResults
+          });
         } catch (e) {
           return JSON.stringify({ success: false, error: e.toString() });
         }
@@ -2716,25 +3486,59 @@ export class PremiereProTools {
 
   // Export and Rendering Implementation
   private async exportSequence(sequenceId: string, outputPath: string, presetPath?: string, format?: string, quality?: string, resolution?: string): Promise<any> {
+    // app.encoder.encodeSequence() expects an absolute path to a .epr preset file.
+    // Passing a string name like "H.264" silently fails: encodeSequence returns
+    // no jobID and the JSX bridge reports {success:false}. Reject early with a
+    // clear error rather than letting the user think a queue happened.
+    if (!presetPath) {
+      return {
+        success: false,
+        error: 'presetPath required — must be absolute path to a .epr preset file (Adobe encodeSequence does not accept format names like "H.264" or "ProRes")',
+        hint: 'Create the preset in AME UI: File → Export Settings → configure → Save Preset → exports to ~/Library/Application Support/Adobe/Common/AME/<version>/Presets/. Pass that .epr path as presetPath.',
+        sequenceId,
+        outputPath,
+        format,
+        quality,
+        resolution,
+      };
+    }
+
     try {
-      const defaultPreset = format === 'mp4' ? 'H.264' : 'ProRes';
-      const preset = presetPath || defaultPreset;
-      
-      await this.bridge.renderSequence(sequenceId, outputPath, preset);
-      return { 
-        success: true, 
-        message: 'Sequence exported successfully',
-        outputPath: outputPath, 
-        format: preset,
-        quality: quality,
-        resolution: resolution
+      // bridge.renderSequence returns a structured response; propagate it instead
+      // of unconditionally claiming success. Pre-fix wrapper reported success even
+      // when AME never received the job (false-success false positives).
+      const result = await this.bridge.renderSequence(sequenceId, outputPath, presetPath);
+
+      if (result && result.success === false) {
+        return {
+          ...result,
+          sequenceId,
+          outputPath,
+          format,
+          quality,
+          resolution,
+        };
+      }
+
+      return {
+        success: true,
+        message: 'Sequence queued in Adobe Media Encoder. Render runs asynchronously — verify by checking the output file size growth.',
+        sequenceId,
+        outputPath,
+        presetPath,
+        format,
+        quality,
+        resolution,
+        jobID: result?.jobID,
+        queued: result?.queued,
+        verify: `ffprobe -show_entries format=duration,size '${outputPath}'`,
       };
     } catch (error) {
       return {
         success: false,
         error: `Failed to export sequence: ${error instanceof Error ? error.message : String(error)}`,
-        sequenceId: sequenceId,
-        outputPath: outputPath
+        sequenceId,
+        outputPath,
       };
     }
   }
@@ -2743,8 +3547,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
 
         if (sequence.openInTimeline) {
           try { sequence.openInTimeline(); } catch (e0) {}
@@ -3015,17 +3818,54 @@ export class PremiereProTools {
   }
 
   // Track Management Implementation
-  private async addTrack(_sequenceId: string, trackType: string, _position?: string): Promise<any> {
-    const numVideo = trackType === 'video' ? 1 : 0;
-    const numAudio = trackType === 'audio' ? 1 : 0;
+  // FIX vs upstream: upstream called qeSeq.addTracks(numVideo, numAudio, 0) which interpreted
+  // the 3rd arg as videoInsertIndex = 0, meaning "insert NEW track AT INDEX 0", pushing all
+  // existing tracks up by 1. This destroyed V1's content positioning relative to track names
+  // and caused MOGRT inserts to land on the wrong track.
+  //
+  // QE DOM signature: Sequence.addTracks(videoCount, videoInsertIndex, audioCount,
+  //   audioInsertIndex, audioMediaType, audioSubmixCount, audioSubmixInsertIndex)
+  //
+  // Now we honor the `position` param:
+  //   - "above" (default) → insert at index = numVideoTracks (becomes new TOP track,
+  //     existing tracks keep their indices)
+  //   - "below" → insert at 0 (legacy behavior, pushes existing up — only useful in special
+  //     cases since V1 in Premiere's UI is the bottom)
+  private async addTrack(sequenceId: string, trackType: string, position: string = 'above'): Promise<any> {
+    const isVideo = trackType === 'video';
+    const numVideo = isVideo ? 1 : 0;
+    const numAudio = isVideo ? 0 : 1;
     const script = `
       try {
         app.enableQE();
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        app.project.activeSequence = seq;
         var qeSeq = qe.project.getActiveSequence();
-        qeSeq.addTracks(${numVideo}, ${numAudio}, 0);
+
+        // Calculate insertion index based on position
+        var existingVideoTracks = seq.videoTracks.numTracks;
+        var existingAudioTracks = seq.audioTracks.numTracks;
+        var insertVideoIdx = (${JSON.stringify(position)} === 'above') ? existingVideoTracks : 0;
+        var insertAudioIdx = (${JSON.stringify(position)} === 'above') ? existingAudioTracks : 0;
+
+        // Full QE addTracks signature
+        qeSeq.addTracks(${numVideo}, insertVideoIdx, ${numAudio}, insertAudioIdx, 1, 0, 0);
+
+        var afterVideoTracks = seq.videoTracks.numTracks;
+        var afterAudioTracks = seq.audioTracks.numTracks;
+
         return JSON.stringify({
           success: true,
-          message: "${trackType} track added"
+          message: "${trackType} track added at " + ${JSON.stringify(position)},
+          trackType: "${trackType}",
+          position: ${JSON.stringify(position)},
+          videoTracksBefore: existingVideoTracks,
+          videoTracksAfter: afterVideoTracks,
+          audioTracksBefore: existingAudioTracks,
+          audioTracksAfter: afterAudioTracks,
+          newVideoTrackIndex: ${isVideo ? `(${JSON.stringify(position)} === 'above') ? existingVideoTracks : 0` : 'null'},
+          newAudioTrackIndex: ${!isVideo ? `(${JSON.stringify(position)} === 'above') ? existingAudioTracks : 0` : 'null'}
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -3155,6 +3995,90 @@ export class PremiereProTools {
     return await this.applyEffect(clipId, effectName, parameters);
   }
 
+  // BULK helper: apply same audio effect + parameters to all audio clips of a sequence in ONE
+  // ExtendScript round-trip. Activates the target sequence first (QE DOM operates on active).
+  // Returns per-clip results with valueAfter readback for the SET parameters.
+  private async applyAudioEffectToAllClips(sequenceId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
+    const paramJson = JSON.stringify(parameters || {});
+    const script = `
+      try {
+        app.enableQE();
+        var seq = __findSequence("${sequenceId}");
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        // Make target active so QE DOM can address it
+        app.project.activeSequence = seq;
+        var qeSeq = qe.project.getActiveSequence();
+        var effect = qe.project.getAudioEffectByName("${effectName}");
+        if (!effect) return JSON.stringify({ success: false, error: "Audio effect not found: ${effectName}" });
+
+        var requestedParams = ${paramJson};
+        function normalize(s) { return String(s).toLowerCase().replace(/[\\s_-]+/g, ''); }
+
+        var perClip = [];
+        for (var t = 0; t < seq.audioTracks.numTracks; t++) {
+          var track = seq.audioTracks[t];
+          var qeTrack = qeSeq.getAudioTrackAt(t);
+          for (var c = 0; c < track.clips.numItems; c++) {
+            var clip = track.clips[c];
+            var qeClip = qeTrack.getItemAt(c);
+            try {
+              qeClip.addAudioEffect(effect);
+              var newCompIdx = clip.components.numItems - 1;
+              var newComp = clip.components[newCompIdx];
+              var paramResults = [];
+              for (var pName in requestedParams) {
+                if (requestedParams.hasOwnProperty && !requestedParams.hasOwnProperty(pName)) continue;
+                var requestedVal = requestedParams[pName];
+                var matched = null;
+                for (var k = 0; k < newComp.properties.numItems; k++) {
+                  if (String(newComp.properties[k].displayName) === pName) {
+                    matched = newComp.properties[k]; break;
+                  }
+                }
+                if (!matched) {
+                  var nameN = normalize(pName);
+                  for (var k = 0; k < newComp.properties.numItems; k++) {
+                    if (normalize(String(newComp.properties[k].displayName)) === nameN) {
+                      matched = newComp.properties[k]; break;
+                    }
+                  }
+                }
+                if (matched) {
+                  try {
+                    matched.setValue(requestedVal, true);
+                    var valueAfter = null;
+                    try { valueAfter = matched.getValue(); } catch (eA) {}
+                    paramResults.push({ name: pName, ok: true, valueRequested: requestedVal, valueAfter: valueAfter });
+                  } catch (e1) {
+                    paramResults.push({ name: pName, ok: false, error: e1.toString() });
+                  }
+                } else {
+                  paramResults.push({ name: pName, ok: false, error: "no matching property" });
+                }
+              }
+              perClip.push({ clipIndex: c, trackIndex: t, clipId: String(clip.nodeId), name: String(clip.name), ok: true, paramResults: paramResults });
+            } catch (e2) {
+              perClip.push({ clipIndex: c, trackIndex: t, clipId: String(clip.nodeId), name: String(clip.name), ok: false, error: e2.toString() });
+            }
+          }
+        }
+
+        return JSON.stringify({
+          success: true,
+          sequenceId: "${sequenceId}",
+          sequenceName: String(seq.name),
+          effectName: "${effectName}",
+          totalClipsProcessed: perClip.length,
+          allOk: perClip.every ? perClip.every(function(r){return r.ok;}) : true,
+          perClip: perClip
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
   // Nested Sequences
   private async createNestedSequence(_clipIds: string[], _name: string): Promise<any> {
     return {
@@ -3234,11 +4158,10 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(_sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found by id: " + ${JSON.stringify(_sequenceId)}
           });
         }
         var settings = sequence.getSettings();
@@ -3351,8 +4274,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var pos = sequence.getPlayerPosition();
         return JSON.stringify({
           success: true,
@@ -3370,8 +4292,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var ticks = __secondsToTicks(${time});
         sequence.setPlayerPosition(ticks);
         return JSON.stringify({
@@ -3390,8 +4311,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var selection = sequence.getSelection();
         var clips = [];
         for (var i = 0; i < selection.length; i++) {
@@ -3613,8 +4533,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         sequence.setWorkAreaInPoint(__secondsToTicks(${inPoint}));
         sequence.setWorkAreaOutPoint(__secondsToTicks(${outPoint}));
         return JSON.stringify({
@@ -3634,8 +4553,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var inTime = sequence.getWorkAreaInPointAsTime();
         var outTime = sequence.getWorkAreaOutPointAsTime();
         return JSON.stringify({
@@ -3656,8 +4574,7 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var track = sequence.videoTracks[${trackIndex}];
         if (!track) return JSON.stringify({ success: false, error: "Track not found at index ${trackIndex}" });
         var clipCount = track.clips.numItems;
@@ -3800,8 +4717,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var tracks = ${JSON.stringify(trackType)} === "video" ? sequence.videoTracks : sequence.audioTracks;
         if (${trackIndex} < 0 || ${trackIndex} >= tracks.numTracks) return JSON.stringify({ success: false, error: "Track index out of range" });
         var track = tracks[${trackIndex}];
@@ -3844,8 +4760,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var reframedName = ${newName ? JSON.stringify(newName) : 'sequence.name + " Reframed"'};
         sequence.autoReframeSequence(${numerator}, ${denominator}, ${JSON.stringify(preset)}, reframedName, false);
         return JSON.stringify({
@@ -3870,8 +4785,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         sequence.performSceneEditDetectionOnSelection(${JSON.stringify(actionVal)}, ${audioVal}, ${JSON.stringify(sensitivityVal)});
         return JSON.stringify({
           success: true,
@@ -3893,8 +4807,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
         var startAtTime = ${startTimeVal};

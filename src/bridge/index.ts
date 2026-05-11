@@ -444,7 +444,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number): Promise<PremiereProClip> {
+  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true): Promise<PremiereProClip> {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
@@ -457,9 +457,25 @@ export class PremiereProBridge implements PremiereProTransport {
           return JSON.stringify({ success: false, error: "Project item not found" });
         }
 
-        var track = sequence.videoTracks[${trackIndex}];
-        if (!track) {
-          return JSON.stringify({ success: false, error: "Video track not found" });
+        // Audio-only routing: detect by file extension and route to audioTracks instead of
+        // videoTracks. Without this, mp3/wav/aif/m4a/aac/flac/ogg clips fail with
+        // "Video track not found" because addToTimeline always indexed sequence.videoTracks.
+        var mediaPath = projectItem.getMediaPath ? projectItem.getMediaPath() : "";
+        var isAudioOnly = /\\.(mp3|wav|aif|aiff|m4a|aac|flac|ogg|wma)$/i.test(mediaPath);
+        var trackKind;
+        var track;
+        if (isAudioOnly) {
+          trackKind = "audio";
+          track = sequence.audioTracks[${trackIndex}];
+          if (!track) {
+            return JSON.stringify({ success: false, error: "Audio track not found at index ${trackIndex}", audioTrackCount: sequence.audioTracks.numTracks });
+          }
+        } else {
+          trackKind = "video";
+          track = sequence.videoTracks[${trackIndex}];
+          if (!track) {
+            return JSON.stringify({ success: false, error: "Video track not found at index ${trackIndex}", videoTrackCount: sequence.videoTracks.numTracks });
+          }
         }
 
         track.overwriteClip(projectItem, ${time});
@@ -481,14 +497,47 @@ export class PremiereProBridge implements PremiereProTransport {
           return JSON.stringify({ success: false, error: "Clip placement did not produce a track item" });
         }
 
+        // linkAudio=false post-processing: when placing a video-track clip whose source
+        // media has an embedded audio stream (e.g. Remotion .mov outputs with silent PCM),
+        // Premiere auto-links and places the audio counterpart on the next available
+        // audio track via overwriteClip. This can DESTROY existing audio (Sprint 3 v14g
+        // bug: silent overlay PCM overwrote founder voice on A1). Pass linkAudio=false
+        // to scan audio tracks for the linked counterpart at the same start time and
+        // remove it. The video on the target track is untouched.
+        var unlinkedAudioRemoved = 0;
+        if (!isAudioOnly && ${linkAudio} === false) {
+          var videoStart = placedClip.start.seconds;
+          var tolerance = 0.1;
+          for (var at = 0; at < sequence.audioTracks.numTracks; at++) {
+            var audioTrack = sequence.audioTracks[at];
+            // iterate backwards because remove() may shift indices
+            for (var ai = audioTrack.clips.numItems - 1; ai >= 0; ai--) {
+              var audioClip = audioTrack.clips[ai];
+              if (audioClip && audioClip.projectItem &&
+                  audioClip.projectItem.nodeId === projectItem.nodeId &&
+                  Math.abs(audioClip.start.seconds - videoStart) < tolerance) {
+                try {
+                  audioClip.remove(false, false); // ripple=false, alignToVideo=false
+                  unlinkedAudioRemoved++;
+                } catch (rmErr) {
+                  // best effort — log but don't fail the whole add_to_timeline
+                }
+              }
+            }
+          }
+        }
+
         return JSON.stringify({
           success: true,
           id: placedClip.nodeId,
           name: placedClip.name,
+          trackKind: trackKind,
           inPoint: placedClip.start.seconds,
           outPoint: placedClip.end.seconds,
           duration: placedClip.duration.seconds,
-          mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : ""
+          mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : "",
+          linkAudio: ${linkAudio},
+          unlinkedAudioRemoved: unlinkedAudioRemoved
         });
       } catch (e) {
         return JSON.stringify({
@@ -497,23 +546,73 @@ export class PremiereProBridge implements PremiereProTransport {
         });
       }
     `;
-    
+
     return await this.executeScript(script);
   }
 
-  async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<void> {
+  async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<any> {
+    // Escape backslashes and quotes in paths so JSX string-eval is safe
+    const safePath = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = `
-      // Render sequence
-      var sequence = app.project.getSequenceByID("${sequenceId}");
-      var encoder = app.encoder;
-      
-      encoder.encodeSequence(sequence, "${outputPath}", "${presetPath}",
-        encoder.ENCODE_ENTIRE, false);
+      try {
+        // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper.
+        // Fail hard if the requested sequence isn't found — silently falling back to
+        // app.project.activeSequence would queue/render the wrong timeline while still
+        // reporting success, masking caller bugs (stale IDs, etc.).
+        var sequence = __findSequence("${sequenceId}");
+        if (!sequence) {
+          return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        }
+        if (typeof app.encoder === "undefined") {
+          return JSON.stringify({ success: false, error: "app.encoder not available in this Premiere build" });
+        }
 
-      return JSON.stringify({ success: true });
+        // Boot AME if not already running so it can pick up the queue
+        try { app.encoder.launchEncoder(); } catch (e1) {}
+
+        // Queue range constants on app.encoder: ENCODE_ENTIRE / ENCODE_IN_TO_OUT / ENCODE_WORKAREA
+        var range = (typeof app.encoder.ENCODE_ENTIRE !== "undefined") ? app.encoder.ENCODE_ENTIRE : 0;
+
+        // 5th arg "removeOnCompletion": 1=remove, 0=keep. We use 1 to avoid AME queue clutter.
+        var jobID = app.encoder.encodeSequence(
+          sequence,
+          "${safePath(outputPath)}",
+          "${safePath(presetPath)}",
+          range,
+          1
+        );
+
+        if (!jobID) {
+          return JSON.stringify({
+            success: false,
+            error: "encodeSequence returned no jobID — preset path may be invalid or AME not connected",
+            outputPath: "${safePath(outputPath)}",
+            presetPath: "${safePath(presetPath)}"
+          });
+        }
+
+        // Trigger AME to actually start processing the queued job
+        try { app.encoder.startBatch(); } catch (e2) {}
+
+        return JSON.stringify({
+          success: true,
+          queued: true,
+          jobID: String(jobID),
+          outputPath: "${safePath(outputPath)}",
+          presetPath: "${safePath(presetPath)}"
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: "encodeSequence threw: " + e.toString() });
+      }
     `;
-    
-    await this.executeScript(script);
+
+    const raw = await this.executeScript(script);
+    // CEP returns the JSON.stringify'd object; bridge.executeScript returns parsed.result if present.
+    // Some CEP plugins wrap as string; handle both.
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw); } catch { return { success: false, error: "Bridge returned unparseable string: " + raw }; }
+    }
+    return raw;
   }
 
   async listProjectItems(): Promise<PremiereProProjectItem[]> {
