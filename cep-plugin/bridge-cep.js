@@ -197,7 +197,21 @@
             }
 
             var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + script;
+            var settled = false;
+            var timeoutMs = 45000;
+            var timeoutId = setTimeout(function() {
+                if (settled) return;
+                settled = true;
+                callback(new Error(
+                    'ExtendScript execution timed out after ' + timeoutMs + 'ms. ' +
+                    'Premiere Pro or the CEP scripting host did not return a result.'
+                ));
+            }, timeoutMs);
+
             this.csInterface.evalScript(fullScript, function(result) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
                 self.log('EvalScript result: ' + result, 'info');
 
                 if (result === 'EvalScript error.' || result === 'EvalScript error') {
