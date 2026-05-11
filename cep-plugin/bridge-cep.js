@@ -50,6 +50,18 @@
         return path.join(base, 'premiere-mcp-bridge');
     }
 
+    function ensureDirectory(dirPath) {
+        if (!dirPath) return null;
+        var resolvedPath = path.resolve(dirPath);
+        if (!fs.existsSync(resolvedPath)) {
+            fs.mkdirSync(resolvedPath, { recursive: true });
+        }
+        if (!fs.statSync(resolvedPath).isDirectory()) {
+            throw new Error('Temp path is not a directory: ' + resolvedPath);
+        }
+        return resolvedPath;
+    }
+
     function MCPPremiereBridge() {
         this.isConnected = false;
         this.tempDirectory = '';
@@ -86,14 +98,10 @@
     };
 
     MCPPremiereBridge.prototype.getTempDirectory = function() {
-        if (this.tempDirectory) return this.tempDirectory;
-        var defaultPath = getDefaultTempPath();
+        var targetPath = this.tempDirectory || getDefaultTempPath();
         try {
-            if (!fs.existsSync(defaultPath)) {
-                fs.mkdirSync(defaultPath, { recursive: true });
-            }
-            this.tempDirectory = defaultPath;
-            return defaultPath;
+            this.tempDirectory = ensureDirectory(targetPath);
+            return this.tempDirectory;
         } catch (e) {
             this.log('Error creating temp directory: ' + e.message, 'error');
             return null;
@@ -120,11 +128,12 @@
 
     MCPPremiereBridge.prototype.watchDirectory = function(dirPath) {
         try {
-            var files = fs.readdirSync(dirPath);
+            var watchedPath = ensureDirectory(dirPath);
+            var files = fs.readdirSync(watchedPath);
             for (var i = 0; i < files.length; i++) {
                 var file = files[i];
                 if (file.indexOf('command-') === 0 && file.indexOf('.json') === file.length - 5) {
-                    this.processCommandFile(path.join(dirPath, file));
+                    this.processCommandFile(path.join(watchedPath, file));
                     return;
                 }
             }
@@ -314,7 +323,11 @@
             var tempEl = document.getElementById('tempDirectory');
             var tempDir = tempEl ? tempEl.value.trim() : '';
             if (tempDir) this.tempDirectory = tempDir;
-            var configPath = path.join(this.getTempDirectory(), 'config.json');
+            var ensuredTempDir = this.getTempDirectory();
+            if (!ensuredTempDir) {
+                throw new Error('Could not create or access temp directory');
+            }
+            var configPath = path.join(ensuredTempDir, 'config.json');
             fs.writeFileSync(configPath, JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
             this.log('Configuration saved', 'info');
         } catch (e) {
@@ -327,6 +340,12 @@
         this.isConnected = true;
         this.updateUI();
         var tempPath = this.getTempDirectory();
+        if (!tempPath) {
+            this.isConnected = false;
+            this.updateUI();
+            this.updateServerStatus(false);
+            return;
+        }
         this.log('Watching: ' + tempPath + ' (must match your MCP client PREMIERE_TEMP_DIR)', 'info');
         this.updateServerStatus(true);
         this.log('Bridge ready. Connect from Codex, Claude, or another MCP client using this same temp directory.', 'info');
