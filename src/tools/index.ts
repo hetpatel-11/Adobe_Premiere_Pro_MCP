@@ -2315,7 +2315,14 @@ export class PremiereProTools {
   // Sequence Management Implementation
   private async createSequence(name: string, presetPath?: string, _width?: number, _height?: number, _frameRate?: number, _sampleRate?: number): Promise<any> {
     try {
-      const result = await this.bridge.createSequence(name, presetPath);
+      const result: any = await this.bridge.createSequence(name, presetPath);
+      if (result?.success === false) {
+        return {
+          ...result,
+          sequenceName: result.sequenceName || name
+        };
+      }
+
       return {
         success: true,
         message: `Sequence "${name}" created successfully`,
@@ -2323,12 +2330,55 @@ export class PremiereProTools {
         ...result
       };
     } catch (error) {
+      const recovered = await this.recoverCreatedSequenceByName(name);
+      if (recovered) {
+        return {
+          success: true,
+          recovered: true,
+          warning: 'Bridge response timed out after Premiere created the sequence; recovered by list_sequences.',
+          message: `Sequence "${name}" created successfully`,
+          sequenceName: name,
+          ...recovered
+        };
+      }
+
       return {
         success: false,
         error: `Failed to create sequence: ${error instanceof Error ? error.message : String(error)}`,
         sequenceName: name
       };
     }
+  }
+
+  private async recoverCreatedSequenceByName(name: string): Promise<any | null> {
+    try {
+      const result = await this.listSequences();
+      if (result?.success === false || !Array.isArray(result?.sequences)) {
+        return null;
+      }
+
+      for (let i = result.sequences.length - 1; i >= 0; i--) {
+        const sequence = result.sequences[i];
+        if (sequence?.name === name) {
+          return {
+            id: sequence.id,
+            name: sequence.name,
+            duration: sequence.duration,
+            width: sequence.width,
+            height: sequence.height,
+            timebase: sequence.timebase,
+            videoTrackCount: sequence.videoTrackCount,
+            audioTrackCount: sequence.audioTrackCount,
+            videoTracks: [],
+            audioTracks: []
+          };
+        }
+      }
+    } catch (recoveryError) {
+      this.logger.warn(`Failed to recover sequence "${name}" after create_sequence error:`, recoveryError);
+    }
+
+    return null;
   }
 
   private async duplicateSequence(sequenceId: string, newName: string): Promise<any> {

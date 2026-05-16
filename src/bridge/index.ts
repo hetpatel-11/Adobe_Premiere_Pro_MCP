@@ -501,18 +501,74 @@ export class PremiereProBridge implements PremiereProTransport {
 
   async createSequence(name: string, presetPath?: string): Promise<PremiereProSequence> {
     const script = `
-      // Create new sequence
-      var sequence = app.project.createNewSequence("${name}", "${presetPath || ''}");
-      
-      // Return sequence info
-      return JSON.stringify({
-        id: sequence.sequenceID,
-        name: sequence.name,
-        duration: sequence.end - sequence.zeroPoint,
-        frameRate: sequence.framerate,
-        videoTracks: [],
-        audioTracks: []
-      });
+      try {
+        var sequenceName = ${JSON.stringify(name)};
+        var presetPath = ${presetPath ? JSON.stringify(presetPath) : 'null'};
+        var beforeIds = {};
+
+        if (app.project && app.project.sequences) {
+          for (var i = 0; i < app.project.sequences.numSequences; i++) {
+            beforeIds[app.project.sequences[i].sequenceID] = true;
+          }
+        }
+
+        var sequence = null;
+        var createError = null;
+        try {
+          sequence = app.project.createNewSequence(sequenceName, presetPath || "");
+        } catch (createException) {
+          createError = createException;
+        }
+
+        var created = sequence || null;
+        if (!created && app.project && app.project.sequences) {
+          for (var j = 0; j < app.project.sequences.numSequences; j++) {
+            var candidate = app.project.sequences[j];
+            if (!beforeIds[candidate.sequenceID] && candidate.name === sequenceName) {
+              created = candidate;
+              break;
+            }
+          }
+        }
+
+        if (!created && app.project && app.project.sequences) {
+          for (var k = app.project.sequences.numSequences - 1; k >= 0; k--) {
+            var fallback = app.project.sequences[k];
+            if (fallback.name === sequenceName) {
+              created = fallback;
+              break;
+            }
+          }
+        }
+
+        if (!created) {
+          return JSON.stringify({
+            success: false,
+            error: createError
+              ? createError.toString()
+              : "Sequence creation completed but the new sequence could not be located",
+            sequenceName: sequenceName
+          });
+        }
+
+        return JSON.stringify({
+          success: true,
+          id: created.sequenceID,
+          name: created.name,
+          duration: created.end ? __ticksToSeconds(created.end) : 0,
+          frameRate: created.timebase ? (254016000000 / parseInt(created.timebase, 10)) : null,
+          videoTrackCount: created.videoTracks ? created.videoTracks.numTracks : 0,
+          audioTrackCount: created.audioTracks ? created.audioTracks.numTracks : 0,
+          videoTracks: [],
+          audioTracks: []
+        });
+      } catch (e) {
+        return JSON.stringify({
+          success: false,
+          error: e.toString(),
+          sequenceName: ${JSON.stringify(name)}
+        });
+      }
     `;
     
     return await this.executeScript(script);
