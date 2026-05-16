@@ -94,7 +94,7 @@ High-level workflow tools included:
 If you want Codex, Claude Code, or another agent to handle installation, verification, and day-to-day usage correctly, install the included Agent Skill:
 
 ```bash
-npx skills add hetpatel-11/Adobe_Premiere_Pro_MCP --skill premiere-pro-mcp -a codex -a claude-code
+npx skills add hetpatel-11/Adobe_Premiere_Pro_MCP --skill premiere-pro-mcp
 ```
 
 Or install directly from the skill path:
