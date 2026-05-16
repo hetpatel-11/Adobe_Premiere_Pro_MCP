@@ -62,6 +62,30 @@
         return resolvedPath;
     }
 
+    function sanitizeTempDirectoryInput(value) {
+        if (!value || typeof value !== 'string') return '';
+        var trimmed = value.trim();
+
+        try {
+            if (trimmed.charAt(0) === '{') {
+                var parsed = JSON.parse(trimmed);
+                if (parsed && typeof parsed.PREMIERE_TEMP_DIR === 'string') {
+                    return parsed.PREMIERE_TEMP_DIR.trim();
+                }
+                if (parsed && typeof parsed.tempDirectory === 'string') {
+                    return parsed.tempDirectory.trim();
+                }
+            }
+        } catch (e) {}
+
+        var envMatch = trimmed.match(/["']?PREMIERE_TEMP_DIR["']?\s*:\s*["']([^"']+)["']/);
+        if (envMatch && envMatch[1]) {
+            return envMatch[1].trim();
+        }
+
+        return trimmed.replace(/^["']|["']$/g, '');
+    }
+
     function MCPPremiereBridge() {
         this.isConnected = false;
         this.tempDirectory = '';
@@ -310,7 +334,7 @@
                 var configPath = path.join(defaultPath, 'config.json');
                 if (fs.existsSync(configPath)) {
                     var config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-                    if (config.tempDirectory) this.tempDirectory = config.tempDirectory;
+                    if (config.tempDirectory) this.tempDirectory = sanitizeTempDirectoryInput(config.tempDirectory);
                 }
             }
             var tempEl = document.getElementById('tempDirectory');
@@ -321,12 +345,13 @@
     MCPPremiereBridge.prototype.saveConfig = function() {
         try {
             var tempEl = document.getElementById('tempDirectory');
-            var tempDir = tempEl ? tempEl.value.trim() : '';
+            var tempDir = tempEl ? sanitizeTempDirectoryInput(tempEl.value) : '';
             if (tempDir) this.tempDirectory = tempDir;
             var ensuredTempDir = this.getTempDirectory();
             if (!ensuredTempDir) {
                 throw new Error('Could not create or access temp directory');
             }
+            if (tempEl) tempEl.value = this.tempDirectory;
             var configPath = path.join(ensuredTempDir, 'config.json');
             fs.writeFileSync(configPath, JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
             this.log('Configuration saved', 'info');

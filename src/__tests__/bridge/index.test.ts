@@ -160,6 +160,29 @@ describe('PremiereProBridge', () => {
     );
   });
 
+  it('creates sequences with guarded ExtendScript and safe arguments', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({
+      success: true,
+      id: 'seq-123',
+      name: 'Safe Sequence'
+    }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    const result: any = await bridge.createSequence('Safe Sequence');
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+
+    expect(result.success).toBe(true);
+    expect(result.id).toBe('seq-123');
+    expect(commandPayload.script).toContain('try {');
+    expect(commandPayload.script).toContain('app.project.createNewSequence(sequenceName, presetPath || "")');
+    expect(commandPayload.script).toContain('Sequence creation completed but the new sequence could not be located');
+  });
+
   it('does not delete externally managed temp directories during cleanup', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
