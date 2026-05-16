@@ -89,6 +89,22 @@ High-level workflow tools included:
 
 `assemble_product_spot` and `build_brand_spot_from_mogrt_and_assets` now support an optional `clipPlan` argument so an LLM can direct per-clip timing, track placement, transitions, motion, trims, effects, and color adjustments instead of relying on fixed template defaults.
 
+## Agent Skill
+
+If you want Codex, Claude Code, or another agent to handle installation, verification, and day-to-day usage correctly, install the included Agent Skill:
+
+```bash
+npx skills add hetpatel-11/Adobe_Premiere_Pro_MCP --skill premiere-pro-mcp -a codex -a claude-code
+```
+
+Or install directly from the skill path:
+
+```bash
+npx skills add https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/tree/main/skills/premiere-pro-mcp
+```
+
+The skill teaches agents how to install the MCP, start and verify the CEP bridge, use the Premiere tools safely, import real media before editing, prefer sequence-aware operations, and run diagnostics when something fails.
+
 ## Fastest Install (macOS)
 
 ```bash
