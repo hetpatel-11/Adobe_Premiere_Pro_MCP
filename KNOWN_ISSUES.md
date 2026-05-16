@@ -2,14 +2,19 @@
 
 This file tracks current, confirmed limits. It is no longer a backlog of already-fixed prototype bugs.
 
-## Current State (March 4, 2026)
+## Current State (May 16, 2026)
 
-The locally validated tool surface is:
+The current built tool catalog exposes:
 
-- `97` exposed tools
-- `43` live-executed against a real Premiere Pro session
-- `50` schema-validated in the same sweep
-- `3` intentionally skipped because they mutate or save project state during no-arg testing
+- `104` tools
+
+The last broad live sweep in this repository was run on March 4, 2026:
+
+- `43` tools were live-executed against a real Premiere Pro session
+- `50` tools were schema-validated in the same sweep
+- `3` tools were intentionally skipped because they mutate or save project state during no-arg testing
+
+Run `node scripts/live-tool-sweep.mjs` against a scratch Premiere project before making a new release-level validation claim.
 
 ## Confirmed Runtime Limitation
 
@@ -80,6 +85,8 @@ These issues were real and are now resolved in the current code:
 - `import_media` could import successfully but fail to locate the new project item
 - `add_to_timeline` used the wrong Premiere API path
 - the server could delete an externally managed temp directory on shutdown
+- the CEP bridge could fail with `ENOENT` when the configured temp directory did not exist
+- `create_sequence` could create a sequence in Premiere but still report failure after a bridge timeout
 - `export_frame` called a non-existent API and now uses the QE export path
 - `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
 - the branded workflow response returned the wrong message due to object spread order
