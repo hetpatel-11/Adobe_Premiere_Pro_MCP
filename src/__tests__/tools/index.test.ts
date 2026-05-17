@@ -104,50 +104,29 @@ describe('PremiereProTools', () => {
       expect(result.actualPath).toBe('/tmp/AlreadyOpen.prproj');
     });
 
-    it('recovers create_sequence when the bridge times out after Premiere created it', async () => {
+    it('does not run automatic create_sequence recovery after a bridge timeout', async () => {
       mockBridge.createSequence = jest.fn().mockRejectedValue(new Error('Bridge response timeout'));
-      mockBridge.executeScript
-        .mockResolvedValueOnce({
-          success: true,
-          sequences: [
-            {
-              id: 'seq-recovered',
-              name: 'Recovered Sequence',
-              duration: 0,
-              width: 1920,
-              height: 1080,
-              timebase: '10594584000',
-              videoTrackCount: 3,
-              audioTrackCount: 4
-            }
-          ],
-          count: 1
-        });
 
       const result = await tools.executeTool('create_sequence', {
-        name: 'Recovered Sequence'
+        name: 'Possibly Created Sequence'
       });
 
-      expect(result.success).toBe(true);
-      expect(result.recovered).toBe(true);
-      expect(result.id).toBe('seq-recovered');
-      expect(result.warning).toContain('recovered by list_sequences');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Bridge response timeout');
+      expect(result.warning).toContain('does not run automatic recovery');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
     });
 
-    it('surfaces create_sequence bridge failures when recovery cannot find the sequence', async () => {
-      mockBridge.createSequence = jest.fn().mockRejectedValue(new Error('Bridge response timeout'));
-      mockBridge.executeScript.mockResolvedValueOnce({
-        success: true,
-        sequences: [],
-        count: 0
-      });
+    it('surfaces create_sequence bridge failures without timeout recovery guidance', async () => {
+      mockBridge.createSequence = jest.fn().mockRejectedValue(new Error('Premiere rejected the preset'));
 
       const result = await tools.executeTool('create_sequence', {
         name: 'Missing Sequence'
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('Bridge response timeout');
+      expect(result.error).toContain('Premiere rejected the preset');
+      expect(result.warning).toBeUndefined();
     });
 
     it('passes through successful imports', async () => {

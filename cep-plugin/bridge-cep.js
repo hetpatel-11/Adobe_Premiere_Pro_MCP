@@ -66,24 +66,28 @@
         if (!value || typeof value !== 'string') return '';
         var trimmed = value.trim();
 
+        function normalizePathLiteral(pathValue) {
+            return pathValue.trim().replace(/\\\\/g, '\\');
+        }
+
         try {
             if (trimmed.charAt(0) === '{') {
                 var parsed = JSON.parse(trimmed);
                 if (parsed && typeof parsed.PREMIERE_TEMP_DIR === 'string') {
-                    return parsed.PREMIERE_TEMP_DIR.trim();
+                    return normalizePathLiteral(parsed.PREMIERE_TEMP_DIR);
                 }
                 if (parsed && typeof parsed.tempDirectory === 'string') {
-                    return parsed.tempDirectory.trim();
+                    return normalizePathLiteral(parsed.tempDirectory);
                 }
             }
         } catch (e) {}
 
         var envMatch = trimmed.match(/["']?PREMIERE_TEMP_DIR["']?\s*:\s*["']([^"']+)["']/);
         if (envMatch && envMatch[1]) {
-            return envMatch[1].trim();
+            return normalizePathLiteral(envMatch[1]);
         }
 
-        return trimmed.replace(/^["']|["']$/g, '');
+        return normalizePathLiteral(trimmed.replace(/^["']|["']$/g, ''));
     }
 
     function MCPPremiereBridge() {
@@ -329,16 +333,34 @@
 
     MCPPremiereBridge.prototype.loadConfig = function() {
         try {
-            var defaultPath = getDefaultTempPath();
-            if (fs.existsSync(defaultPath)) {
-                var configPath = path.join(defaultPath, 'config.json');
+            var candidatePaths = [getDefaultTempPath()];
+            if (process.env.PREMIERE_TEMP_DIR) {
+                candidatePaths.push(sanitizeTempDirectoryInput(process.env.PREMIERE_TEMP_DIR));
+            }
+
+            for (var i = 0; i < candidatePaths.length; i++) {
+                var candidatePath = sanitizeTempDirectoryInput(candidatePaths[i]);
+                if (!candidatePath || !fs.existsSync(candidatePath)) continue;
+                var configPath = path.join(candidatePath, 'config.json');
                 if (fs.existsSync(configPath)) {
                     var config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-                    if (config.tempDirectory) this.tempDirectory = sanitizeTempDirectoryInput(config.tempDirectory);
+                    if (config.tempDirectory) {
+                        this.tempDirectory = sanitizeTempDirectoryInput(config.tempDirectory);
+                        break;
+                    }
                 }
             }
+
             var tempEl = document.getElementById('tempDirectory');
-            if (tempEl && this.tempDirectory) tempEl.value = this.tempDirectory;
+            if (tempEl) {
+                var fieldValue = sanitizeTempDirectoryInput(tempEl.value);
+                if (!this.tempDirectory && fieldValue) this.tempDirectory = fieldValue;
+                if (this.tempDirectory) {
+                    tempEl.value = this.tempDirectory;
+                } else if (fieldValue) {
+                    tempEl.value = fieldValue;
+                }
+            }
         } catch (e) {}
     };
 
@@ -362,6 +384,7 @@
 
     MCPPremiereBridge.prototype.startBridge = function() {
         this.log('Starting MCP Bridge...', 'info');
+        this.isProcessing = false;
         this.isConnected = true;
         this.updateUI();
         var tempPath = this.getTempDirectory();
@@ -379,6 +402,7 @@
     MCPPremiereBridge.prototype.stopBridge = function() {
         this.log('Stopping MCP Bridge...', 'info');
         this.isConnected = false;
+        this.isProcessing = false;
         this.updateUI();
         this.updateServerStatus(false);
     };
