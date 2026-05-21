@@ -46,8 +46,19 @@
     ].join('\n');
 
     function getDefaultTempPath() {
-        var base = (os.platform() === 'win32') ? (process.env.TEMP || 'C:\\Temp') : '/tmp';
+        if (process.env.PREMIERE_TEMP_DIR) {
+            return sanitizeTempDirectoryInput(process.env.PREMIERE_TEMP_DIR);
+        }
+        var base = (os.platform() === 'win32') ? (process.env.TEMP || process.env.TMP || 'C:\\Temp') : '/tmp';
         return path.join(base, 'premiere-mcp-bridge');
+    }
+
+    function getPanelConfigPath() {
+        var configDir = path.join(os.homedir(), '.premiere-mcp-bridge');
+        if (!fs.existsSync(configDir)) {
+            fs.mkdirSync(configDir, { recursive: true });
+        }
+        return path.join(configDir, 'config.json');
     }
 
     function ensureDirectory(dirPath) {
@@ -84,10 +95,16 @@
 
         var envMatch = trimmed.match(/["']?PREMIERE_TEMP_DIR["']?\s*:\s*["']([^"']+)["']/);
         if (envMatch && envMatch[1]) {
-            return normalizePathLiteral(envMatch[1]);
+            trimmed = normalizePathLiteral(envMatch[1]);
+        } else {
+            trimmed = normalizePathLiteral(trimmed.replace(/^["']|["']$/g, ''));
         }
 
-        return normalizePathLiteral(trimmed.replace(/^["']|["']$/g, ''));
+        if (os.platform() === 'win32' && /^\/tmp(?:\/|$)/.test(trimmed)) {
+            return '';
+        }
+
+        return trimmed;
     }
 
     function MCPPremiereBridge() {
@@ -333,12 +350,20 @@
 
     MCPPremiereBridge.prototype.loadConfig = function() {
         try {
-            var candidatePaths = [getDefaultTempPath()];
+            var panelConfigPath = getPanelConfigPath();
+            if (fs.existsSync(panelConfigPath)) {
+                var panelConfig = JSON.parse(fs.readFileSync(panelConfigPath, 'utf8'));
+                if (panelConfig.tempDirectory) {
+                    this.tempDirectory = sanitizeTempDirectoryInput(panelConfig.tempDirectory);
+                }
+            }
+
+            var candidatePaths = this.tempDirectory ? [this.tempDirectory, getDefaultTempPath()] : [getDefaultTempPath()];
             if (process.env.PREMIERE_TEMP_DIR) {
                 candidatePaths.push(sanitizeTempDirectoryInput(process.env.PREMIERE_TEMP_DIR));
             }
 
-            for (var i = 0; i < candidatePaths.length; i++) {
+            for (var i = 0; !this.tempDirectory && i < candidatePaths.length; i++) {
                 var candidatePath = sanitizeTempDirectoryInput(candidatePaths[i]);
                 if (!candidatePath || !fs.existsSync(candidatePath)) continue;
                 var configPath = path.join(candidatePath, 'config.json');
@@ -357,8 +382,8 @@
                 if (!this.tempDirectory && fieldValue) this.tempDirectory = fieldValue;
                 if (this.tempDirectory) {
                     tempEl.value = this.tempDirectory;
-                } else if (fieldValue) {
-                    tempEl.value = fieldValue;
+                } else {
+                    tempEl.value = getDefaultTempPath();
                 }
             }
         } catch (e) {}
@@ -374,8 +399,8 @@
                 throw new Error('Could not create or access temp directory');
             }
             if (tempEl) tempEl.value = this.tempDirectory;
-            var configPath = path.join(ensuredTempDir, 'config.json');
-            fs.writeFileSync(configPath, JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
+            fs.writeFileSync(path.join(ensuredTempDir, 'config.json'), JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
+            fs.writeFileSync(getPanelConfigPath(), JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
             this.log('Configuration saved', 'info');
         } catch (e) {
             this.log('Error saving config: ' + e.message, 'error');
