@@ -1,7 +1,7 @@
 {
   "id": "com.mcp.premiere.uxpbridge",
   "name": "MCP Bridge (UXP)",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "manifestVersion": 6,
   "main": "main.js",
   "host": [
@@ -23,7 +23,7 @@
   "requiredPermissions": {
     "allowCodeGenerationFromStrings": true,
     "network": {
-      "domains": ["localhost", "127.0.0.1"]
+      "domains": ["localhost", "127.0.0.1", "api.giphy.com", "fal.run", "*.fal.ai", "pixabay.com"]
     },
     "localFileSystem": "fullAccess"
   }
