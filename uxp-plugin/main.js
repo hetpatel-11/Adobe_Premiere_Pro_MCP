@@ -62,13 +62,36 @@ entrypoints.setup({
             .narr-textarea { width: 100%; min-height: 60px; background: #111; border: 1px solid #444; border-radius: 8px; color: #e0e0e0; font-size: 12px; padding: 8px; resize: vertical; font-family: 'Segoe UI', sans-serif; box-sizing: border-box; }
             .narr-textarea:focus { border-color: #0af; outline: none; }
             .narr-controls { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
-            .narr-controls label { font-size: 10px; color: #aaa; }
+            .narr-controls label { font-size: 10px; color: #aaa; white-space: nowrap; }
             .narr-controls sp-slider { flex: 1; }
             .speed-val { font-size: 11px; color: #0af; font-weight: bold; min-width: 32px; text-align: center; }
             .narr-btn-row { display: flex; gap: 6px; }
             .narr-preview { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 8px; margin-top: 8px; font-size: 11px; color: #aaa; }
             .narr-preview .preview-name { color: #0af; font-weight: bold; }
             .narr-preview .preview-voice { color: #888; font-size: 10px; }
+            /* 감정 칩 */
+            .emotion-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+            .emotion-chip { background: #252525; border: 1px solid #444; border-radius: 14px; padding: 4px 10px; font-size: 10px; cursor: pointer; user-select: none; transition: all 0.15s; }
+            .emotion-chip:hover { border-color: #0af; }
+            .emotion-chip.selected { background: #0a3d5c; border-color: #0af; color: #0af; }
+            .emotion-intensity { font-size: 9px; color: #888; margin-left: 4px; }
+            /* 배치 나레이션 */
+            .batch-list { background: #111; border: 1px solid #333; border-radius: 8px; padding: 6px; margin-bottom: 8px; max-height: 200px; overflow-y: auto; }
+            .batch-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px; font-size: 11px; margin-bottom: 3px; background: #1a1a2e; }
+            .batch-item:hover { background: #1a2a3a; }
+            .batch-item .batch-num { color: #0af; font-weight: bold; min-width: 24px; }
+            .batch-item .batch-text { flex: 1; color: #ccc; }
+            .batch-item .batch-status { font-size: 10px; color: #888; }
+            .batch-item .batch-remove { cursor: pointer; color: #f88; font-size: 12px; padding: 0 4px; }
+            .batch-item.done { opacity: 0.6; }
+            .batch-item.done .batch-status { color: #0f0; }
+            .batch-item.processing .batch-status { color: #ff0; }
+            .batch-progress { height: 3px; background: #333; border-radius: 2px; margin-bottom: 8px; overflow: hidden; }
+            .batch-progress-bar { height: 100%; background: linear-gradient(90deg, #0af, #0f0); border-radius: 2px; transition: width 0.3s; width: 0%; }
+            .mode-toggle { display: flex; gap: 4px; margin-bottom: 8px; }
+            .mode-btn { flex: 1; background: #252525; border: 1px solid #444; border-radius: 6px; padding: 5px; font-size: 10px; cursor: pointer; text-align: center; color: #aaa; }
+            .mode-btn:hover { border-color: #0af; }
+            .mode-btn.active { background: #0a3d5c; border-color: #0af; color: #0af; font-weight: bold; }
           </style>
 
           <div style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
@@ -143,62 +166,57 @@ entrypoints.setup({
                 <div class="narr-section">
                   <div class="narr-section-title">🎭 캐릭터 선택</div>
                   <div class="voice-grid" id="voiceGrid">
-                    <div class="voice-card selected" data-voice="ko-KR-InJoonNeural" data-rate="1.0">
-                      <div class="voice-avatar">🎤</div>
-                      <div class="voice-name">기본 남자</div>
-                      <div class="voice-tag">차분한 남성</div>
-                    </div>
-                    <div class="voice-card" data-voice="ko-KR-SunHiNeural" data-rate="1.0">
-                      <div class="voice-avatar">👩</div>
-                      <div class="voice-name">기본 여자</div>
-                      <div class="voice-tag">밝은 여성</div>
-                    </div>
-                    <div class="voice-card" data-voice="ko-KR-HyunsuMultilingualNeural" data-rate="1.0">
-                      <div class="voice-avatar">🧑‍💼</div>
-                      <div class="voice-name">현수</div>
+                    <div class="voice-card selected" data-voice="ko-KR-HyunsuMultilingualNeural" data-voice-name="남자" data-rate="1.0">
+                      <div class="voice-avatar">🧑</div>
+                      <div class="voice-name">남자</div>
                       <div class="voice-tag">자연스러운 남성</div>
                     </div>
-                    <div class="voice-card" data-voice="ko-KR-InJoonNeural" data-rate="1.3">
-                      <div class="voice-avatar">🏃</div>
-                      <div class="voice-name">스포츠 엠씨</div>
-                      <div class="voice-tag">빠른 남성</div>
+                    <div class="voice-card" data-voice="ko-KR-SunHiNeural" data-voice-name="여자" data-rate="1.0">
+                      <div class="voice-avatar">👩</div>
+                      <div class="voice-name">여자</div>
+                      <div class="voice-tag">자연스러운 여성</div>
                     </div>
-                    <div class="voice-card" data-voice="ko-KR-SunHiNeural" data-rate="0.85">
-                      <div class="voice-avatar">📖</div>
-                      <div class="voice-name">동화 나레이터</div>
-                      <div class="voice-tag">느린 여성</div>
+                    <div class="voice-card" data-voice="ko-KR-HyunsuMultilingualNeural" data-voice-name="남자아이" data-rate="1.0">
+                      <div class="voice-avatar">👦</div>
+                      <div class="voice-name">남자아이</div>
+                      <div class="voice-tag">밝은 소년</div>
                     </div>
-                    <div class="voice-card" data-voice="ko-KR-InJoonNeural" data-rate="0.8">
-                      <div class="voice-avatar">🎩</div>
-                      <div class="voice-name">신사</div>
-                      <div class="voice-tag">느긋한 남성</div>
+                    <div class="voice-card" data-voice="ko-KR-SunHiNeural" data-voice-name="여자아이" data-rate="1.0">
+                      <div class="voice-avatar">👧</div>
+                      <div class="voice-name">여자아이</div>
+                      <div class="voice-tag">귀여운 소녀</div>
                     </div>
-                    <div class="voice-card" data-voice="ko-KR-SunHiNeural" data-rate="1.2">
-                      <div class="voice-avatar">💃</div>
-                      <div class="voice-name">쇼핑 호스트</div>
-                      <div class="voice-tag">활기찬 여성</div>
+                    <div class="voice-card" data-voice="ko-KR-HyunsuMultilingualNeural" data-voice-name="현수" data-rate="1.0">
+                      <div class="voice-avatar">🧑‍💼</div>
+                      <div class="voice-name">현수</div>
+                      <div class="voice-tag">프로 내레이터</div>
                     </div>
-                    <div class="voice-card" data-voice="ko-KR-HyunsuMultilingualNeural" data-rate="0.9">
-                      <div class="voice-avatar">📺</div>
-                      <div class="voice-name">뉴스 앵커</div>
-                      <div class="voice-tag">또박또박</div>
+                    <div class="voice-card" data-voice="ko-KR-InJoonNeural" data-voice-name="인준" data-rate="1.0">
+                      <div class="voice-avatar">🎤</div>
+                      <div class="voice-name">인준</div>
+                      <div class="voice-tag">차분한 남성</div>
                     </div>
-                    <div class="voice-card" data-voice="en-US-AndrewNeural" data-rate="1.0">
+                    <div class="voice-card" data-voice="ko-KR-SunHiNeural" data-voice-name="선희" data-rate="1.0">
+                      <div class="voice-avatar">💁‍♀️</div>
+                      <div class="voice-name">선희</div>
+                      <div class="voice-tag">밝은 여성</div>
+                    </div>
+                    <div class="voice-card" data-voice="en-US-AndrewMultilingualNeural" data-voice-name="andrew" data-rate="1.0">
                       <div class="voice-avatar">🇺🇸</div>
                       <div class="voice-name">Andrew</div>
                       <div class="voice-tag">English Male</div>
                     </div>
-                    <div class="voice-card" data-voice="en-US-AvaNeural" data-rate="1.0">
+                    <div class="voice-card" data-voice="en-US-AvaMultilingualNeural" data-voice-name="ava" data-rate="1.0">
                       <div class="voice-avatar">🇬🇧</div>
                       <div class="voice-name">Ava</div>
                       <div class="voice-tag">English Female</div>
                     </div>
-                    <div class="voice-card" data-voice="ja-JP-KeitaNeural" data-rate="1.0">
+                    <div class="voice-card" data-voice="ja-JP-KeitaNeural" data-voice-name="keita" data-rate="1.0">
                       <div class="voice-avatar">🇯🇵</div>
                       <div class="voice-name">케이타</div>
                       <div class="voice-tag">日本語 男性</div>
                     </div>
-                    <div class="voice-card" data-voice="ja-JP-NanamiNeural" data-rate="1.0">
+                    <div class="voice-card" data-voice="ja-JP-NanamiNeural" data-voice-name="nanami" data-rate="1.0">
                       <div class="voice-avatar">🌸</div>
                       <div class="voice-name">나나미</div>
                       <div class="voice-tag">日本語 女性</div>
@@ -207,8 +225,53 @@ entrypoints.setup({
                 </div>
 
                 <div class="narr-section">
-                  <div class="narr-section-title">📝 나레이션 텍스트</div>
-                  <sp-textfield id="narrText" placeholder="나레이션 텍스트 입력" multiline="true" style="width:100%; min-height:60px;"></sp-textfield>
+                  <div class="narr-section-title">🎭 감정 / 톤</div>
+                  <div class="emotion-chips" id="emotionChips">
+                    <span class="emotion-chip selected" data-emotion="neutral" data-pitch="0" data-rate-mod="0" data-vol="0">😐 기본</span>
+                    <span class="emotion-chip" data-emotion="cheerful" data-pitch="40" data-rate-mod="8" data-vol="5">😊 밝은</span>
+                    <span class="emotion-chip" data-emotion="excited" data-pitch="70" data-rate-mod="15" data-vol="10">🤩 신남</span>
+                    <span class="emotion-chip" data-emotion="cute" data-pitch="60" data-rate-mod="5" data-vol="0">🥰 귀여운</span>
+                    <span class="emotion-chip" data-emotion="calm" data-pitch="-10" data-rate-mod="-10" data-vol="-5">😌 차분한</span>
+                    <span class="emotion-chip" data-emotion="serious" data-pitch="-25" data-rate-mod="-5" data-vol="5">😤 진지한</span>
+                    <span class="emotion-chip" data-emotion="sad" data-pitch="-30" data-rate-mod="-15" data-vol="-10">😢 슬픈</span>
+                    <span class="emotion-chip" data-emotion="whisper" data-pitch="10" data-rate-mod="-10" data-vol="-20">🤫 속삭임</span>
+                  </div>
+                  <div class="narr-controls">
+                    <label>감정 강도:</label>
+                    <sp-slider id="emotionIntensity" min="0" max="10" value="5" step="1" style="flex:1;"></sp-slider>
+                    <span class="speed-val" id="emotionIntVal">50%</span>
+                  </div>
+                </div>
+
+                <div class="narr-section">
+                  <div class="narr-section-title">📝 나레이션 모드</div>
+                  <div class="mode-toggle">
+                    <span class="mode-btn active" data-mode="single">✏️ 단일</span>
+                    <span class="mode-btn" data-mode="batch">📋 배치 (여러 개)</span>
+                  </div>
+
+                  <!-- 단일 모드 -->
+                  <div id="singleMode">
+                    <sp-textfield id="narrText" placeholder="나레이션 텍스트 입력" multiline="true" style="width:100%; min-height:60px;"></sp-textfield>
+                  </div>
+
+                  <!-- 배치 모드 -->
+                  <div id="batchMode" style="display:none;">
+                    <div style="display:flex; gap:4px; margin-bottom:6px;">
+                      <sp-textfield id="batchInput" placeholder="텍스트 입력 후 + 버튼 (한 줄씩)" style="flex:1;"></sp-textfield>
+                      <button id="btnBatchAdd">➕</button>
+                    </div>
+                    <div style="display:flex; gap:4px; margin-bottom:6px;">
+                      <button id="btnBatchLook" style="font-size:10px;">📋 LOOK 1~10 자동</button>
+                      <button id="btnBatchClear" class="danger" style="font-size:10px;">🗑️ 전체 삭제</button>
+                    </div>
+                    <div class="batch-list" id="batchList">
+                      <div style="color:#666; text-align:center; padding:10px; font-size:10px;">+ 버튼으로 나레이션 추가 또는 LOOK 1~10 자동생성</div>
+                    </div>
+                    <div class="batch-progress" id="batchProgressWrap" style="display:none;">
+                      <div class="batch-progress-bar" id="batchProgressBar"></div>
+                    </div>
+                  </div>
                 </div>
 
                 <div class="narr-section">
@@ -220,14 +283,44 @@ entrypoints.setup({
                   </div>
                 </div>
 
+                <div class="narr-section">
+                  <div class="narr-section-title">🎯 자동 배치</div>
+                  <div style="display:flex; gap:10px; align-items:center; font-size:10px; flex-wrap:wrap;">
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+                      <input type="checkbox" id="chkAutoPlace" checked style="margin:0;"> 플레이헤드 위치에 자동 배치
+                    </label>
+                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+                      <input type="checkbox" id="chkAutoSub" checked style="margin:0;"> 📝 자막 자동 생성
+                    </label>
+                  </div>
+                  <div style="display:flex; gap:6px; margin-top:4px; align-items:center; font-size:10px; color:#888;">
+                    <span>자막 트랙:</span>
+                    <select id="selSubTrack" style="background:#252525; color:#ccc; border:1px solid #444; border-radius:4px; padding:2px 4px; font-size:10px;">
+                      <option value="4">V5</option>
+                      <option value="5" selected>V6</option>
+                      <option value="6">V7</option>
+                      <option value="7">V8</option>
+                    </select>
+                    <span style="margin-left:6px;">오디오 트랙:</span>
+                    <select id="selAudioTrack" style="background:#252525; color:#ccc; border:1px solid #444; border-radius:4px; padding:2px 4px; font-size:10px;">
+                      <option value="0" selected>A1</option>
+                      <option value="1">A2</option>
+                      <option value="2">A3</option>
+                      <option value="3">A4</option>
+                      <option value="4">A5</option>
+                      <option value="5">A6</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div class="narr-btn-row">
                   <button id="btnNarrPreview">🔊 미리듣기</button>
-                  <button id="btnNarrGenerate" class="primary" style="flex:1;">🎙️ 생성 + 프리미어 임포트</button>
+                  <button id="btnNarrGenerate" class="primary" style="flex:1;">🎙️ 생성 + 자막 + 배치</button>
                 </div>
 
                 <div class="narr-preview" id="narrPreview">
-                  <span class="preview-name">기본 남자</span> 선택됨<br>
-                  <span class="preview-voice">ko-KR-InJoonNeural · 1.0x</span>
+                  <span class="preview-name">남자</span> · 😐 기본<br>
+                  <span class="preview-voice">ko-KR-HyunsuMultilingualNeural · 1.0x · pitch:+0Hz</span>
                 </div>
               </div>
 
@@ -1938,30 +2031,155 @@ entrypoints.setup({
         });
 
         // ── 나레이션 탭 로직 ──
-        var selectedVoice = { voice: "ko-KR-InJoonNeural", rate: 1.0, name: "기본 남자" };
+        var selectedVoice = { voice: "ko-KR-HyunsuMultilingualNeural", rate: 1.0, name: "남자", voiceName: "남자" };
+        var selectedEmotion = { emotion: "neutral", pitch: 0, rateMod: 0, vol: 0, label: "😐 기본" };
+        var emotionIntensity = 0.5; // 0~1
+        var narrMode = "single"; // "single" or "batch"
+        var batchItems = []; // [{text, id}]
 
-        // 캐릭터 카드 선택
+        // ── 감정 계산 ──
+        function getEmotionParams() {
+          var p = Math.round(selectedEmotion.pitch * emotionIntensity);
+          var r = Math.round(selectedEmotion.rateMod * emotionIntensity);
+          var v = Math.round(selectedEmotion.vol * emotionIntensity);
+          return { pitch: p, rateMod: r, volume: v };
+        }
+
+        function updateNarrPreview() {
+          var preview = document.getElementById("narrPreview");
+          if (!preview) return;
+          var ep = getEmotionParams();
+          var pitchStr = (ep.pitch >= 0 ? "+" : "") + ep.pitch + "Hz";
+          var totalRate = selectedVoice.rate + (ep.rateMod / 100);
+          totalRate = Math.max(0.3, Math.min(2.5, totalRate));
+          preview.innerHTML = '<span class="preview-name">' + selectedVoice.name + '</span> · ' + selectedEmotion.label + '<br>'
+            + '<span class="preview-voice">' + selectedVoice.voice + ' · ' + totalRate.toFixed(1) + 'x · pitch:' + pitchStr + '</span>';
+        }
+
+        // ── 캐릭터 카드 선택 ──
         document.querySelectorAll(".voice-card").forEach(function(card) {
           card.addEventListener("click", function() {
             document.querySelectorAll(".voice-card").forEach(function(c) { c.classList.remove("selected"); });
             card.classList.add("selected");
             selectedVoice.voice = card.dataset.voice;
+            selectedVoice.voiceName = card.dataset.voiceName || card.querySelector(".voice-name").textContent;
             selectedVoice.rate = parseFloat(card.dataset.rate) || 1.0;
             selectedVoice.name = card.querySelector(".voice-name").textContent;
-            // 속도 슬라이더 업데이트 (sp-slider: rate × 10)
             var slider = document.getElementById("narrSpeed");
             if (slider) { slider.value = Math.round(selectedVoice.rate * 10); }
             var speedVal = document.getElementById("narrSpeedVal");
             if (speedVal) { speedVal.textContent = selectedVoice.rate.toFixed(1) + "x"; }
-            // 프리뷰 업데이트
-            var preview = document.getElementById("narrPreview");
-            if (preview) {
-              preview.innerHTML = '<span class="preview-name">' + selectedVoice.name + '</span> 선택됨<br><span class="preview-voice">' + selectedVoice.voice + ' · ' + selectedVoice.rate.toFixed(1) + 'x</span>';
+            updateNarrPreview();
+          });
+        });
+
+        // ── 감정 칩 선택 ──
+        document.querySelectorAll(".emotion-chip").forEach(function(chip) {
+          chip.addEventListener("click", function() {
+            document.querySelectorAll(".emotion-chip").forEach(function(c) { c.classList.remove("selected"); });
+            chip.classList.add("selected");
+            selectedEmotion.emotion = chip.dataset.emotion;
+            selectedEmotion.pitch = parseInt(chip.dataset.pitch) || 0;
+            selectedEmotion.rateMod = parseInt(chip.dataset.rateMod) || 0;
+            selectedEmotion.vol = parseInt(chip.dataset.vol) || 0;
+            selectedEmotion.label = chip.textContent.trim();
+            updateNarrPreview();
+            log("🎭 감정: " + selectedEmotion.label, "info");
+          });
+        });
+
+        // ── 감정 강도 슬라이더 ──
+        var emotionIntSlider = document.getElementById("emotionIntensity");
+        if (emotionIntSlider) {
+          emotionIntSlider.addEventListener("input", function() {
+            var raw = parseInt(this.value) || 5;
+            emotionIntensity = raw / 10.0;
+            var intVal = document.getElementById("emotionIntVal");
+            if (intVal) { intVal.textContent = Math.round(emotionIntensity * 100) + "%"; }
+            updateNarrPreview();
+          });
+        }
+
+        // ── 모드 전환 (단일/배치) ──
+        document.querySelectorAll(".mode-btn").forEach(function(btn) {
+          btn.addEventListener("click", function() {
+            document.querySelectorAll(".mode-btn").forEach(function(b) { b.classList.remove("active"); });
+            btn.classList.add("active");
+            narrMode = btn.dataset.mode;
+            document.getElementById("singleMode").style.display = (narrMode === "single") ? "block" : "none";
+            document.getElementById("batchMode").style.display = (narrMode === "batch") ? "block" : "none";
+            // 배치 모드일 때 버튼 텍스트 변경
+            var genBtn = document.getElementById("btnNarrGenerate");
+            if (genBtn) {
+              genBtn.textContent = (narrMode === "batch") ? "🎙️ 배치 생성 시작" : "🎙️ 생성 + 프리미어 임포트";
             }
           });
         });
 
-        // 속도 슬라이더 (sp-slider: 5~20 → 0.5~2.0)
+        // ── 배치 목록 관리 ──
+        function renderBatchList() {
+          var list = document.getElementById("batchList");
+          if (!list) return;
+          if (batchItems.length === 0) {
+            list.innerHTML = '<div style="color:#666; text-align:center; padding:10px; font-size:10px;">+ 버튼으로 나레이션 추가 또는 LOOK 1~10 자동생성</div>';
+            return;
+          }
+          var html = "";
+          for (var i = 0; i < batchItems.length; i++) {
+            var item = batchItems[i];
+            var statusClass = item.status === "done" ? " done" : (item.status === "processing" ? " processing" : "");
+            var statusIcon = item.status === "done" ? "✅" : (item.status === "processing" ? "⏳" : "⏸️");
+            html += '<div class="batch-item' + statusClass + '" data-idx="' + i + '">'
+              + '<span class="batch-num">' + (i + 1) + '</span>'
+              + '<span class="batch-text">' + item.text + '</span>'
+              + '<span class="batch-status">' + statusIcon + '</span>'
+              + '<span class="batch-remove" data-idx="' + i + '">✕</span>'
+              + '</div>';
+          }
+          list.innerHTML = html;
+          // 삭제 버튼 이벤트
+          list.querySelectorAll(".batch-remove").forEach(function(btn) {
+            btn.addEventListener("click", function(e) {
+              e.stopPropagation();
+              var idx = parseInt(btn.dataset.idx);
+              batchItems.splice(idx, 1);
+              renderBatchList();
+            });
+          });
+        }
+
+        // 배치 추가 버튼
+        document.getElementById("btnBatchAdd").addEventListener("click", function() {
+          var input = document.getElementById("batchInput");
+          var text = input ? (input.value || "").trim() : "";
+          if (!text) return;
+          batchItems.push({ text: text, status: "pending", id: Date.now() });
+          if (input) input.value = "";
+          renderBatchList();
+        });
+
+        // LOOK 1~10 자동생성
+        document.getElementById("btnBatchLook").addEventListener("click", function() {
+          batchItems = [];
+          for (var i = 1; i <= 10; i++) {
+            batchItems.push({
+              text: "LOOK " + i + " 소개합니다. 오늘의 " + i + "번째 코디에요.",
+              status: "pending",
+              id: Date.now() + i
+            });
+          }
+          renderBatchList();
+          log("📋 LOOK 1~10 배치 생성됨 (텍스트 수정 가능)", "info");
+        });
+
+        // 배치 전체 삭제
+        document.getElementById("btnBatchClear").addEventListener("click", function() {
+          batchItems = [];
+          renderBatchList();
+          document.getElementById("batchProgressWrap").style.display = "none";
+        });
+
+        // ── 속도 슬라이더 ──
         var narrSpeedSlider = document.getElementById("narrSpeed");
         if (narrSpeedSlider) {
           narrSpeedSlider.addEventListener("input", function() {
@@ -1970,71 +2188,146 @@ entrypoints.setup({
             selectedVoice.rate = v;
             var speedVal = document.getElementById("narrSpeedVal");
             if (speedVal) { speedVal.textContent = v.toFixed(1) + "x"; }
-            var preview = document.getElementById("narrPreview");
-            if (preview) {
-              preview.innerHTML = '<span class="preview-name">' + selectedVoice.name + '</span> 선택됨<br><span class="preview-voice">' + selectedVoice.voice + ' · ' + v.toFixed(1) + 'x</span>';
-            }
+            updateNarrPreview();
           });
         }
 
-        // 나레이션 생성 + 임포트 버튼
+        // ── TTS 요청 헬퍼 (감정 파라미터 포함) ──
+        function buildTTSRequest(text, type) {
+          var ep = getEmotionParams();
+          // 감정 이름 한국어로 매핑 (tts-natural.py 프리셋)
+          var emotionMap = {
+            neutral: "기본", cheerful: "밝은", excited: "신남", cute: "귀여운",
+            calm: "차분한", serious: "진지한", sad: "슬픈", whisper: "속삭임"
+          };
+          var emotionKo = emotionMap[selectedEmotion.emotion] || "기본";
+          var intensityPct = Math.round(emotionIntensity * 100);
+
+          // 자동배치 + 자막 옵션
+          var chkPlace = document.getElementById("chkAutoPlace");
+          var chkSub = document.getElementById("chkAutoSub");
+          var selSub = document.getElementById("selSubTrack");
+          var selAudio = document.getElementById("selAudioTrack");
+
+          return {
+            type: type || "narration",
+            message: "음성 " + text,
+            voice: selectedVoice.voice,
+            voiceName: selectedVoice.voiceName || selectedVoice.name,
+            rate: selectedVoice.rate,
+            pitch: ep.pitch,
+            volume: ep.volume,
+            emotion: emotionKo,
+            emotionLabel: selectedEmotion.label,
+            intensity: intensityPct,
+            characterName: selectedVoice.name,
+            autoPlace: chkPlace ? chkPlace.checked : true,
+            autoSubtitle: chkSub ? chkSub.checked : true,
+            subtitleTrack: selSub ? parseInt(selSub.value) : 5,
+            audioTrack: selAudio ? parseInt(selAudio.value) : 0,
+            timestamp: new Date().toISOString()
+          };
+        }
+
+        // ── 나레이션 생성 + 임포트 버튼 ──
         document.getElementById("btnNarrGenerate").addEventListener("click", async function() {
-          var textEl = document.getElementById("narrText");
-          var text = textEl ? (textEl.value || "").trim() : "";
-          if (!text) {
-            log("나레이션 텍스트를 입력해주세요", "warn");
-            return;
-          }
           if (!folderToken) {
             log("먼저 ▶ 시작을 눌러주세요", "warn");
             return;
           }
-          log("🎙️ 나레이션 생성 요청: " + selectedVoice.name + " (" + selectedVoice.voice + ")", "info");
-          var ts = Date.now();
-          var reqFile = await folderToken.createFile("chat-request-" + ts + ".json", { overwrite: true });
-          await reqFile.write(JSON.stringify({
-            type: "narration",
-            message: "음성 " + text,
-            voice: selectedVoice.voice,
-            rate: selectedVoice.rate,
-            characterName: selectedVoice.name,
-            timestamp: new Date().toISOString()
-          }));
-          // 나레이션 탭에 결과 표시 (채팅으로 이동하지 않음)
-          var preview = document.getElementById("narrPreview");
-          if (preview) {
-            preview.innerHTML = '⏳ <span class="preview-name">' + selectedVoice.name + '</span> 목소리로 생성 중...<br><span class="preview-voice">' + text.substring(0, 40) + (text.length > 40 ? "..." : "") + '</span>';
+
+          if (narrMode === "batch") {
+            // 배치 모드: 하나씩 순차 생성
+            if (batchItems.length === 0) {
+              log("배치 목록이 비어있습니다", "warn");
+              return;
+            }
+            var progressWrap = document.getElementById("batchProgressWrap");
+            var progressBar = document.getElementById("batchProgressBar");
+            if (progressWrap) progressWrap.style.display = "block";
+            if (progressBar) progressBar.style.width = "0%";
+
+            log("🎙️ 배치 나레이션 시작: " + batchItems.length + "개", "info");
+            var preview = document.getElementById("narrPreview");
+            if (preview) {
+              preview.innerHTML = '⏳ 배치 생성 중... 0/' + batchItems.length;
+            }
+
+            for (var i = 0; i < batchItems.length; i++) {
+              var item = batchItems[i];
+              item.status = "processing";
+              renderBatchList();
+
+              var ts = Date.now() + i;
+              var reqFile = await folderToken.createFile("chat-request-" + ts + ".json", { overwrite: true });
+              var reqData = buildTTSRequest(item.text, "narration");
+              reqData.batchIndex = i;
+              reqData.batchTotal = batchItems.length;
+              await reqFile.write(JSON.stringify(reqData));
+
+              log("🎙️ [" + (i + 1) + "/" + batchItems.length + "] " + item.text.substring(0, 30), "info");
+
+              // 완료 대기 (chat-response로 상태 체크하는 대신 간단한 딜레이)
+              await new Promise(function(r) { setTimeout(r, 3000); });
+
+              item.status = "done";
+              renderBatchList();
+              var pct = Math.round(((i + 1) / batchItems.length) * 100);
+              if (progressBar) progressBar.style.width = pct + "%";
+              if (preview) {
+                preview.innerHTML = '⏳ 배치 생성 중... ' + (i + 1) + '/' + batchItems.length + ' (' + pct + '%)';
+              }
+            }
+
+            if (preview) {
+              preview.innerHTML = '✅ 배치 완료! ' + batchItems.length + '개 나레이션 생성됨<br>'
+                + '<span class="preview-voice">' + selectedVoice.name + ' · ' + selectedEmotion.label + '</span>';
+            }
+            log("✅ 배치 나레이션 완료: " + batchItems.length + "개", "ok");
+
+          } else {
+            // 단일 모드
+            var textEl = document.getElementById("narrText");
+            var text = textEl ? (textEl.value || "").trim() : "";
+            if (!text) {
+              log("나레이션 텍스트를 입력해주세요", "warn");
+              return;
+            }
+            log("🎙️ 나레이션 생성: " + selectedVoice.name + " · " + selectedEmotion.label, "info");
+            var ts = Date.now();
+            var reqFile = await folderToken.createFile("chat-request-" + ts + ".json", { overwrite: true });
+            await reqFile.write(JSON.stringify(buildTTSRequest(text)));
+            var preview = document.getElementById("narrPreview");
+            if (preview) {
+              var ep = getEmotionParams();
+              preview.innerHTML = '⏳ <span class="preview-name">' + selectedVoice.name + '</span> · ' + selectedEmotion.label + ' 생성 중...<br>'
+                + '<span class="preview-voice">' + text.substring(0, 40) + (text.length > 40 ? "..." : "") + '</span>';
+            }
+            log("🎙️ 나레이션 생성: [" + selectedVoice.name + "] " + text, "info");
           }
-          log("🎙️ 나레이션 생성: [" + selectedVoice.name + "] " + text, "info");
         });
 
-        // 미리듣기 버튼 (짧은 샘플 생성)
+        // ── 미리듣기 버튼 ──
         document.getElementById("btnNarrPreview").addEventListener("click", async function() {
           var textEl = document.getElementById("narrText");
           var text = textEl ? (textEl.value || "").trim() : "";
           if (!text) { text = "안녕하세요, 테스트입니다."; }
-          // 첫 20자만 미리듣기
           var previewText = text.substring(0, 30);
           if (!folderToken) {
             log("먼저 ▶ 시작을 눌러주세요", "warn");
             return;
           }
-          log("🔊 미리듣기: " + previewText, "info");
+          log("🔊 미리듣기: " + previewText + " (" + selectedEmotion.label + ")", "info");
           var ts = Date.now();
           var reqFile = await folderToken.createFile("chat-request-" + ts + ".json", { overwrite: true });
-          await reqFile.write(JSON.stringify({
-            type: "tts_preview",
-            message: "음성 " + previewText,
-            voice: selectedVoice.voice,
-            rate: selectedVoice.rate,
-            preview: true,
-            timestamp: new Date().toISOString()
-          }));
+          var reqData = buildTTSRequest(previewText, "tts_preview");
+          reqData.preview = true;
+          await reqFile.write(JSON.stringify(reqData));
           var preview = document.getElementById("narrPreview");
           if (preview) {
-            preview.innerHTML = '🔊 미리듣기 생성 중...<br><span class="preview-voice">' + previewText + ' (' + selectedVoice.name + ')</span>';
+            preview.innerHTML = '🔊 미리듣기 생성 중... (' + selectedEmotion.label + ')<br>'
+              + '<span class="preview-voice">' + previewText + ' (' + selectedVoice.name + ')</span>';
           }
-          log("🔊 미리듣기: " + previewText + " (" + selectedVoice.name + ")", "info");
         });
 
         // ── 편집 조건 토글 ──

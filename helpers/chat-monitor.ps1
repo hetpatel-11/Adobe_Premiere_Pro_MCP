@@ -13,6 +13,8 @@ $StickerDir = "C:\Users\skafu\Desktop\ClaudeCode\stickers"
 $NodeScript = "C:\Users\skafu\Adobe_Premiere_Pro_MCP\helpers\tts-generate.cjs"
 $StickerScript = "C:\Users\skafu\Adobe_Premiere_Pro_MCP\helpers\giphy-search.ps1"
 $EdgeTTS = "C:\Users\skafu\AppData\Local\Programs\Python\Python312\Scripts\edge-tts.exe"
+$Python = "C:\Users\skafu\AppData\Local\Programs\Python\Python312\python.exe"
+$TTSScript = "C:\Users\skafu\Adobe_Premiere_Pro_MCP\helpers\tts-natural.py"
 
 # PATH 갱신 (Python/edge-tts 포함)
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\Users\skafu\AppData\Local\Programs\Python\Python312\Scripts"
@@ -47,43 +49,224 @@ function Send-PProCmd {
     return @{ success = $false; error = "TIMEOUT after ${TimeoutSeconds}s" }
 }
 
+function Create-SubtitlePNG {
+    param(
+        [string]$Text,
+        [string]$OutputPath,
+        [int]$Width = 1920,
+        [int]$Height = 220,
+        [int]$FontSize = 44,
+        [string]$FontName = "Malgun Gothic",
+        [int]$MaxCharsPerLine = 20
+    )
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+
+        # 두 줄 처리: \n 구분자 또는 자동 줄바꿈
+        $lines = @()
+        if ($Text -match '\\n') {
+            # 명시적 줄바꿈 (\n)
+            $lines = $Text -split '\\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        } elseif ($Text.Length -gt $MaxCharsPerLine) {
+            # 자동 줄바꿈: 중간 공백 기준으로 분할
+            $mid = [math]::Floor($Text.Length / 2)
+            $bestSplit = -1
+            # 중간 부근에서 가장 가까운 공백 찾기
+            for ($i = 0; $i -lt $Text.Length; $i++) {
+                if ($Text[$i] -eq ' ') {
+                    if ($bestSplit -eq -1 -or [math]::Abs($i - $mid) -lt [math]::Abs($bestSplit - $mid)) {
+                        $bestSplit = $i
+                    }
+                }
+            }
+            if ($bestSplit -gt 0) {
+                $lines = @($Text.Substring(0, $bestSplit).Trim(), $Text.Substring($bestSplit + 1).Trim())
+            } else {
+                # 공백 없으면 글자수로 강제 분할
+                $lines = @($Text.Substring(0, $mid), $Text.Substring($mid))
+            }
+        } else {
+            $lines = @($Text)
+        }
+        # 최대 2줄 제한
+        if ($lines.Count -gt 2) { $lines = $lines[0..1] }
+
+        $lineCount = $lines.Count
+        $actualHeight = if ($lineCount -gt 1) { $Height } else { 180 }
+
+        $bmp = New-Object System.Drawing.Bitmap $Width, $actualHeight
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+        $g.Clear([System.Drawing.Color]::Transparent)
+
+        $font = New-Object System.Drawing.Font($FontName, $FontSize, [System.Drawing.FontStyle]::Bold)
+        $whiteBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+        $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200, 0, 0, 0))
+
+        # 줄 간격
+        $lineSpacing = 8
+        # 전체 텍스트 블록 높이 계산
+        $totalTextH = 0
+        $lineSizes = @()
+        foreach ($line in $lines) {
+            $sz = $g.MeasureString($line, $font)
+            $lineSizes += $sz
+            $totalTextH += $sz.Height
+        }
+        if ($lineCount -gt 1) { $totalTextH += $lineSpacing }
+
+        $startY = ($actualHeight - $totalTextH) / 2
+        $curY = $startY
+
+        for ($li = 0; $li -lt $lines.Count; $li++) {
+            $line = $lines[$li]
+            $sz = $lineSizes[$li]
+            $x = ($Width - $sz.Width) / 2
+
+            # 외곽선 (그림자)
+            for ($dx = -2; $dx -le 2; $dx++) {
+                for ($dy = -2; $dy -le 2; $dy++) {
+                    if ($dx -ne 0 -or $dy -ne 0) {
+                        $g.DrawString($line, $font, $shadowBrush, ($x + $dx), ($curY + $dy))
+                    }
+                }
+            }
+            # 흰색 텍스트
+            $g.DrawString($line, $font, $whiteBrush, $x, $curY)
+
+            $curY += $sz.Height + $lineSpacing
+        }
+
+        $bmp.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose(); $font.Dispose(); $whiteBrush.Dispose(); $shadowBrush.Dispose()
+
+        Write-Host "   → 자막 PNG ($lineCount줄): $OutputPath" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "   ❌ 자막 생성 실패: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
 function Process-TTS {
-    param([string]$Text, [string]$Voice = "ko-KR-InJoonNeural", [double]$Rate = 1.0)
+    param(
+        [string]$Text,
+        [string]$Voice = "남자",
+        [double]$Rate = 1.0,
+        [int]$Pitch = 0,
+        [int]$Volume = 0,
+        [string]$Emotion = "기본",
+        [string]$EmotionLabel = "",
+        [int]$Intensity = 50,
+        [int]$BatchIndex = -1,
+        [int]$BatchTotal = 0,
+        [bool]$AutoSubtitle = $true,
+        [int]$SubtitleTrack = 5,
+        [int]$AudioTrack = 0,
+        [bool]$AutoPlace = $true
+    )
 
     $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $outFile = Join-Path $SfxPath "tts-$ts.mp3"
+    $subFile = Join-Path $SfxPath "sub-$ts.png"
 
-    Send-ChatResponse "🎙️ TTS 생성 중: '$Text'"
+    $batchInfo = ""
+    if ($BatchIndex -ge 0) {
+        $batchInfo = " [$($BatchIndex+1)/$BatchTotal]"
+    }
+    $emotionInfo = if ($EmotionLabel) { " ($EmotionLabel)" } else { "" }
+    Send-ChatResponse "🎙️ TTS 생성 중$batchInfo$emotionInfo : '$Text'"
 
     try {
-        # edge-tts 직접 호출
-        $ratePercent = [math]::Round(($Rate - 1.0) * 100)
-        $rateStr = if ($ratePercent -ge 0) { "+$ratePercent%" } else { "$ratePercent%" }
+        # 텍스트를 임시 파일로 저장 (한국어 인코딩 보장)
+        $tmpTextFile = Join-Path $SfxPath "tts-input-$ts.txt"
+        [System.IO.File]::WriteAllText($tmpTextFile, $Text, [System.Text.UTF8Encoding]::new($false))
 
-        $escapedText = $Text.Replace('"', '\"')
+        # 추가 속도 보정 (Rate 1.0 = 0%, 1.2 = +20%)
+        $rateExtra = [math]::Round(($Rate - 1.0) * 100)
 
-        # 전체 경로로 edge-tts 호출
-        & $EdgeTTS --voice "$Voice" --rate="$rateStr" --text "$escapedText" --write-media "$outFile" 2>&1 | Out-Null
+        Write-Host "   → tts-natural.py: voice=$Voice emotion=$Emotion intensity=$Intensity pitch=$Pitch rate=$rateExtra" -ForegroundColor DarkCyan
+
+        # Python tts-natural.py 호출 (자연스러운 TTS)
+        $result = & $Python $TTSScript --text-file "$tmpTextFile" --text "fallback" --voice "$Voice" --emotion "$Emotion" --intensity $Intensity --pitch $Pitch --rate $rateExtra --volume $Volume --output "$outFile" 2>&1
+
+        # 임시 파일 삭제
+        if (Test-Path $tmpTextFile) { Remove-Item $tmpTextFile -Force -ErrorAction SilentlyContinue }
 
         if (Test-Path $outFile) {
             $size = (Get-Item $outFile).Length
             if ($size -gt 0) {
-                # Premiere에 임포트
-                $importResult = Send-PProCmd -Id "imp_tts_$ts" -Action "import_files" -Params @{ filePaths = @($outFile) }
+                # === 1) 자막 PNG 생성 ===
+                $subCreated = $false
+                if ($AutoSubtitle) {
+                    $subCreated = Create-SubtitlePNG -Text $Text -OutputPath $subFile
+                }
 
-                if ($importResult.success) {
-                    Send-ChatResponse "✅ TTS 완료! '$Text' → 프로젝트에 임포트됨 ($([math]::Round($size/1024))KB)"
+                # === 2) 프리미어에 임포트 (TTS + 자막) ===
+                $filesToImport = @($outFile)
+                if ($subCreated -and (Test-Path $subFile)) {
+                    $filesToImport += $subFile
+                }
+                $importResult = Send-PProCmd -Id "imp_tts_$ts" -Action "import_files" -Params @{ filePaths = $filesToImport }
+
+                # === 3) 플레이헤드 위치에 자동 배치 ===
+                if ($AutoPlace -and $importResult.success) {
+                    # 플레이헤드 위치 가져오기
+                    $phResult = Send-PProCmd -Id "ph_$ts" -Action "get_playhead"
+                    $playheadSec = 0
+                    if ($phResult.success -and $phResult.position) {
+                        # ticks → seconds (TICKS_PER_SEC = 254016000000)
+                        $playheadSec = [double]$phResult.position / 254016000000.0
+                    }
+
+                    $ttsFileName = [System.IO.Path]::GetFileName($outFile)
+                    $subFileName = if ($subCreated) { [System.IO.Path]::GetFileName($subFile) } else { "" }
+
+                    Write-Host "   → 타임라인 배치: playhead=${playheadSec}s, audio=A$($AudioTrack+1), sub=V$($SubtitleTrack+1)" -ForegroundColor Cyan
+
+                    # TTS 오디오를 오디오 트랙에 배치
+                    $placeAudio = Send-PProCmd -Id "place_tts_$ts" -Action "add_to_timeline" -Params @{
+                        itemName = $ttsFileName
+                        videoTrackIndex = 0
+                        audioTrackIndex = $AudioTrack
+                        timeSeconds = $playheadSec
+                        mode = "overwrite"
+                    }
+
+                    # 자막 PNG를 비디오 트랙에 배치
+                    if ($subCreated -and $subFileName) {
+                        Start-Sleep -Milliseconds 300
+                        $placeSub = Send-PProCmd -Id "place_sub_$ts" -Action "add_to_timeline" -Params @{
+                            itemName = $subFileName
+                            videoTrackIndex = $SubtitleTrack
+                            audioTrackIndex = 0
+                            timeSeconds = $playheadSec
+                            mode = "overwrite"
+                        }
+                    }
+
+                    $placeInfo = ""
+                    if ($placeAudio.success) { $placeInfo += " 🎵A$($AudioTrack+1)" }
+                    if ($placeSub.success) { $placeInfo += " 📝V$($SubtitleTrack+1)" }
+                    Send-ChatResponse "✅ TTS 완료$batchInfo! '$Text' → 임포트+배치$placeInfo ($([math]::Round($size/1024))KB)$emotionInfo"
                 } else {
-                    Send-ChatResponse "⚠️ TTS 파일 생성됨 ($([math]::Round($size/1024))KB), 임포트 실패: $($importResult.error)"
+                    if ($importResult.success) {
+                        Send-ChatResponse "✅ TTS 완료$batchInfo! '$Text' → 임포트됨 ($([math]::Round($size/1024))KB)$emotionInfo"
+                    } else {
+                        Send-ChatResponse "⚠️ TTS 생성됨 ($([math]::Round($size/1024))KB), 임포트 실패: $($importResult.error)"
+                    }
                 }
                 return $true
             }
         }
 
-        Send-ChatResponse "❌ TTS 생성 실패"
+        # 실패 시 에러 출력
+        Write-Host "   ❌ TTS 결과: $result" -ForegroundColor Red
+        Send-ChatResponse "❌ TTS 생성 실패$batchInfo"
         return $false
     } catch {
-        Send-ChatResponse "❌ TTS 오류: $($_.Exception.Message)"
+        Send-ChatResponse "❌ TTS 오류$batchInfo : $($_.Exception.Message)"
         return $false
     }
 }
@@ -285,15 +468,31 @@ while ($true) {
                     Write-Host "   📎 첨부파일: $($req.files.Count)개" -ForegroundColor Gray
                 }
 
-                # 나레이션 탭에서 직접 요청 (voice/rate 파라미터 포함)
+                # 나레이션 탭에서 직접 요청 (voice/rate/pitch/volume/emotion 파라미터 포함)
                 if ($req.type -eq "narration" -or $req.type -eq "tts_preview") {
                     $ttsText = $msg -replace "^음성\s*", ""
-                    $ttsVoice = if ($req.voice) { $req.voice } else { "ko-KR-InJoonNeural" }
+                    # voiceName은 한국어 캐릭터명 (남자/여자/남자아이/여자아이 등)
+                    # voice는 voice ID (ko-KR-HyunsuMultilingualNeural 등)
+                    $ttsVoiceName = if ($req.voiceName) { $req.voiceName } else { "" }
+                    $ttsVoice = if ($req.voice) { $req.voice } else { "남자" }
+                    # voiceName이 없으면 voice ID를 그대로 전달 (tts-natural.py가 매핑)
+                    $voiceArg = if ($ttsVoiceName) { $ttsVoiceName } else { $ttsVoice }
                     $ttsRate = if ($req.rate) { [double]$req.rate } else { 1.0 }
-                    $charName = if ($req.characterName) { $req.characterName } else { "AI" }
+                    $ttsPitch = if ($null -ne $req.pitch) { [int]$req.pitch } else { 0 }
+                    $ttsVolume = if ($null -ne $req.volume) { [int]$req.volume } else { 0 }
+                    $ttsEmotion = if ($req.emotion) { $req.emotion } else { "기본" }
+                    $ttsEmotionLabel = if ($req.emotionLabel) { $req.emotionLabel } else { "" }
+                    $ttsIntensity = if ($null -ne $req.intensity) { [int]$req.intensity } else { 50 }
+                    $batchIdx = if ($null -ne $req.batchIndex) { [int]$req.batchIndex } else { -1 }
+                    $batchTotal = if ($null -ne $req.batchTotal) { [int]$req.batchTotal } else { 0 }
+                    # 자막+자동배치 옵션
+                    $doSub = if ($null -ne $req.autoSubtitle) { [bool]$req.autoSubtitle } else { ($req.type -eq "narration") }
+                    $doPlace = if ($null -ne $req.autoPlace) { [bool]$req.autoPlace } else { ($req.type -eq "narration") }
+                    $subTrack = if ($null -ne $req.subtitleTrack) { [int]$req.subtitleTrack } else { 5 }
+                    $audTrack = if ($null -ne $req.audioTrack) { [int]$req.audioTrack } else { 0 }
                     if ($ttsText) {
-                        Write-Host "   → 나레이션: '$ttsText' (voice: $ttsVoice, rate: $ttsRate, char: $charName)" -ForegroundColor Cyan
-                        Process-TTS -Text $ttsText -Voice $ttsVoice -Rate $ttsRate
+                        Write-Host "   → 나레이션: '$ttsText' (voice: $voiceArg, emotion: $ttsEmotion, sub: $doSub, place: $doPlace)" -ForegroundColor Cyan
+                        Process-TTS -Text $ttsText -Voice $voiceArg -Rate $ttsRate -Pitch $ttsPitch -Volume $ttsVolume -Emotion $ttsEmotion -EmotionLabel $ttsEmotionLabel -Intensity $ttsIntensity -BatchIndex $batchIdx -BatchTotal $batchTotal -AutoSubtitle $doSub -AutoPlace $doPlace -SubtitleTrack $subTrack -AudioTrack $audTrack
                     } else {
                         Send-ChatResponse "❓ 나레이션 텍스트를 입력해주세요"
                     }
