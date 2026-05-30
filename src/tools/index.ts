@@ -931,7 +931,7 @@ export class PremiereProTools {
       },
       {
         name: 'read_sequence_captions',
-        description: 'Reads all caption tracks of a sequence and returns each caption clip as { start, end, text }, with timestamps in seconds. Use this to find the timecodes of specific spoken phrases.',
+        description: 'Reads caption tracks of a sequence, returning each caption clip as { start, end, text } in seconds. IMPORTANT: Premiere Pro exposes no caption-read API in its scripting DOM, so in practice this returns trackCount:0 / captions:[] even when the sequence HAS a working caption track. The response field captionReadSupported:false (plus note) signals this — a 0 result does NOT mean the sequence has no captions. To read cue text/timing, parse the source .srt file directly instead.',
         inputSchema: z.object({
           sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.')
         })
@@ -2493,13 +2493,25 @@ export class PremiereProTools {
           }
         }
 
+        // Premiere Pro exposes NO caption-read API in its scripting DOM (confirmed
+        // Adobe limitation — see Bruce Bullis 2021/2023 and the UXP CaptionTrack
+        // thread, 2025). createCaptionTrack can WRITE a caption track from an SRT,
+        // but there is no read counterpart: no sequence.captionTracks, no
+        // getCaptionTracks(), and caption tracks are not surfaced in videoTracks or
+        // the QE DOM. So trackCount will essentially always be 0 here. Report that
+        // honestly via captionReadSupported + note instead of implying "no captions".
+        var captionReadSupported = trackCount > 0;
+        var note = captionReadSupported ? "" : "Premiere Pro exposes no caption-read API in its scripting DOM, so caption tracks cannot be enumerated or read back from a sequence (Adobe limitation: createCaptionTrack can write a track, but there is no read counterpart). trackCount:0 does NOT mean the sequence has no captions — it may have a working, rendering caption track that is simply unreadable via script. To recover cue text/timing, parse the source .srt file off disk instead.";
+
         return JSON.stringify({
           success: true,
           sequenceId: sequence.sequenceID,
           sequenceName: sequence.name,
+          captionReadSupported: captionReadSupported,
           trackCount: trackCount,
           captionCount: output.length,
-          captions: output
+          captions: output,
+          note: note
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
