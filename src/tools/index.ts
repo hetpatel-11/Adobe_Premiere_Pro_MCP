@@ -367,6 +367,19 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'crop_clip',
+        description: 'Crops a clip\'s frame using Premiere\'s built-in Crop video effect, trimming the picture edges inward by a percentage on each side (Left/Right/Top/Bottom, 0-100). Useful for removing letterbox/pillarbox bars, hiding edge artifacts or burned-in elements, and reframing. Note: each call adds a new Crop effect instance to the clip rather than updating an existing one — call remove_effect with effectName "Crop" first if you need to reset.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the timeline clip to crop'),
+          left: z.number().optional().describe('Percent to crop from the left edge (0-100)'),
+          right: z.number().optional().describe('Percent to crop from the right edge (0-100)'),
+          top: z.number().optional().describe('Percent to crop from the top edge (0-100)'),
+          bottom: z.number().optional().describe('Percent to crop from the bottom edge (0-100)'),
+          zoom: z.boolean().optional().describe('Crop effect Zoom toggle: when true, scales the cropped image back up to fill the frame instead of leaving the cropped area empty'),
+          edgeFeather: z.number().optional().describe('Edge Feather amount in pixels to soften the crop edges (default 0)')
+        })
+      },
+      {
         name: 'add_transition',
         description: 'Adds a transition (e.g., cross dissolve) between two adjacent clips on the timeline.',
         inputSchema: z.object({
@@ -1217,6 +1230,8 @@ export class PremiereProTools {
         // Effects and Transitions
         case 'apply_effect':
           return await this.applyEffect(args.clipId, args.effectName, args.parameters);
+        case 'crop_clip':
+          return await this.cropClip(args.clipId, { left: args.left, right: args.right, top: args.top, bottom: args.bottom, zoom: args.zoom, edgeFeather: args.edgeFeather });
         case 'remove_effect':
           return await this.removeEffect(args.clipId, args.effectName);
         case 'add_transition':
@@ -2904,6 +2919,22 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  private async cropClip(clipId: string, options: { left?: number; right?: number; top?: number; bottom?: number; zoom?: boolean; edgeFeather?: number }): Promise<any> {
+    // Premiere's "Crop" video effect exposes Left/Top/Right/Bottom (percent 0-100),
+    // a Zoom toggle, and Edge Feather (pixels). Delegate to applyEffect, which adds
+    // the Crop effect via the QE DOM and sets each property by display-name — the
+    // same path verified to set all four crop edges correctly.
+    const opts = options || {};
+    const params: Record<string, any> = {};
+    if (opts.left !== undefined) params['Left'] = opts.left;
+    if (opts.top !== undefined) params['Top'] = opts.top;
+    if (opts.right !== undefined) params['Right'] = opts.right;
+    if (opts.bottom !== undefined) params['Bottom'] = opts.bottom;
+    if (opts.zoom !== undefined) params['Zoom'] = opts.zoom;
+    if (opts.edgeFeather !== undefined) params['Edge Feather'] = opts.edgeFeather;
+    return await this.applyEffect(clipId, 'Crop', params);
   }
 
   private async removeEffect(clipId: string, effectName: string): Promise<any> {
