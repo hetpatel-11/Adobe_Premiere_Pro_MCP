@@ -921,12 +921,12 @@ export class PremiereProTools {
       // Captions
       {
         name: 'create_caption_track',
-        description: 'Creates a caption track from a caption/subtitle file.',
+        description: 'Creates a caption track on a sequence from an imported caption/subtitle file (e.g. an .srt imported via import_media). Pass the SRT project item ID directly.',
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence'),
-          projectItemId: z.string().describe('The ID of the caption file project item'),
-          startTime: z.number().optional().describe('Start time in seconds for the captions'),
-          captionFormat: z.string().optional().describe('Caption format (e.g., "Subtitle Default")')
+          projectItemId: z.string().describe('The ID of the caption file project item (e.g. an imported .srt)'),
+          startTime: z.number().optional().describe('Offset in seconds from the start of the sequence. Defaults to 0.'),
+          captionFormat: z.string().optional().describe('Optional caption format. Omit for subtitles (default, correct for .srt). Accepts: "subtitle", "608", "708", "teletext", "open ebu", "op42", "op47".')
         })
       },
       {
@@ -4999,7 +4999,28 @@ export class PremiereProTools {
   // Caption Track Implementation
   private async createCaptionTrack(sequenceId: string, projectItemId: string, startTime?: number, captionFormat?: string): Promise<any> {
     const startTimeVal = startTime || 0;
-    const formatVal = captionFormat || 'Subtitle Default';
+    // createCaptionTrack's optional 3rd arg is a Sequence.CAPTION_FORMAT_* integer
+    // constant, NOT a free-form string. Passing a string ("Subtitle Default") raised
+    // "Illegal Parameter type" and broke all SRT ingestion. Map friendly names to the
+    // constant suffix; omit the arg entirely when none is given (defaults to subtitle,
+    // which is correct for .srt and matches Adobe's own PProPanel sample).
+    const formatMap: Record<string, string> = {
+      'subtitle': 'CAPTION_FORMAT_SUBTITLE',
+      'subtitle default': 'CAPTION_FORMAT_SUBTITLE',
+      'srt': 'CAPTION_FORMAT_SUBTITLE',
+      'open captions': 'CAPTION_FORMAT_SUBTITLE',
+      '608': 'CAPTION_FORMAT_608',
+      'cea-608': 'CAPTION_FORMAT_608',
+      '708': 'CAPTION_FORMAT_708',
+      'cea-708': 'CAPTION_FORMAT_708',
+      'teletext': 'CAPTION_FORMAT_TELETEXT',
+      'open ebu': 'CAPTION_FORMAT_OPEN_EBU',
+      'ebu': 'CAPTION_FORMAT_OPEN_EBU',
+      'op42': 'CAPTION_FORMAT_OP42',
+      'op47': 'CAPTION_FORMAT_OP47'
+    };
+    const requested = captionFormat ? captionFormat.trim().toLowerCase() : '';
+    const constName = requested ? (formatMap[requested] || 'CAPTION_FORMAT_SUBTITLE') : '';
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
@@ -5007,12 +5028,38 @@ export class PremiereProTools {
         var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
         var startAtTime = ${startTimeVal};
-        sequence.createCaptionTrack(projectItem, startAtTime, ${JSON.stringify(formatVal)});
+        var constName = ${JSON.stringify(constName)};
+        var usedFormat = "default";
+        var ok;
+        // Resolve the format enum if requested; constant location varies by host, so
+        // probe a couple of spots and fall back to the 2-arg (subtitle) call.
+        var fmtConst = null;
+        if (constName) {
+          try {
+            if (typeof Sequence !== 'undefined' && Sequence[constName] !== undefined) {
+              fmtConst = Sequence[constName];
+            } else if (sequence.constructor && sequence.constructor[constName] !== undefined) {
+              fmtConst = sequence.constructor[constName];
+            }
+          } catch (eC) { fmtConst = null; }
+        }
+        if (fmtConst !== null && fmtConst !== undefined) {
+          try {
+            ok = sequence.createCaptionTrack(projectItem, startAtTime, fmtConst);
+            usedFormat = constName;
+          } catch (eFmt) {
+            ok = sequence.createCaptionTrack(projectItem, startAtTime);
+            usedFormat = "default (requested '" + constName + "' rejected: " + eFmt.toString() + ")";
+          }
+        } else {
+          ok = sequence.createCaptionTrack(projectItem, startAtTime);
+        }
         return JSON.stringify({
           success: true,
           message: "Caption track created",
-          captionFormat: ${JSON.stringify(formatVal)},
-          startTime: ${startTimeVal}
+          captionFormat: usedFormat,
+          startTime: startAtTime,
+          apiResult: String(ok)
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
