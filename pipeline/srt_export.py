@@ -30,6 +30,7 @@ def export_srt(dialogue_path: str, output_path: str) -> str:
     with open(dialogue_path, encoding="utf-8") as f:
         data = json.load(f)
 
+    # dialogue_map.json / analysis.json 둘 다 동일한 clips→segments 구조라 호환됨
     lines = []
     idx = 1
     for clip in data.get("clips", []):
