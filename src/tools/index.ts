@@ -582,10 +582,10 @@ export class PremiereProTools {
       },
       {
         name: 'delete_track',
-        description: 'Deletes a track from the sequence.',
+        description: 'Deletes a video or audio track from the sequence. Caption track deletion is accepted by the schema but returns an explicit unsupported result because Premiere Pro exposes no caption-track delete/read API to scripting.',
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence'),
-          trackType: z.enum(['video', 'audio']).describe('Type of track'),
+          trackType: z.enum(['video', 'audio', 'caption']).describe('Type of track'),
           trackIndex: z.number().describe('The index of the track to delete')
         })
       },
@@ -2131,10 +2131,15 @@ export class PremiereProTools {
         ...result
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const maybeModalTimeout = /timeout|timed out/i.test(message);
       return {
         success: false,
-        error: `Failed to import media: ${error instanceof Error ? error.message : String(error)}`,
-        filePath: filePath
+        error: `Failed to import media: ${message}`,
+        filePath: filePath,
+        ...(maybeModalTimeout ? {
+          warning: 'Premiere may be showing a blocking modal dialog, such as "File format not supported". Dismiss the dialog in Premiere, then retry. For subtitle files, convert unsupported formats like .ass/.ssa to .srt before importing.'
+        } : {})
       };
     }
   }
@@ -4312,13 +4317,26 @@ export class PremiereProTools {
   }
 
   private async deleteTrack(_sequenceId: string, trackType: string, trackIndex: number): Promise<any> {
+    if (trackType === 'caption') {
+      return {
+        success: false,
+        error: 'Caption track deletion is not supported by Premiere Pro scripting. The ExtendScript DOM exposes no sequence.captionTracks/getCaptionTracks surface, and the QE DOM exposes no caption-track accessor or delete method.',
+        sequenceId: _sequenceId,
+        trackType,
+        trackIndex,
+        unsupportedByPremiereApi: true,
+        workaround: 'Delete caption tracks manually in Premiere, or remove/recreate captions from the source .srt before creating the caption track.'
+      };
+    }
+
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = __findSequence(${JSON.stringify(_sequenceId)});
+        if (!sequence) sequence = app.project.activeSequence;
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found"
           });
         } else {
           var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};

@@ -161,6 +161,18 @@ describe('PremiereProTools', () => {
       expect(result.error).toBe('Import failed');
     });
 
+    it('adds an actionable modal warning when import_media times out', async () => {
+      mockBridge.importMedia = jest.fn().mockRejectedValue(new Error('Bridge response timeout'));
+
+      const result = await tools.executeTool('import_media', {
+        filePath: '/path/to/captions.ass'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Bridge response timeout');
+      expect(result.warning).toContain('blocking modal dialog');
+    });
+
     it('passes through successful timeline placement', async () => {
       mockBridge.addToTimeline = jest.fn().mockResolvedValue({
         success: true,
@@ -259,6 +271,19 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('returns an explicit unsupported result for caption track deletion', async () => {
+      const result = await tools.executeTool('delete_track', {
+        sequenceId: 'seq-123',
+        trackType: 'caption',
+        trackIndex: 0
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.unsupportedByPremiereApi).toBe(true);
+      expect(result.error).toContain('Caption track deletion is not supported');
       expect(mockBridge.executeScript).not.toHaveBeenCalled();
     });
 
