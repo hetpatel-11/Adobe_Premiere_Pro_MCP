@@ -367,6 +367,19 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'crop_clip',
+        description: 'Crops a timeline clip using Premiere Pro\'s built-in Crop video effect. Reuses an existing Crop effect on the clip when present; otherwise adds one. Omitted parameters keep their current/default values.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the timeline video clip to crop'),
+          left: z.number().min(0).max(100).optional().describe('Percent to crop from the left edge (0-100)'),
+          right: z.number().min(0).max(100).optional().describe('Percent to crop from the right edge (0-100)'),
+          top: z.number().min(0).max(100).optional().describe('Percent to crop from the top edge (0-100)'),
+          bottom: z.number().min(0).max(100).optional().describe('Percent to crop from the bottom edge (0-100)'),
+          zoom: z.boolean().optional().describe('Crop effect Zoom toggle: scales the cropped image back up to fill the frame'),
+          edgeFeather: z.number().min(0).optional().describe('Edge Feather amount in pixels')
+        })
+      },
+      {
         name: 'add_transition',
         description: 'Adds a transition (e.g., cross dissolve) between two adjacent clips on the timeline.',
         inputSchema: z.object({
@@ -1217,6 +1230,15 @@ export class PremiereProTools {
         // Effects and Transitions
         case 'apply_effect':
           return await this.applyEffect(args.clipId, args.effectName, args.parameters);
+        case 'crop_clip':
+          return await this.cropClip(args.clipId, {
+            left: args.left,
+            right: args.right,
+            top: args.top,
+            bottom: args.bottom,
+            zoom: args.zoom,
+            edgeFeather: args.edgeFeather
+          });
         case 'remove_effect':
           return await this.removeEffect(args.clipId, args.effectName);
         case 'add_transition':
@@ -2828,11 +2850,39 @@ export class PremiereProTools {
           effect = qe.project.getAudioEffectByName("${effectName}");
         }
         if (!effect) return JSON.stringify({ success: false, error: "Effect not found: ${effectName}. Use list_available_effects to see available effects." });
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        function findQeClipByTime() {
+          var targetTicks = String(info.clip.start.ticks);
+          var best = null;
+          var bestDelta = null;
+          for (var qi = 0; qi < qeTrack.numItems; qi++) {
+            var item = qeTrack.getItemAt(qi);
+            if (!item || String(item.type) !== "Clip") continue;
+            var itemTicks = String(item.start.ticks);
+            if (itemTicks === targetTicks) return item;
+            var delta = Math.abs(parseInt(itemTicks, 10) - parseInt(targetTicks, 10));
+            if (best === null || delta < bestDelta) {
+              best = item;
+              bestDelta = delta;
+            }
+          }
+          return best;
+        }
+        var qeClip = findQeClipByTime();
+        if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for effect application" });
         if (info.trackType === 'video') { qeClip.addVideoEffect(effect); } else { qeClip.addAudioEffect(effect); }
 
         // Find the newly added component (last in the array)
         var afterCount = clip.components.numItems;
+        if (afterCount <= beforeCount) {
+          return JSON.stringify({
+            success: false,
+            error: "Effect add did not create a new component on the target clip",
+            clipId: "${clipId}",
+            effectName: "${effectName}",
+            beforeComponentCount: beforeCount,
+            afterComponentCount: afterCount
+          });
+        }
         var newCompIdx = afterCount - 1;
         var newComp = clip.components[newCompIdx];
 
@@ -2897,8 +2947,13 @@ export class PremiereProTools {
           }
         }
 
+        var failedParams = [];
+        for (var pr = 0; pr < paramResults.length; pr++) {
+          if (!paramResults[pr].ok) failedParams.push(paramResults[pr]);
+        }
+
         return JSON.stringify({
-          success: true,
+          success: failedParams.length === 0,
           message: "Effect applied",
           clipId: "${clipId}",
           effectName: "${effectName}",
@@ -2908,10 +2963,186 @@ export class PremiereProTools {
             propertyCount: propsDump.length,
             properties: propsDump
           },
-          paramResults: paramResults
+          paramResults: paramResults,
+          error: failedParams.length ? "One or more effect parameters could not be set" : undefined
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async cropClip(clipId: string, options: { left?: number; right?: number; top?: number; bottom?: number; zoom?: boolean; edgeFeather?: number }): Promise<any> {
+    const params: Record<string, any> = {};
+    if (options.left !== undefined) params['Left'] = options.left;
+    if (options.top !== undefined) params['Top'] = options.top;
+    if (options.right !== undefined) params['Right'] = options.right;
+    if (options.bottom !== undefined) params['Bottom'] = options.bottom;
+    if (options.zoom !== undefined) params['Zoom'] = options.zoom;
+    if (options.edgeFeather !== undefined) params['Edge Feather'] = options.edgeFeather;
+
+    const paramJson = JSON.stringify(params);
+    const script = `
+      try {
+        app.enableQE();
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        if (info.trackType !== "video") return JSON.stringify({ success: false, error: "crop_clip only supports video clips" });
+
+        var clip = info.clip;
+        var cropComp = null;
+        var cropCompIdx = -1;
+
+        function isCropComponent(component) {
+          return String(component.displayName) === "Crop" || String(component.matchName) === "AE.ADBE AECrop";
+        }
+
+        function findCropComponent() {
+          for (var i = clip.components.numItems - 1; i >= 0; i--) {
+            var component = clip.components[i];
+            if (isCropComponent(component)) {
+              cropComp = component;
+              cropCompIdx = i;
+              return true;
+            }
+          }
+          return false;
+        }
+
+        var effectAdded = false;
+        if (!findCropComponent()) {
+          var qeSeq = qe.project.getActiveSequence();
+          if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence not available" });
+          var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+          if (!qeTrack) return JSON.stringify({ success: false, error: "QE video track not found for clip" });
+          var effect = qe.project.getVideoEffectByName("Crop");
+          if (!effect) return JSON.stringify({ success: false, error: "Crop effect not found. Use list_available_effects to inspect installed effects." });
+
+          function findQeClipByTime() {
+            var targetTicks = String(info.clip.start.ticks);
+            var best = null;
+            var bestDelta = null;
+            for (var qi = 0; qi < qeTrack.numItems; qi++) {
+              var item = qeTrack.getItemAt(qi);
+              if (!item || String(item.type) !== "Clip") continue;
+              var itemTicks = String(item.start.ticks);
+              if (itemTicks === targetTicks) return item;
+              var delta = Math.abs(parseInt(itemTicks, 10) - parseInt(targetTicks, 10));
+              if (best === null || delta < bestDelta) {
+                best = item;
+                bestDelta = delta;
+              }
+            }
+            return best;
+          }
+
+          var beforeCount = clip.components.numItems;
+          var qeClip = findQeClipByTime();
+          if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for Crop effect" });
+          qeClip.addVideoEffect(effect);
+          if (clip.components.numItems <= beforeCount) {
+            return JSON.stringify({
+              success: false,
+              error: "Crop effect add did not create a new component on the target clip",
+              beforeComponentCount: beforeCount,
+              afterComponentCount: clip.components.numItems
+            });
+          }
+          effectAdded = true;
+          if (!findCropComponent()) {
+            var addedNames = [];
+            for (var ai = beforeCount; ai < clip.components.numItems; ai++) {
+              addedNames.push(String(clip.components[ai].displayName));
+            }
+            return JSON.stringify({
+              success: false,
+              error: "Effect add completed but the new component was not Crop",
+              addedComponents: addedNames
+            });
+          }
+        }
+
+        var requestedParams = ${paramJson};
+        var paramResults = [];
+        function normalize(s) { return String(s).toLowerCase().replace(/[\\s_-]+/g, ''); }
+        for (var pName in requestedParams) {
+          if (requestedParams.hasOwnProperty && !requestedParams.hasOwnProperty(pName)) continue;
+          var requestedVal = requestedParams[pName];
+          var matched = null;
+          for (var k = 0; k < cropComp.properties.numItems; k++) {
+            if (String(cropComp.properties[k].displayName) === pName) {
+              matched = { prop: cropComp.properties[k], strategy: "exact" };
+              break;
+            }
+          }
+          if (!matched) {
+            var nameN = normalize(pName);
+            for (var nk = 0; nk < cropComp.properties.numItems; nk++) {
+              if (normalize(String(cropComp.properties[nk].displayName)) === nameN) {
+                matched = { prop: cropComp.properties[nk], strategy: "normalized" };
+                break;
+              }
+            }
+          }
+          if (!matched) {
+            paramResults.push({ requestedName: pName, ok: false, error: "no Crop property matches this displayName" });
+            continue;
+          }
+          try {
+            var valueBefore = null;
+            try { valueBefore = matched.prop.getValue(); } catch (eB) {}
+            matched.prop.setValue(requestedVal, true);
+            var valueAfter = null;
+            try { valueAfter = matched.prop.getValue(); } catch (eA) {}
+            var clamped = false;
+            if (typeof valueAfter === "number" && typeof requestedVal === "number") {
+              clamped = Math.abs(valueAfter - requestedVal) > 0.0001;
+            } else {
+              clamped = valueAfter !== requestedVal;
+            }
+            paramResults.push({
+              requestedName: pName,
+              matchedDisplayName: String(matched.prop.displayName),
+              strategy: matched.strategy,
+              valueRequested: requestedVal,
+              valueBefore: valueBefore,
+              valueAfter: valueAfter,
+              clamped: clamped,
+              ok: true
+            });
+          } catch (eSet) {
+            paramResults.push({ requestedName: pName, ok: false, error: "setValue threw: " + eSet.toString() });
+          }
+        }
+
+        var propsDump = [];
+        for (var pi = 0; pi < cropComp.properties.numItems; pi++) {
+          var prop = cropComp.properties[pi];
+          var val = null;
+          try { val = prop.getValue(); } catch (eVal) { val = "<getValue threw: " + eVal.toString() + ">"; }
+          propsDump.push({ index: pi, displayName: String(prop.displayName), value: val });
+        }
+
+        var failedParams = [];
+        for (var pr = 0; pr < paramResults.length; pr++) {
+          if (!paramResults[pr].ok) failedParams.push(paramResults[pr]);
+        }
+
+        return JSON.stringify({
+          success: failedParams.length === 0,
+          message: effectAdded ? "Crop effect applied" : "Existing Crop effect updated",
+          clipId: ${JSON.stringify(clipId)},
+          effectName: "Crop",
+          effectAdded: effectAdded,
+          componentIndex: cropCompIdx,
+          properties: propsDump,
+          paramResults: paramResults,
+          error: failedParams.length ? "One or more Crop parameters could not be set" : undefined
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: "Crop effect failed: " + e.toString() });
       }
     `;
 
