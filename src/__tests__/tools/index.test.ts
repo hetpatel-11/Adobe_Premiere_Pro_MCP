@@ -251,6 +251,46 @@ describe('PremiereProTools', () => {
       expect(result.cutAudioTracks).toEqual([0, 2, 3]);
     });
 
+    it('validates crop_clip bounds before calling the bridge', async () => {
+      const result = await tools.executeTool('crop_clip', {
+        clipId: 'clip-123',
+        left: 101
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('executes crop_clip through the dedicated Crop implementation', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        effectName: 'Crop',
+        effectAdded: true,
+        paramResults: [
+          { requestedName: 'Left', ok: true, valueAfter: 12 },
+          { requestedName: 'Bottom', ok: true, valueAfter: 25 }
+        ]
+      });
+
+      const result = await tools.executeTool('crop_clip', {
+        clipId: 'clip-123',
+        left: 12,
+        bottom: 25,
+        zoom: true
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.effectName).toBe('Crop');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('getVideoEffectByName("Crop")');
+      expect(script).toContain('findQeClipByTime');
+      expect(script).toContain('"Left":12');
+      expect(script).toContain('"Bottom":25');
+      expect(script).toContain('"Zoom":true');
+    });
+
     it('uses current argument names for add_transition', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
