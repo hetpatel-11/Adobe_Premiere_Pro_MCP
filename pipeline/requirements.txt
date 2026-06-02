@@ -1,0 +1,4 @@
+scenedetect[opencv]
+openai-whisper
+anthropic
+numpy
