@@ -4,8 +4,8 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current summary
 
-- Runtime MCP tools exposed: **131**
-- Source catalog tools: **131**
+- Runtime MCP tools exposed: **147**
+- Source catalog tools: **147**
 - Runtime/source mismatch: **none**
 - Current implementation path: **Node MCP server → `/tmp/premiere-mcp-bridge` → CEP panel → Premiere ExtendScript/QE DOM**
 - Validation note: this document inventories implemented/exposed tools. A full live sweep should be run in a scratch Premiere project because `scripts/live-tool-sweep.mjs` mutates the active project.
@@ -32,6 +32,16 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `build_motion_graphics_demo` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Generates clean demo stills, creates a sequence, lays the shots out on the timeline, adds dissolves, and applies subtle scale animation for a polished minimalist ad-style demo. Implementation: `buildMotionGraphicsDemo`; API hints: bridge/helper-specific.
 - `assemble_product_spot` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Builds a production-oriented promo timeline from real media assets. Supports either template defaults or an explicit clipPlan for LLM-directed pacing, transitions, motion, trims, and per-clip effects. Implementation: `assembleProductSpot`; API hints: bridge/helper-specific.
 - `build_brand_spot_from_mogrt_and_assets` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Builds a branded ad assembly from real media assets, supports optional MOGRT overlay, and allows explicit clipPlan control. Default polish is optional so creative direction can come from LLM planning instead of hardcoded passes. Implementation: `buildBrandSpotFromMogrtAndAssets`; API hints: bridge/helper-specific.
+
+### Source Monitor (7)
+
+- `open_in_source_monitor` — **BUILT / exposed**. Opens a project item in the Premiere Source Monitor using `app.sourceMonitor.openProjectItem`; resolves by explicit project item/node ID and returns host-support diagnostics if Source Monitor APIs are unavailable. Implementation: `openInSourceMonitor`; API hints: app.sourceMonitor, app.project.
+- `close_source_monitor` — **BUILT / exposed**. Closes the current Source Monitor clip through `app.sourceMonitor.closeClip` with an honest `supported:false` branch for hosts that do not expose the API. Implementation: `closeSourceMonitor`; API hints: app.sourceMonitor.
+- `close_all_source_clips` — **BUILT / exposed**. Closes all Source Monitor clips through `app.sourceMonitor.closeAllClips` with host-support diagnostics. Implementation: `closeAllSourceClips`; API hints: app.sourceMonitor.
+- `set_source_monitor_in_out` — **BUILT / exposed**. Sets Source Monitor source in/out points on the currently loaded project item using Premiere `Time` objects and `ProjectItem.setInPoint`/`setOutPoint`; validates non-negative and ordered ranges before bridge execution. Implementation: `setSourceMonitorInOut`; API hints: app.sourceMonitor, Time, ProjectItem.
+- `insert_source_monitor_clip` — **BUILT / exposed**. Inserts the current Source Monitor project item into an active or explicit sequence at a requested time/playhead and track indices. Implementation: `editSourceMonitorClip('insert')`; API hints: app.sourceMonitor, app.project, Sequence.insertClip.
+- `overwrite_source_monitor_clip` — **BUILT / exposed**. Overwrites the timeline with the current Source Monitor project item in an active or explicit sequence at a requested time/playhead and track indices. Implementation: `editSourceMonitorClip('overwrite')`; API hints: app.sourceMonitor, app.project, Sequence.overwriteClip.
+- `get_source_monitor_info` — **BUILT / exposed**. Reports the currently loaded Source Monitor item with optional low-cost metadata reads and no mutation. Implementation: `getSourceMonitorInfo`; API hints: app.sourceMonitor, ProjectItem metadata.
 
 ### Project Management (4)
 

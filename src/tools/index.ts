@@ -38,6 +38,7 @@ import { analyzeTimelineCleanup } from './timelineCleanup/analyze.js';
 import { validateTimelineCleanupExecutionPlan } from './timelineCleanup/executionPlan.js';
 import { planTimelineCleanupQc } from './timelineCleanup/qc.js';
 import type { TimelineCleanupAction, TimelineCleanupMode, TimelineCleanupSnapshot } from './timelineCleanup/types.js';
+import { buildPremiereScript, literalForExtendScript } from './extendscript.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -850,6 +851,24 @@ const assembleFromEditPlanSchema = z.object({
   includePostcondition: z.boolean().optional().describe('When true, attaches a list_sequence_tracks postcondition after assembly. Defaults to true.')
 });
 
+const sourceMonitorInOutSchema = z.object({
+  inSeconds: z.number().finite().min(0).optional().describe('Source Monitor in point in seconds.'),
+  outSeconds: z.number().finite().min(0).optional().describe('Source Monitor out point in seconds.')
+}).refine(
+  (settings) => settings.inSeconds !== undefined || settings.outSeconds !== undefined,
+  { message: 'Provide inSeconds or outSeconds' }
+).refine(
+  (settings) => settings.inSeconds === undefined || settings.outSeconds === undefined || settings.outSeconds > settings.inSeconds,
+  { message: 'outSeconds must be greater than inSeconds' }
+);
+
+const sourceMonitorEditSchema = z.object({
+  sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.'),
+  videoTrackIndex: z.number().int().min(0).optional().describe('Target video track index. Defaults to 0.'),
+  audioTrackIndex: z.number().int().min(0).optional().describe('Target audio track index. Defaults to 0.'),
+  time: z.number().finite().min(0).optional().describe('Timeline time in seconds. Defaults to the current playhead position.')
+});
+
 type CaptionSidecarFormat = z.infer<typeof captionSidecarFormatSchema>;
 type PremiereCaptionFormat = z.infer<typeof premiereCaptionFormatSchema>;
 
@@ -866,6 +885,18 @@ interface LoadedCaptionSource {
   inputPath?: string;
   sequenceId?: string;
   format?: CaptionSidecarFormat;
+}
+
+interface SourceMonitorInOutArgs {
+  inSeconds?: number;
+  outSeconds?: number;
+}
+
+interface SourceMonitorEditArgs {
+  sequenceId?: string;
+  videoTrackIndex?: number;
+  audioTrackIndex?: number;
+  time?: number;
 }
 
 export class PremiereProTools {
@@ -920,6 +951,47 @@ export class PremiereProTools {
         description: 'Lists all video and audio tracks in a sequence with their properties and clips. If sequenceId is provided it must resolve; otherwise the active sequence is used.',
         inputSchema: z.object({
           sequenceId: z.string().optional().describe('Optional sequence ID to list tracks for. If provided and not found, the tool fails instead of falling back to the active sequence.')
+        })
+      },
+
+      // Source Monitor
+      {
+        name: 'open_in_source_monitor',
+        description: 'Opens a project item in the Premiere Source Monitor for preview, trimming, and insert/overwrite edits.',
+        inputSchema: z.object({
+          projectItemId: z.string().min(1).describe('Project item node ID to open in the Source Monitor.')
+        })
+      },
+      {
+        name: 'close_source_monitor',
+        description: 'Closes the clip currently open in the Source Monitor when the host exposes the Source Monitor close API.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'close_all_source_clips',
+        description: 'Closes all Source Monitor clips when the host exposes the Source Monitor close-all API.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'set_source_monitor_in_out',
+        description: 'Sets Source Monitor in and/or out points on the currently open source clip using Premiere Time objects.',
+        inputSchema: sourceMonitorInOutSchema
+      },
+      {
+        name: 'insert_source_monitor_clip',
+        description: 'Inserts the clip currently loaded in the Source Monitor into a sequence at an explicit time or the current playhead.',
+        inputSchema: sourceMonitorEditSchema
+      },
+      {
+        name: 'overwrite_source_monitor_clip',
+        description: 'Overwrites timeline material with the clip currently loaded in the Source Monitor at an explicit time or the current playhead.',
+        inputSchema: sourceMonitorEditSchema
+      },
+      {
+        name: 'get_source_monitor_info',
+        description: 'Reads information about the clip currently loaded in the Source Monitor without mutating the project.',
+        inputSchema: z.object({
+          includeMetadata: z.boolean().optional().describe('When true, attempts low-cost project/XMP metadata reads for the loaded source item.')
         })
       },
       {
@@ -2111,6 +2183,20 @@ export class PremiereProTools {
           return await this.listSequences();
         case 'list_sequence_tracks':
           return await this.listSequenceTracks(args.sequenceId);
+        case 'open_in_source_monitor':
+          return await this.openInSourceMonitor(args.projectItemId);
+        case 'close_source_monitor':
+          return await this.closeSourceMonitor();
+        case 'close_all_source_clips':
+          return await this.closeAllSourceClips();
+        case 'set_source_monitor_in_out':
+          return await this.setSourceMonitorInOut(args as SourceMonitorInOutArgs);
+        case 'insert_source_monitor_clip':
+          return await this.editSourceMonitorClip('insert', args as SourceMonitorEditArgs);
+        case 'overwrite_source_monitor_clip':
+          return await this.editSourceMonitorClip('overwrite', args as SourceMonitorEditArgs);
+        case 'get_source_monitor_info':
+          return await this.getSourceMonitorInfo(args.includeMetadata);
         case 'scan_conform_media_metadata':
           return await this.scanConformMediaMetadata(args as ScanConformMediaMetadataArgs);
         case 'snapshot_sequence_for_conform':
@@ -2468,6 +2554,181 @@ export class PremiereProTools {
         args: args
       };
     }
+  }
+
+  private async openInSourceMonitor(projectItemId: string): Promise<any> {
+    const payload = literalForExtendScript({ projectItemId });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      if (!app.project) return { success: false, error: 'No project is open' };
+      if (!app.sourceMonitor || typeof app.sourceMonitor.openProjectItem !== 'function') {
+        return { success: false, supported: false, error: 'app.sourceMonitor.openProjectItem is not available on this Premiere host' };
+      }
+      var item = __findProjectItem(payload.projectItemId);
+      if (!item) return { success: false, error: 'Project item not found: ' + payload.projectItemId };
+      var openResult = app.sourceMonitor.openProjectItem(item);
+      return {
+        success: true,
+        supported: true,
+        opened: true,
+        projectItemId: item.nodeId || payload.projectItemId,
+        name: item.name || null,
+        openResult: openResult
+      };
+    `, '__openInSourceMonitor');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async closeSourceMonitor(): Promise<any> {
+    const script = buildPremiereScript(`
+      if (!app.sourceMonitor || typeof app.sourceMonitor.closeClip !== 'function') {
+        return { success: false, supported: false, error: 'app.sourceMonitor.closeClip is not available on this Premiere host' };
+      }
+      var closeResult = app.sourceMonitor.closeClip();
+      return { success: true, supported: true, closed: true, closeResult: closeResult };
+    `, '__closeSourceMonitor');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async closeAllSourceClips(): Promise<any> {
+    const script = buildPremiereScript(`
+      if (!app.sourceMonitor || typeof app.sourceMonitor.closeAllClips !== 'function') {
+        return { success: false, supported: false, error: 'app.sourceMonitor.closeAllClips is not available on this Premiere host' };
+      }
+      var closeResult = app.sourceMonitor.closeAllClips();
+      return { success: true, supported: true, closedAll: true, closeResult: closeResult };
+    `, '__closeAllSourceClips');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setSourceMonitorInOut(args: SourceMonitorInOutArgs): Promise<any> {
+    const payload = literalForExtendScript(args);
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      if (!app.sourceMonitor || typeof app.sourceMonitor.getProjectItem !== 'function') {
+        return { success: false, supported: false, error: 'app.sourceMonitor.getProjectItem is not available on this Premiere host' };
+      }
+      var item = app.sourceMonitor.getProjectItem();
+      if (!item) return { success: false, supported: true, error: 'No clip is open in the Source Monitor' };
+      var shouldSetIn = typeof payload.inSeconds === 'number';
+      var shouldSetOut = typeof payload.outSeconds === 'number';
+      if (shouldSetIn && typeof item.setInPoint !== 'function') {
+        return { success: false, supported: false, error: 'ProjectItem.setInPoint is not available for the Source Monitor item' };
+      }
+      if (shouldSetOut && typeof item.setOutPoint !== 'function') {
+        return { success: false, supported: false, error: 'ProjectItem.setOutPoint is not available for the Source Monitor item' };
+      }
+      var inSet = false;
+      var outSet = false;
+      if (shouldSetIn) {
+        var inTime = new Time();
+        inTime.seconds = payload.inSeconds;
+        item.setInPoint(inTime.ticks, 4);
+        inSet = true;
+      }
+      if (shouldSetOut) {
+        var outTime = new Time();
+        outTime.seconds = payload.outSeconds;
+        item.setOutPoint(outTime.ticks, 4);
+        outSet = true;
+      }
+      var info = {
+        success: true,
+        supported: true,
+        itemName: item.name || null,
+        projectItemId: item.nodeId || null,
+        inSet: inSet,
+        outSet: outSet
+      };
+      try { info.inSeconds = __ticksToSeconds(item.getInPoint().ticks); } catch (inReadError) {}
+      try { info.outSeconds = __ticksToSeconds(item.getOutPoint().ticks); } catch (outReadError) {}
+      return info;
+    `, '__setSourceMonitorInOut');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async editSourceMonitorClip(operation: 'insert' | 'overwrite', args: SourceMonitorEditArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      videoTrackIndex: args.videoTrackIndex ?? 0,
+      audioTrackIndex: args.audioTrackIndex ?? 0,
+      time: args.time ?? null
+    });
+    const methodName = operation === 'insert' ? 'insertClip' : 'overwriteClip';
+    const functionName = operation === 'insert' ? '__insertSourceMonitorClip' : '__overwriteSourceMonitorClip';
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      if (!app.project) return { success: false, error: 'No project is open' };
+      if (!app.sourceMonitor || typeof app.sourceMonitor.getProjectItem !== 'function') {
+        return { success: false, supported: false, error: 'app.sourceMonitor.getProjectItem is not available on this Premiere host' };
+      }
+      var seq = payload.sequenceId ? __findSequence(payload.sequenceId) : app.project.activeSequence;
+      if (!seq) return { success: false, supported: true, error: payload.sequenceId ? 'Sequence not found by id: ' + payload.sequenceId : 'No active sequence' };
+      if (typeof seq.${methodName} !== 'function') {
+        return { success: false, supported: false, error: 'Sequence.${methodName} is not available on this Premiere host' };
+      }
+      var item = app.sourceMonitor.getProjectItem();
+      if (!item) return { success: false, supported: true, error: 'No clip is open in the Source Monitor' };
+      var position = new Time();
+      if (typeof payload.time === 'number') {
+        position.seconds = payload.time;
+      } else if (seq.getPlayerPosition) {
+        position.ticks = seq.getPlayerPosition().ticks;
+      } else {
+        position.seconds = 0;
+      }
+      var editResult = seq.${methodName}(item, position.ticks, payload.videoTrackIndex, payload.audioTrackIndex);
+      return {
+        success: true,
+        supported: true,
+        operation: "${operation}",
+        projectItemId: item.nodeId || null,
+        itemName: item.name || null,
+        sequenceId: seq.sequenceID || payload.sequenceId || null,
+        sequenceName: seq.name || null,
+        timeSeconds: __ticksToSeconds(position.ticks),
+        videoTrackIndex: payload.videoTrackIndex,
+        audioTrackIndex: payload.audioTrackIndex,
+        editResult: editResult
+      };
+    `, functionName);
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getSourceMonitorInfo(includeMetadata?: boolean): Promise<any> {
+    const payload = literalForExtendScript({ includeMetadata: includeMetadata === true });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      if (!app.sourceMonitor || typeof app.sourceMonitor.getProjectItem !== 'function') {
+        return { success: false, supported: false, error: 'app.sourceMonitor.getProjectItem is not available on this Premiere host' };
+      }
+      var item = app.sourceMonitor.getProjectItem();
+      if (!item) return { success: true, supported: true, loaded: false, includeMetadata: payload.includeMetadata };
+      var info = {
+        success: true,
+        supported: true,
+        loaded: true,
+        includeMetadata: payload.includeMetadata,
+        projectItemId: item.nodeId || null,
+        name: item.name || null
+      };
+      try { info.mediaPath = item.getMediaPath(); } catch (mediaPathError) {}
+      try { info.inSeconds = __ticksToSeconds(item.getInPoint().ticks); } catch (inReadError) {}
+      try { info.outSeconds = __ticksToSeconds(item.getOutPoint().ticks); } catch (outReadError) {}
+      if (payload.includeMetadata) {
+        info.metadata = {};
+        try { info.metadata.projectMetadata = item.getProjectMetadata(); } catch (projectMetadataError) { info.metadata.projectMetadataError = projectMetadataError.toString(); }
+        try { info.metadata.xmp = item.getXMPMetadata(); } catch (xmpError) { info.metadata.xmpError = xmpError.toString(); }
+      }
+      return info;
+    `, '__getSourceMonitorInfo');
+
+    return await this.bridge.executeScript(script);
   }
 
   private normalizeCaptionEntries(captions: CaptionEntry[]): CaptionEntry[] {
