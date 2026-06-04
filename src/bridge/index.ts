@@ -11,7 +11,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
-import type { PremiereProTransport } from './types.js';
+import type { PremiereProBridgeDiagnostics, PremiereProTransport } from './types.js';
 
 const EXTENDSCRIPT_HELPERS = `
 function __mcpEscapeString(value) {
@@ -173,6 +173,7 @@ export class PremiereProBridge implements PremiereProTransport {
   private uxpProcess?: ChildProcess;
   private isInitialized = false;
   private sessionId: string;
+  private premierePath: string | null = null;
 
   constructor() {
     this.logger = new Logger('PremiereProBridge');
@@ -210,8 +211,12 @@ export class PremiereProBridge implements PremiereProTransport {
   private async detectPremiereProInstallation(): Promise<void> {
     // Check for common Premiere Pro installation paths
     const commonPaths = [
+      '/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app',
+      '/Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro 2025.app',
       '/Applications/Adobe Premiere Pro 2024/Adobe Premiere Pro 2024.app',
       '/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app',
+      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2026\\Adobe Premiere Pro.exe',
+      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2025\\Adobe Premiere Pro.exe',
       'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2024\\Adobe Premiere Pro.exe',
       'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2023\\Adobe Premiere Pro.exe'
     ];
@@ -219,6 +224,7 @@ export class PremiereProBridge implements PremiereProTransport {
     for (const path of commonPaths) {
       try {
         await fs.access(path);
+        this.premierePath = path;
         this.logger.info(`Found Adobe Premiere Pro at: ${path}`);
         return;
       } catch (error) {
@@ -226,7 +232,19 @@ export class PremiereProBridge implements PremiereProTransport {
       }
     }
 
+    this.premierePath = null;
     this.logger.warn('Adobe Premiere Pro installation not found in common paths');
+  }
+
+  getDiagnostics(): PremiereProBridgeDiagnostics {
+    return {
+      tempDir: this.tempDir,
+      communicationMethod: this.communicationMethod,
+      usesExternalTempDir: this.usesExternalTempDir,
+      isInitialized: this.isInitialized,
+      sessionId: this.sessionId,
+      premierePath: this.premierePath
+    };
   }
 
   private async initializeCommunication(): Promise<void> {
@@ -238,7 +256,7 @@ export class PremiereProBridge implements PremiereProTransport {
 
   private isSelfInvokingScript(script: string): boolean {
     const trimmed = script.trim();
-    return /^\(function\s*\(\)\s*\{[\s\S]*\}\)\s*\(\)\s*;?$/.test(trimmed);
+    return /^\(function(?:\s+[A-Za-z_$][\w$]*)?\s*\([^)]*\)\s*\{[\s\S]*\}\)\s*\(\)\s*;?$/.test(trimmed);
   }
 
   private buildExecutableScript(script: string): string {
@@ -499,42 +517,121 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async createSequence(name: string, presetPath?: string): Promise<PremiereProSequence> {
+  async createSequence(name: string, sequenceId?: string): Promise<PremiereProSequence> {
+    const requestedSequenceId = sequenceId && sequenceId.trim().length > 0
+      ? sequenceId
+      : `mcp-sequence-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const xmlEscape = (value: string) => value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+    const safeXmlFileName = requestedSequenceId.replace(/[^A-Za-z0-9_.-]/g, '_');
+    const xmlPath = join(this.tempDir, `${safeXmlFileName}.xml`);
+    const sequenceXml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence id="${xmlEscape(requestedSequenceId)}">
+    <name>${xmlEscape(name)}</name>
+    <duration>0</duration>
+    <rate>
+      <timebase>30</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <width>1920</width>
+            <height>1080</height>
+            <anamorphic>FALSE</anamorphic>
+            <pixelaspectratio>square</pixelaspectratio>
+            <fielddominance>none</fielddominance>
+          </samplecharacteristics>
+        </format>
+        <track>
+          <enabled>TRUE</enabled>
+          <locked>FALSE</locked>
+        </track>
+      </video>
+      <audio>
+        <format>
+          <samplecharacteristics>
+            <depth>16</depth>
+            <samplerate>48000</samplerate>
+          </samplecharacteristics>
+        </format>
+        <track>
+          <enabled>TRUE</enabled>
+          <locked>FALSE</locked>
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>
+`;
+    await fs.writeFile(xmlPath, sequenceXml);
+
     const script = `
       try {
         var sequenceName = ${JSON.stringify(name)};
-        var presetPath = ${presetPath ? JSON.stringify(presetPath) : 'null'};
+        var requestedSequenceId = ${JSON.stringify(requestedSequenceId)};
+        var xmlPath = ${JSON.stringify(xmlPath)};
+        var xmlFile = new File(xmlPath);
+        var attempts = [];
+        var beforeSequenceCount = 0;
         var beforeIds = {};
 
         if (app.project && app.project.sequences) {
-          for (var i = 0; i < app.project.sequences.numSequences; i++) {
-            beforeIds[app.project.sequences[i].sequenceID] = true;
+          beforeSequenceCount = app.project.sequences.numSequences;
+          for (var beforeIndex = 0; beforeIndex < app.project.sequences.numSequences; beforeIndex++) {
+            var beforeSeq = app.project.sequences[beforeIndex];
+            beforeIds[String(beforeSeq.sequenceID)] = true;
           }
         }
 
-        var sequence = null;
-        var createError = null;
-        try {
-          sequence = app.project.createNewSequence(sequenceName, presetPath || "");
-        } catch (createException) {
-          createError = createException;
+        if (!xmlFile.exists) {
+          return JSON.stringify({
+            success: false,
+            error: "Temporary FCP7 XML sequence file was not found",
+            sequenceName: sequenceName,
+            requestedSequenceId: requestedSequenceId,
+            xmlPath: xmlPath
+          });
         }
 
-        var created = sequence || null;
-        if (!created && app.project && app.project.sequences) {
-          for (var j = 0; j < app.project.sequences.numSequences; j++) {
-            var candidate = app.project.sequences[j];
-            if (!beforeIds[candidate.sequenceID] && candidate.name === sequenceName) {
-              created = candidate;
-              break;
+        var importResult = null;
+        try {
+          importResult = app.project.importFiles([xmlFile.fsName], true, app.project.rootItem, false);
+          attempts.push({ method: "importFiles(FCP7 XML)", ok: importResult });
+        } catch (importException) {
+          attempts.push({ method: "importFiles(FCP7 XML)", error: importException.toString() });
+        }
+
+        var created = null;
+        var newSequences = [];
+        var afterSequenceCount = app.project && app.project.sequences ? app.project.sequences.numSequences : 0;
+        if (app.project && app.project.sequences) {
+          for (var byId = 0; byId < app.project.sequences.numSequences; byId++) {
+            var candidate = app.project.sequences[byId];
+            var candidateId = String(candidate.sequenceID);
+            if (!beforeIds[candidateId]) {
+              newSequences.push({ id: candidate.sequenceID || null, name: candidate.name || null });
+              if (!created && candidate.name === sequenceName) {
+                created = candidate;
+              }
             }
           }
         }
-
-        if (!created && app.project && app.project.sequences) {
-          for (var k = app.project.sequences.numSequences - 1; k >= 0; k--) {
-            var fallback = app.project.sequences[k];
-            if (fallback.name === sequenceName) {
+        if (!created && newSequences.length > 0 && app.project && app.project.sequences) {
+          for (var fallbackIndex = 0; fallbackIndex < app.project.sequences.numSequences; fallbackIndex++) {
+            var fallback = app.project.sequences[fallbackIndex];
+            if (String(fallback.sequenceID) === String(newSequences[0].id)) {
               created = fallback;
               break;
             }
@@ -544,16 +641,24 @@ export class PremiereProBridge implements PremiereProTransport {
         if (!created) {
           return JSON.stringify({
             success: false,
-            error: createError
-              ? createError.toString()
-              : "Sequence creation completed but the new sequence could not be located",
-            sequenceName: sequenceName
+            error: "FCP7 XML import returned but no new sequence could be resolved",
+            sequenceName: sequenceName,
+            requestedSequenceId: requestedSequenceId,
+            importResult: importResult,
+            attempts: attempts,
+            diagnostics: {
+              beforeSequenceCount: beforeSequenceCount,
+              afterSequenceCount: afterSequenceCount,
+              newSequences: newSequences
+            }
           });
         }
 
         return JSON.stringify({
           success: true,
+          method: "importFiles(FCP7 XML)",
           id: created.sequenceID,
+          requestedSequenceId: requestedSequenceId,
           name: created.name,
           duration: created.end ? __ticksToSeconds(created.end) : 0,
           frameRate: created.timebase ? (254016000000 / parseInt(created.timebase, 10)) : null,
@@ -566,12 +671,17 @@ export class PremiereProBridge implements PremiereProTransport {
         return JSON.stringify({
           success: false,
           error: e.toString(),
-          sequenceName: ${JSON.stringify(name)}
+          sequenceName: ${JSON.stringify(name)},
+          method: "importFiles(FCP7 XML)"
         });
       }
     `;
-    
-    return await this.executeScript(script);
+
+    try {
+      return await this.executeScript(script);
+    } finally {
+      await fs.unlink(xmlPath).catch(() => undefined);
+    }
   }
 
   async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true): Promise<PremiereProClip> {

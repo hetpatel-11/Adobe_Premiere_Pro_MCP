@@ -6,9 +6,40 @@
  */
 
 import { z } from 'zod';
-import type { PremiereProTransport } from '../bridge/types.js';
+import { execFile } from 'child_process';
+import { constants, promises as fs } from 'fs';
+import type { Dirent, Stats } from 'fs';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { promisify } from 'util';
+import type { PremiereProBridgeDiagnostics, PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
+import {
+  formatCaptionEntries,
+  parseSrt,
+  parseVtt,
+  qcCaptions as runCaptionQc,
+  searchCaptions as runCaptionSearch,
+  serializeCsv,
+  serializeJson,
+  serializeSrt,
+  serializeVtt,
+} from './captions/sidecar.js';
+import type { CaptionEntry, CaptionQcFinding, CaptionQcOptions } from './captions/sidecar.js';
+import { analyzeStackedOnlineConform } from './conform/analyze.js';
+import { buildEffectCopyPlan, normalizeEffectSnapshots } from './conform/effects.js';
+import type { BuildEffectCopyPlanArgs, RasterDimensions } from './conform/effects.js';
+import { validateStackedConformExecutionPlan } from './conform/executionPlan.js';
+import type { StackedConformExecutionPlanArgs } from './conform/executionPlan.js';
+import { planStackedConformQc } from './conform/qc.js';
+import type { PlanStackedConformQcArgs } from './conform/qc.js';
+import type { MatchField } from './conform/matching.js';
+import { analyzeTimelineCleanup } from './timelineCleanup/analyze.js';
+import { validateTimelineCleanupExecutionPlan } from './timelineCleanup/executionPlan.js';
+import { planTimelineCleanupQc } from './timelineCleanup/qc.js';
+import type { TimelineCleanupAction, TimelineCleanupMode, TimelineCleanupSnapshot } from './timelineCleanup/types.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface MCPTool {
   name: string;
@@ -18,6 +49,7 @@ export interface MCPTool {
 
 type MotionStyle = 'push_in' | 'pull_out' | 'alternate' | 'none';
 type InsertMode = 'overwrite' | 'insert';
+type ClipScaleMode = 'fit' | 'fill' | 'stretch';
 
 interface ClipPlanTransition {
   name?: string;
@@ -74,12 +106,699 @@ interface AssembleProductSpotArgs {
   clipPlan?: ClipPlanStep[];
 }
 
+interface AssembleFromEditPlanArgs {
+  sequenceName: string;
+  assetPaths: string[];
+  clipDuration?: number;
+  videoTrackIndex?: number;
+  transitionName?: string;
+  transitionDuration?: number;
+  clipPlan?: ClipPlanStep[];
+  dryRun?: boolean;
+  includePostcondition?: boolean;
+}
+
 interface BuildBrandSpotArgs extends AssembleProductSpotArgs {
   mogrtPath?: string;
   titleTrackIndex?: number;
   titleStartTime?: number;
   applyDefaultPolish?: boolean;
 }
+
+interface LiveToolSweepSafeArgs {
+  scratchProjectName?: string;
+  scratchProjectDir: string;
+  reportPath?: string;
+  mode?: 'smoke';
+}
+
+interface ListExportPresetsArgs {
+  searchRoots?: string[];
+  includeAdobeDefaults?: boolean;
+  query?: string;
+}
+
+interface ExportPresetInfo {
+  name: string;
+  path: string;
+  source: string;
+  mtimeMs: number;
+  sizeBytes: number;
+}
+
+interface QcRenderedMediaArgs {
+  filePath: string;
+  expectedDurationSeconds?: number;
+  durationToleranceSeconds?: number;
+  minSizeBytes?: number;
+}
+
+interface ScanConformMediaMetadataArgs {
+  projectItemIds?: string[];
+  mediaPaths?: string[];
+  binId?: string;
+  includeOffline?: boolean;
+  includeSequences?: boolean;
+  includeXmp?: boolean;
+  metadataFields?: string[];
+}
+
+interface SnapshotSequenceForConformArgs {
+  sequenceId: string;
+  trackRoles?: {
+    video?: Record<string, 'picture' | 'passthrough' | 'ignore'>;
+    audio?: Record<string, 'audio' | 'ignore'>;
+  };
+  includeEffects?: boolean;
+  includeKeyframes?: boolean;
+  includeDisabled?: boolean;
+}
+
+interface AnalyzeStackedOnlineConformToolArgs {
+  sequenceId?: string;
+  sequenceSnapshot?: any;
+  onlineMedia: any[];
+  sourceTrackIndices?: number[];
+  targetTrackBySourceTrack?: Record<number, number>;
+  matchFields?: MatchField[];
+  toleranceFrames?: number;
+  minConfidence?: number;
+  strictFrameRate?: boolean;
+}
+
+interface CreateStackedOnlineConformSequenceArgs extends StackedConformExecutionPlanArgs {
+  dryRun?: boolean;
+}
+
+interface CopyConformClipEffectsArgs extends Omit<BuildEffectCopyPlanArgs, 'sourceEffects'> {
+  sequenceId?: string;
+  sourceEffects?: unknown[];
+  dryRun?: boolean;
+}
+
+interface QcStackedOnlineConformArgs extends PlanStackedConformQcArgs {
+  dryRun?: boolean;
+}
+
+interface ScanTimelineCleanupStateArgs {
+  sequenceId: string;
+  includeDisabled?: boolean;
+  includeEffects?: boolean;
+  includeKeyframes?: boolean;
+}
+
+interface AnalyzeTimelineCleanupToolArgs {
+  sequenceId?: string;
+  cleanupSnapshot?: TimelineCleanupSnapshot;
+  mode?: TimelineCleanupMode;
+  removeDisabledClips?: boolean;
+  removeFullyCoveredClips?: boolean;
+  organizeGraphics?: boolean;
+}
+
+interface CreateCleanTimelineSequenceArgs {
+  sourceSequenceId: string;
+  cleanSequenceName: string;
+  duplicateSequence?: boolean;
+  allowMutatingSourceSequence?: boolean;
+  analysisId?: string;
+  actions: TimelineCleanupAction[];
+  mode?: TimelineCleanupMode;
+  removeDisabledClips?: boolean;
+  removeFullyCoveredClips?: boolean;
+  organizeGraphics?: boolean;
+  dryRun?: boolean;
+}
+
+interface QcTimelineCleanupArgs {
+  sourceSequenceId: string;
+  cleanSequenceId?: string;
+  outputDir: string;
+  allowedOutputRoot?: string;
+  cleanupResult: any;
+  sampleTimes?: number[];
+  format?: 'png' | 'jpg' | 'tiff';
+  dryRun?: boolean;
+}
+
+interface RemoveCaptionTracksArgs {
+  sequenceId?: string;
+  dryRun?: boolean;
+}
+
+interface DuplicateSequenceWithoutCaptionsArgs {
+  sequenceId: string;
+  newName?: string;
+  dryRun?: boolean;
+}
+
+const nonEmptyStringArraySchema = z.array(z.string().min(1)).min(1);
+
+const captionCueSchema = z.object({
+  start: z.number().finite().min(0).describe('Caption cue start time in seconds.'),
+  end: z.number().finite().min(0).describe('Caption cue end time in seconds.'),
+  text: z.string().describe('Caption cue text. Empty strings are allowed so QC can report them.'),
+  id: z.string().min(1).optional().describe('Optional stable cue identifier.'),
+  index: z.number().finite().int().min(0).optional().describe('Optional zero- or one-based cue index from the source sidecar.')
+}).refine((cue) => cue.end > cue.start, {
+  message: 'end must be greater than start',
+  path: ['end']
+});
+
+const captionCueArraySchema = z.array(captionCueSchema).min(1).describe('Caption cues with start/end seconds and text.');
+const captionSidecarFormatSchema = z.enum(['srt', 'vtt', 'json', 'csv']);
+const premiereCaptionFormatSchema = z.enum(['subtitle', 'cea-608', 'cea-708', 'teletext']).describe('Premiere caption format key. Supported values: subtitle, cea-608, cea-708, teletext.');
+
+const probeNativeTranscriptionCapabilitiesSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to include in native Adobe/Premiere transcription capability diagnostics.'),
+  includeDiagnostics: z.boolean().optional().describe('When true, include extra capability diagnostics where Premiere exposes them. No transcription is started.')
+});
+
+const generateSequenceTranscriptSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID. Defaults to the active sequence when native Premiere transcription support is implemented.'),
+  dryRun: z.boolean().optional().describe('When true, only report the planned native Adobe/Premiere transcription request; no transcript generation should be started.'),
+  poll: z.boolean().optional().describe('When true, later implementation may poll the native Premiere transcription job to completion instead of returning immediately.')
+});
+
+const generateCaptionsFromPremiereTranscriptSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID whose existing native Premiere transcript should be used. Defaults to the active sequence when implemented.'),
+  dryRun: z.boolean().optional().describe('When true, only report the planned native Adobe/Premiere caption-generation request; no captions should be created.'),
+  captionFormat: premiereCaptionFormatSchema.optional(),
+  maxCharsPerLine: z.number().finite().int().positive().optional().describe('Maximum caption characters per line requested from native Premiere caption generation.'),
+  maxLines: z.number().finite().int().positive().optional().describe('Maximum lines per caption requested from native Premiere caption generation.')
+});
+
+const captionsSourceSchema = {
+  captions: captionCueArraySchema.optional(),
+  inputPath: z.string().min(1).optional().describe('Optional caption sidecar input path to read when captions are not supplied inline.'),
+  sequenceId: z.string().min(1).optional().describe('Optional Premiere sequence ID to read existing sequence captions when captions/inputPath are not supplied.')
+};
+
+function hasCaptionSource(value: { captions?: unknown; inputPath?: unknown; sequenceId?: unknown }): boolean {
+  return Boolean(value.captions || value.inputPath || value.sequenceId);
+}
+
+const formatCaptionsSchema = z.object({
+  ...captionsSourceSchema,
+  outputPath: z.string().min(1).optional().describe('Optional output sidecar path for formatted captions.'),
+  format: captionSidecarFormatSchema.optional().describe('Optional output sidecar format.'),
+  overwrite: z.boolean().optional().describe('Whether an existing outputPath may be overwritten.'),
+  maxCharsPerLine: z.number().finite().int().positive().optional().describe('Maximum characters per formatted line.'),
+  maxLines: z.number().finite().int().positive().optional().describe('Maximum lines per formatted caption cue.'),
+  mergeGapSeconds: z.number().finite().min(0).optional().describe('Merge adjacent non-overlapping cues separated by no more than this gap.'),
+  trimWhitespace: z.boolean().optional().describe('Trim and normalize whitespace in caption text.'),
+  splitLongLines: z.boolean().optional().describe('Split long caption text according to maxCharsPerLine/maxLines when possible.')
+}).refine(hasCaptionSource, {
+  message: 'Provide captions, inputPath, or sequenceId',
+  path: ['captions']
+});
+
+const qcCaptionsSchema = z.object({
+  ...captionsSourceSchema,
+  outputPath: z.string().min(1).optional().describe('Optional path for a QC report sidecar.'),
+  format: captionSidecarFormatSchema.optional().describe('Optional input sidecar format when inputPath does not make it obvious.'),
+  overwrite: z.boolean().optional().describe('Whether an existing outputPath may be overwritten.'),
+  maxCharsPerLine: z.number().finite().int().positive().optional().describe('Maximum allowed characters per caption line.'),
+  maxLines: z.number().finite().int().positive().optional().describe('Maximum allowed lines per caption cue.'),
+  minDurationSeconds: z.number().finite().min(0).optional().describe('Minimum allowed cue duration in seconds.'),
+  maxDurationSeconds: z.number().finite().min(0).optional().describe('Maximum allowed cue duration in seconds.'),
+  maxReadingCps: z.number().finite().positive().optional().describe('Maximum reading speed in characters per second.'),
+  allowOverlaps: z.boolean().optional().describe('Whether overlapping caption cues should be allowed.'),
+  requireNonEmptyText: z.boolean().optional().describe('Whether empty/whitespace-only text should be reported as a QC failure.'),
+  bannedTerms: z.array(z.string().min(1)).optional().describe('Terms that should be flagged when present in caption text.'),
+  caseSensitiveBannedTerms: z.boolean().optional().describe('Use case-sensitive banned-term matching.')
+}).refine(hasCaptionSource, {
+  message: 'Provide captions, inputPath, or sequenceId',
+  path: ['captions']
+}).refine((value) =>
+  value.minDurationSeconds === undefined ||
+  value.maxDurationSeconds === undefined ||
+  value.maxDurationSeconds >= value.minDurationSeconds,
+  { message: 'maxDurationSeconds must be greater than or equal to minDurationSeconds', path: ['maxDurationSeconds'] }
+);
+
+const searchCaptionsSchema = z.object({
+  ...captionsSourceSchema,
+  outputPath: z.string().min(1).optional().describe('Optional path for a search results sidecar/report.'),
+  format: captionSidecarFormatSchema.optional().describe('Optional input sidecar format when inputPath does not make it obvious.'),
+  overwrite: z.boolean().optional().describe('Whether an existing outputPath may be overwritten.'),
+  query: z.string().min(1).describe('Search query or regular expression, depending on useRegex.'),
+  useRegex: z.boolean().optional().describe('Treat query as a regular expression.'),
+  caseSensitive: z.boolean().optional().describe('Use case-sensitive search matching.'),
+  contextCues: z.number().finite().int().min(0).optional().describe('Number of neighboring cues to include before and after each hit.')
+}).refine(hasCaptionSource, {
+  message: 'Provide captions, inputPath, or sequenceId',
+  path: ['captions']
+});
+
+const exportCaptionsSchema = z.object({
+  ...captionsSourceSchema,
+  outputPath: z.string().min(1).describe('Required output sidecar path.'),
+  format: captionSidecarFormatSchema.describe('Output caption sidecar format.'),
+  overwrite: z.boolean().optional().describe('Whether an existing outputPath may be overwritten.'),
+  includeMetadata: z.boolean().optional().describe('Whether to include supported metadata in formats that can carry it.')
+}).refine(hasCaptionSource, {
+  message: 'Provide captions, inputPath, or sequenceId',
+  path: ['captions']
+});
+
+const importCaptionsToSequenceSchema = z.object({
+  sequenceId: z.string().min(1).describe('Sequence ID that should receive the imported caption sidecar.'),
+  filePath: z.string().min(1).describe('Caption sidecar file path to import into the sequence.'),
+  startTime: z.number().finite().min(0).optional().describe('Timeline start time in seconds for the imported captions.'),
+  captionFormat: premiereCaptionFormatSchema.optional(),
+  verifyReadback: z.boolean().optional().describe('After import, read back sequence captions to verify the resulting caption clips when supported.')
+});
+
+const removeCaptionTracksSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID. Defaults to the active sequence.'),
+  dryRun: z.boolean().default(true).describe('When true, reports native caption track count without mutating Premiere. Defaults to true.')
+});
+
+const duplicateSequenceWithoutCaptionsSchema = z.object({
+  sequenceId: z.string().min(1).describe('Source sequence ID to duplicate before caption track removal.'),
+  newName: z.string().min(1).optional().describe('Optional name for the duplicated captionless sequence.'),
+  dryRun: z.boolean().default(true).describe('When true, reports the intended duplicate name without touching Premiere. Defaults to true.')
+});
+
+const scanConformMediaMetadataSchema = z.object({
+  projectItemIds: nonEmptyStringArraySchema.optional().describe('Project item IDs to scan. Omit to scan project/bin media.'),
+  mediaPaths: nonEmptyStringArraySchema.optional().describe('Absolute media paths to match against imported project items.'),
+  binId: z.string().min(1).optional().describe('Optional bin project item ID to scan recursively.'),
+  includeOffline: z.boolean().optional().describe('Whether to include offline media in the scan. Defaults to false.'),
+  includeSequences: z.boolean().optional().describe('Whether to include sequence project items. Defaults to false.'),
+  includeXmp: z.boolean().optional().describe('Whether to include raw XMP metadata in diagnostics. Defaults to false.'),
+  metadataFields: nonEmptyStringArraySchema.optional().describe('Optional metadata field names to highlight in the raw metadata summary.')
+});
+
+const snapshotSequenceForConformSchema = z.object({
+  sequenceId: z.string().min(1).describe('Sequence ID to snapshot. Required; this tool does not silently fall back to the active sequence.'),
+  trackRoles: z.object({
+    video: z.record(z.enum(['picture', 'passthrough', 'ignore'])).optional(),
+    audio: z.record(z.enum(['audio', 'ignore'])).optional()
+  }).optional().describe('Explicit track roles by zero-based track index.'),
+  includeEffects: z.boolean().optional().describe('Whether to include effect/property summaries. Defaults to true.'),
+  includeKeyframes: z.boolean().optional().describe('Whether to include keyframe summaries where available. Defaults to false for safety/performance.'),
+  includeDisabled: z.boolean().optional().describe('Whether disabled clips should be included. Defaults to true.')
+});
+
+const analyzeStackedOnlineConformSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Sequence ID to snapshot before analysis when sequenceSnapshot is not provided.'),
+  sequenceSnapshot: z.any().optional().describe('Read-only sequence snapshot from snapshot_sequence_for_conform. Supplying this avoids a Premiere bridge call.'),
+  onlineMedia: z.array(z.any()).min(1).describe('Normalized online media records from scan_conform_media_metadata or caller-provided metadata.'),
+  sourceTrackIndices: z.array(z.number().int().min(0)).optional().describe('Offline picture track indices to conform. Defaults to picture-role video tracks.'),
+  targetTrackBySourceTrack: z.record(z.number().int().min(0)).optional().describe('Optional explicit upper video-track mapping by source track index.'),
+  matchFields: z.array(z.enum(['reelName', 'startTimecode', 'duration', 'filename'])).optional().describe('Fields to use for candidate scoring.'),
+  toleranceFrames: z.number().int().min(0).optional().describe('Frame tolerance for source range and duration matching.'),
+  minConfidence: z.number().min(0).max(1).optional().describe('Minimum confidence required to create a safe placement.'),
+  strictFrameRate: z.boolean().optional().describe('When true, frame-rate mismatches are rejected as unsafe.')
+}).refine((value) => Boolean(value.sequenceId || value.sequenceSnapshot), {
+  message: 'Either sequenceId or sequenceSnapshot is required',
+  path: ['sequenceId']
+});
+
+const stackedConformPlacementSchema = z.object({
+  offlineClipId: z.string().min(1).describe('Offline source timeline clip ID from the conform snapshot/analyzer.'),
+  onlineProjectItemId: z.string().min(1).describe('Online media project item ID to stack above the offline edit.'),
+  sourceTrackIndex: z.number().int().min(0).describe('Offline source video track index.'),
+  targetTrackIndex: z.number().int().min(0).describe('Upper video track index where the online clip should be placed.'),
+  startTime: z.number().min(0).describe('Timeline start time in seconds.'),
+  sourceInPoint: z.number().min(0).describe('Online media source in point in seconds.'),
+  sourceOutPoint: z.number().min(0).describe('Online media source out point in seconds.'),
+  duration: z.number().positive().describe('Timeline duration in seconds.'),
+  safeToPlace: z.literal(true).describe('Analyzer safety gate; only true placements can be executed.')
+}).refine((placement) => placement.sourceOutPoint > placement.sourceInPoint, {
+  message: 'sourceOutPoint must be greater than sourceInPoint',
+  path: ['sourceOutPoint'],
+});
+
+const createStackedOnlineConformSequenceSchema = z.object({
+  sourceSequenceId: z.string().min(1).describe('Offline/source sequence ID to duplicate before stacking online clips.'),
+  conformSequenceName: z.string().min(1).describe('Name for the duplicated online conform sequence.'),
+  placementPlan: z.array(stackedConformPlacementSchema).min(1).describe('Safe placementPlan items from analyze_stacked_online_conform.'),
+  existingVideoTrackCount: z.number().int().min(0).optional().describe('Optional count of video tracks in the source sequence before conform execution; when provided, target tracks must be newly created above this count.'),
+  duplicateSequence: z.boolean().default(true).describe('Must remain true for non-destructive conform execution.'),
+  allowMutatingSourceSequence: z.boolean().optional().describe('Deprecated escape hatch; rejected by validation for non-destructive conform execution.'),
+  dryRun: z.boolean().default(true).describe('When true, validates and returns operations without mutating Premiere. Defaults to true.')
+});
+
+const rasterDimensionsSchema = z.object({
+  width: z.number().positive(),
+  height: z.number().positive()
+});
+
+const copyConformClipEffectsSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Sequence ID containing both source and target clips.'),
+  sourceClipId: z.string().min(1).describe('Offline/source timeline clip ID whose supported effects should be copied.'),
+  targetClipId: z.string().min(1).describe('Online stacked timeline clip ID that receives supported effects.'),
+  sourceEffects: z.array(z.any()).optional().describe('Optional effect snapshot from snapshot_sequence_for_conform. Required for dry-run planning without bridge access.'),
+  offlineSourceRaster: rasterDimensionsSchema.optional().describe('Offline media source raster for resolution-aware Motion conversion.'),
+  onlineSourceRaster: rasterDimensionsSchema.optional().describe('Online media source raster for resolution-aware Motion conversion.'),
+  supportedComponents: z.array(z.string().min(1)).optional().describe('Supported component display names. Defaults to Motion, Opacity, and Crop.'),
+  dryRun: z.boolean().default(true).describe('When true, returns the copy plan without mutating Premiere. Defaults to true.')
+});
+
+const qcStackedOnlineComparisonSchema = z.object({
+  offlineClipId: z.string().min(1),
+  onlineClipId: z.string().min(1).optional(),
+  sourceTrackIndex: z.number().int().min(0),
+  targetTrackIndex: z.number().int().min(0),
+  startTime: z.number().min(0),
+  duration: z.number().positive(),
+  actualStartTime: z.number().min(0).optional().describe('Observed online clip start time for structural QC drift reporting.'),
+  actualDuration: z.number().positive().optional().describe('Observed online clip duration for structural QC drift reporting.'),
+  expectedSourceInPoint: z.number().min(0).optional().describe('Expected online source in-point in seconds.'),
+  actualSourceInPoint: z.number().min(0).optional().describe('Observed online source in-point in seconds.'),
+  expectedSourceOutPoint: z.number().min(0).optional().describe('Expected online source out-point in seconds.'),
+  actualSourceOutPoint: z.number().min(0).optional().describe('Observed online source out-point in seconds.'),
+  unsupportedEffects: z.array(z.string().min(1)).optional().describe('Unsupported effect/component names carried forward from conform effect-copy planning.')
+});
+
+const qcStackedOnlineConformSchema = z.object({
+  sequenceId: z.string().min(1).describe('Stacked conform sequence ID to QC.'),
+  outputDir: z.string().min(1).describe('Directory where paired QC frame exports should be written.'),
+  allowedOutputRoot: z.string().min(1).optional().describe('Optional containment root; outputDir must resolve inside this directory before live QC export can run.'),
+  comparisons: z.array(qcStackedOnlineComparisonSchema).min(1).describe('Offline/online clip pairs to compare.'),
+  sampleOffsets: z.array(z.number().min(0).max(1)).optional().describe('Normalized offsets inside each clip duration. Defaults to midpoint [0.5].'),
+  format: z.enum(['png', 'jpg', 'tiff']).optional().describe('QC frame format. Defaults to png.'),
+  dryRun: z.boolean().default(true).describe('When true, returns a frame-export plan without touching Premiere. Defaults to true.')
+});
+
+const timelineCleanupModeSchema = z.enum(['conservative', 'visual_noop', 'organize_only']);
+const timelineCleanupClassificationSchema = z.enum(['safe_remove', 'safe_reorganize', 'preserve_visual_dependency', 'manual_review', 'unsupported']);
+const timelineCleanupTrackTypeSchema = z.enum(['video', 'audio']);
+
+const scanTimelineCleanupStateSchema = z.object({
+  sequenceId: z.string().min(1).describe('Sequence ID to scan. Required; no silent active-sequence fallback for cleanup safety.'),
+  includeDisabled: z.boolean().optional().describe('Include disabled timeline clips in the dependency audit. Defaults to true.'),
+  includeEffects: z.boolean().optional().describe('Inspect clip components/effects for masks, mattes, blend, opacity, and unsupported dependencies. Defaults to true.'),
+  includeKeyframes: z.boolean().optional().describe('Attempt keyframe/dependency detection on effect properties where supported. Defaults to false.')
+});
+
+const analyzeTimelineCleanupSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Sequence ID to scan before analysis when cleanupSnapshot is not provided.'),
+  cleanupSnapshot: z.any().optional().describe('Read-only result from scan_timeline_cleanup_state. Supplying this avoids a Premiere bridge call.'),
+  mode: timelineCleanupModeSchema.optional().describe('Cleanup mode. conservative preserves uncertain items; visual_noop permits explicit visual-noop removals; organize_only plans supported organization only.'),
+  removeDisabledClips: z.boolean().optional().describe('Only effective in visual_noop mode. Defaults to false; disabled clips are preserved/manual-review by default.'),
+  removeFullyCoveredClips: z.boolean().optional().describe('Only effective in visual_noop mode when upper coverage is proven opaque/full-frame/dependency-free. Defaults to false.'),
+  organizeGraphics: z.boolean().optional().describe('Plan graphic/title organization only when analyzer can prove it is safe. Defaults to false.')
+}).refine((value) => Boolean(value.sequenceId || value.cleanupSnapshot), {
+  message: 'Either sequenceId or cleanupSnapshot is required',
+  path: ['sequenceId']
+});
+
+const timelineCleanupActionSchema = z.union([
+  z.object({
+    type: z.literal('removeClip'),
+    clipId: z.string().min(1),
+    trackType: timelineCleanupTrackTypeSchema,
+    trackIndex: z.number().int().min(0),
+    classification: timelineCleanupClassificationSchema,
+    reason: z.string().min(1)
+  }),
+  z.object({
+    type: z.literal('removeTrack'),
+    trackType: timelineCleanupTrackTypeSchema,
+    trackIndex: z.number().int().min(0),
+    classification: timelineCleanupClassificationSchema,
+    reason: z.string().min(1)
+  }),
+  z.object({
+    type: z.literal('reorganizeClip'),
+    clipId: z.string().min(1),
+    trackType: timelineCleanupTrackTypeSchema,
+    trackIndex: z.number().int().min(0),
+    targetTrackIndex: z.number().int().min(0).optional(),
+    targetTrackName: z.string().min(1).optional(),
+    classification: timelineCleanupClassificationSchema,
+    reason: z.string().min(1)
+  })
+]);
+
+const createCleanTimelineSequenceSchema = z.object({
+  sourceSequenceId: z.string().min(1).describe('Source sequence ID to duplicate before any cleanup mutation.'),
+  cleanSequenceName: z.string().min(1).describe('Name for the duplicated clean/organized sequence.'),
+  duplicateSequence: z.boolean().default(true).describe('Must be true for non-destructive timeline cleanup.'),
+  allowMutatingSourceSequence: z.boolean().optional().describe('Unsupported; cleanup always duplicates first.'),
+  analysisId: z.string().min(1).optional().describe('Required for live execution: analysis ID returned by analyze_timeline_cleanup.'),
+  actions: z.array(timelineCleanupActionSchema).describe('Executable safe_remove/safe_reorganize actions returned by analyze_timeline_cleanup.'),
+  mode: timelineCleanupModeSchema.optional().describe('Cleanup mode used for the prior analysis. Live execution re-scans and re-analyzes with this mode before mutating.'),
+  removeDisabledClips: z.boolean().optional().describe('Must match the prior analysis option for live execution.'),
+  removeFullyCoveredClips: z.boolean().optional().describe('Must match the prior analysis option for live execution.'),
+  organizeGraphics: z.boolean().optional().describe('Must match the prior analysis option for live execution.'),
+  dryRun: z.boolean().default(true).describe('When true, validates and returns operations without mutating Premiere. Defaults to true.')
+});
+
+const qcTimelineCleanupSchema = z.object({
+  sourceSequenceId: z.string().min(1).describe('Original/source sequence ID for before/after QC.'),
+  cleanSequenceId: z.string().min(1).optional().describe('Duplicated clean sequence ID. Required directly or via cleanupResult.cleanSequenceId.'),
+  outputDir: z.string().min(1).describe('Directory where before/after QC frames should be written.'),
+  allowedOutputRoot: z.string().min(1).optional().describe('Required for live exports; outputDir must resolve inside this root.'),
+  cleanupResult: z.any().describe('Result from create_clean_timeline_sequence, including actionsApplied/preservedItems for structural QC.'),
+  sampleTimes: z.array(z.number().finite().min(0)).optional().describe('Absolute timeline sample times in seconds. Defaults to [0].'),
+  format: z.enum(['png', 'jpg', 'tiff']).optional().describe('QC frame format. Defaults to png.'),
+  dryRun: z.boolean().default(true).describe('When true, returns a frame-export plan without touching Premiere. Defaults to true.')
+});
+
+interface SetEffectParameterArgs {
+  clipId: string;
+  sequenceId?: string;
+  componentName?: string;
+  componentMatchName?: string;
+  componentIndex?: number;
+  propertyName?: string;
+  propertyMatchName?: string;
+  propertyIndex?: number;
+  value: any;
+}
+
+interface BatchClipPropertyOperation {
+  label: string;
+  componentName: string;
+  propertyName?: string;
+  propertyIndex?: number;
+  value: any;
+}
+
+interface BatchClipPropertiesArgs {
+  clipId: string;
+  sequenceId?: string;
+  properties: {
+    opacity?: number;
+    blendMode?: number;
+    blendModePropertyIndex?: number;
+    scale?: number;
+    scaleWidth?: number;
+    uniformScale?: boolean;
+    position?: { x: number; y: number };
+    rotation?: number;
+    anchorPoint?: { x: number; y: number };
+    antiFlickerFilter?: number;
+    crop?: {
+      left?: number;
+      top?: number;
+      right?: number;
+      bottom?: number;
+    };
+    speed?: {
+      percent: number;
+      maintainAudioPitch?: boolean;
+    };
+  };
+}
+
+interface SetClipScaleModeArgs {
+  clipId: string;
+  sequenceId?: string;
+  mode: ClipScaleMode;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  sequenceWidth?: number;
+  sequenceHeight?: number;
+}
+
+interface SetClipSpeedSettingsArgs {
+  clipId: string;
+  sequenceId?: string;
+  sourceInPointSeconds?: number;
+  sourceOutPointSeconds?: number;
+  sourceDurationSeconds?: number;
+  speedPercent?: number;
+  maintainAudioPitch?: boolean;
+}
+
+interface ClipTimeRemapKeyframe {
+  timeSeconds: number;
+  speedPercent: number;
+}
+
+interface SetClipTimeRemapSettingsArgs {
+  clipId: string;
+  sequenceId?: string;
+  staticSpeedPercent?: number;
+  keyframes?: ClipTimeRemapKeyframe[];
+}
+
+const setEffectParameterSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
+  componentName: z.string().min(1).optional().describe('Component/effect display name, e.g. "Motion" or "Opacity"'),
+  componentMatchName: z.string().min(1).optional().describe('Component/effect matchName, e.g. "AE.ADBE Motion"'),
+  componentIndex: z.number().int().min(0).optional().describe('Component/effect index from list_clip_effects'),
+  propertyName: z.string().min(1).optional().describe('Property display name, e.g. "Scale" or "Opacity"'),
+  propertyMatchName: z.string().min(1).optional().describe('Property matchName from list_clip_effects'),
+  propertyIndex: z.number().int().min(0).optional().describe('Property index within the selected component'),
+  value: z.any().refine((value) => value !== undefined, { message: 'value is required' }).describe('Value to write with Premiere property.setValue')
+}).refine((args) =>
+  args.componentName !== undefined || args.componentMatchName !== undefined || args.componentIndex !== undefined,
+  { message: 'Provide componentName, componentMatchName, or componentIndex' }
+).refine((args) =>
+  args.propertyName !== undefined || args.propertyMatchName !== undefined || args.propertyIndex !== undefined,
+  { message: 'Provide propertyName, propertyMatchName, or propertyIndex' }
+);
+
+const setClipOpacitySchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
+  opacity: z.number().finite().min(0).max(100).describe('Opacity percentage to set, from 0 to 100')
+});
+
+const setClipBlendModeSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
+  blendMode: z.number().finite().int().min(0).describe('Numeric Opacity > Blend Mode value. Use list_clip_effects to inspect current values; Premiere exposes blend modes as numbers through ExtendScript.'),
+  blendModePropertyIndex: z.number().finite().int().min(1).optional().describe('Component property index for Opacity > Blend Mode. Defaults to 1, the first Blend Mode property after Opacity in Premiere 2026.')
+});
+
+const setClipScaleSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
+  scale: z.number().finite().min(0).describe('Motion scale percentage to set. 100 preserves source size; values above 100 zoom in.')
+});
+
+const clipScaleModeSchema = z.enum(['fit', 'fill', 'stretch']);
+
+const setClipScaleModeSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. Required for predictable edits when clip IDs came from a non-active sequence.'),
+  mode: clipScaleModeSchema.describe('Scale mode to apply: fit preserves the whole source, fill covers the sequence, stretch uses non-uniform width/height scaling.'),
+  sourceWidth: z.number().finite().positive().optional().describe('Source media width in pixels. Required for computation; omitted dimensions return supported:false without mutating.'),
+  sourceHeight: z.number().finite().positive().optional().describe('Source media height in pixels. Required for computation; omitted dimensions return supported:false without mutating.'),
+  sequenceWidth: z.number().finite().positive().optional().describe('Target sequence width in pixels. Required for computation; omitted dimensions return supported:false without mutating.'),
+  sequenceHeight: z.number().finite().positive().optional().describe('Target sequence height in pixels. Required for computation; omitted dimensions return supported:false without mutating.')
+});
+
+const setClipPositionSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
+  x: z.number().finite().describe('Motion position X value. Premiere may expose this as a normalized coordinate for the current sequence/clip.'),
+  y: z.number().finite().describe('Motion position Y value. Premiere may expose this as a normalized coordinate for the current sequence/clip.')
+});
+
+const clipPointSchema = z.object({
+  x: z.number().finite().describe('X value. Premiere may expose Motion coordinates as normalized values.'),
+  y: z.number().finite().describe('Y value. Premiere may expose Motion coordinates as normalized values.')
+});
+
+const clipCropSchema = z.object({
+  left: z.number().finite().min(0).max(100).optional().describe('Crop Left percentage'),
+  top: z.number().finite().min(0).max(100).optional().describe('Crop Top percentage'),
+  right: z.number().finite().min(0).max(100).optional().describe('Crop Right percentage'),
+  bottom: z.number().finite().min(0).max(100).optional().describe('Crop Bottom percentage')
+}).refine((crop) =>
+  crop.left !== undefined || crop.top !== undefined || crop.right !== undefined || crop.bottom !== undefined,
+  { message: 'Provide at least one crop side' }
+);
+
+const batchClipPropertyValuesSchema = z.object({
+  opacity: z.number().finite().min(0).max(100).optional().describe('Opacity percentage to set, from 0 to 100'),
+  blendMode: z.number().finite().int().min(0).optional().describe('Numeric Opacity > Blend Mode value. Use list_clip_effects to inspect current values.'),
+  blendModePropertyIndex: z.number().finite().int().min(1).optional().describe('Which duplicated Opacity > Blend Mode property index to set. Defaults to 1.'),
+  scale: z.number().finite().min(0).optional().describe('Motion > Scale percentage'),
+  scaleWidth: z.number().finite().min(0).optional().describe('Motion > Scale Width percentage for non-uniform scaling'),
+  uniformScale: z.boolean().optional().describe('Motion > Uniform Scale toggle'),
+  position: clipPointSchema.optional().describe('Motion > Position X/Y value'),
+  rotation: z.number().finite().optional().describe('Motion > Rotation degrees'),
+  anchorPoint: clipPointSchema.optional().describe('Motion > Anchor Point X/Y value'),
+  antiFlickerFilter: z.number().finite().min(0).optional().describe('Motion > Anti-flicker Filter value'),
+  crop: clipCropSchema.optional().describe('Motion crop percentages'),
+  speed: z.object({
+    percent: z.number().finite().positive().describe('Positive QE clip speed percentage to attempt. 100 is normal speed; 50 is half speed. Use reverse_clip for reverse playback until reverse-speed behavior is live-verified.'),
+    maintainAudioPitch: z.boolean().optional().describe('Whether to maintain audio pitch. Defaults to true.')
+  }).optional().describe('Optional clip speed settings applied through QE DOM after component properties')
+}).refine((properties) => properties.blendMode !== undefined || properties.blendModePropertyIndex === undefined, {
+  message: 'blendModePropertyIndex requires blendMode'
+}).refine((properties) =>
+  properties.opacity !== undefined ||
+  properties.blendMode !== undefined ||
+  properties.scale !== undefined ||
+  properties.scaleWidth !== undefined ||
+  properties.uniformScale !== undefined ||
+  properties.position !== undefined ||
+  properties.rotation !== undefined ||
+  properties.anchorPoint !== undefined ||
+  properties.antiFlickerFilter !== undefined ||
+  properties.crop !== undefined ||
+  properties.speed !== undefined,
+  { message: 'Provide at least one clip property to set' }
+);
+
+const batchSetClipPropertiesSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. Required for predictable edits when clip IDs came from a non-active sequence.'),
+  properties: batchClipPropertyValuesSchema.describe('Clip properties to set in one bridge roundtrip')
+});
+
+const setClipSpeedSettingsSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. Required for predictable edits when clip IDs came from a non-active sequence.'),
+  sourceInPointSeconds: z.number().finite().min(0).optional().describe('Optional source in point in seconds, assigned through a Premiere Time object.'),
+  sourceOutPointSeconds: z.number().finite().min(0).optional().describe('Optional source out point in seconds, assigned through a Premiere Time object.'),
+  sourceDurationSeconds: z.number().finite().positive().optional().describe('Optional source duration in seconds. Sets source out point to source in point plus this duration.'),
+  speedPercent: z.number().finite().positive().optional().describe('Optional positive QE speed percentage to attempt. 100 is normal speed. Use reverse_clip for reverse playback until reverse-speed behavior is live-verified.'),
+  maintainAudioPitch: z.boolean().optional().describe('Whether to maintain audio pitch for speed attempts. Defaults to true.')
+}).refine((settings) =>
+  settings.sourceInPointSeconds !== undefined ||
+  settings.sourceOutPointSeconds !== undefined ||
+  settings.sourceDurationSeconds !== undefined ||
+  settings.speedPercent !== undefined,
+  { message: 'Provide sourceInPointSeconds, sourceOutPointSeconds, sourceDurationSeconds, or speedPercent' }
+).refine((settings) =>
+  settings.sourceDurationSeconds === undefined || settings.sourceOutPointSeconds === undefined,
+  { message: 'sourceDurationSeconds and sourceOutPointSeconds are mutually exclusive' }
+).refine((settings) =>
+  settings.sourceInPointSeconds === undefined ||
+  settings.sourceOutPointSeconds === undefined ||
+  settings.sourceInPointSeconds < settings.sourceOutPointSeconds,
+  { message: 'sourceInPointSeconds must be less than sourceOutPointSeconds' }
+).refine((settings) =>
+  settings.maintainAudioPitch === undefined || settings.speedPercent !== undefined,
+  { message: 'maintainAudioPitch requires speedPercent' }
+);
+
+const clipTimeRemapKeyframeSchema = z.object({
+  timeSeconds: z.number().finite().min(0).describe('Keyframe time in seconds for Premiere component keyframing.'),
+  speedPercent: z.number().finite().positive().describe('Positive Time Remapping > Speed percentage. Use reverse_clip for reverse playback until reverse time-remap behavior is live-verified.')
+});
+
+const setClipTimeRemapSettingsSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. Required for predictable edits when clip IDs came from a non-active sequence.'),
+  staticSpeedPercent: z.number().finite().positive().optional().describe('Optional positive Time Remapping > Speed percentage to set if Premiere exposes the property.'),
+  keyframes: z.array(clipTimeRemapKeyframeSchema).min(1).optional().describe('Optional ascending Time Remapping > Speed keyframes to set if Premiere exposes the property.')
+}).refine((settings) =>
+  settings.staticSpeedPercent !== undefined || settings.keyframes !== undefined,
+  { message: 'Provide staticSpeedPercent or keyframes' }
+).refine((settings) => {
+  const keyframes = settings.keyframes;
+  if (keyframes === undefined) return true;
+  for (let i = 1; i < keyframes.length; i++) {
+    const current = keyframes[i];
+    const previous = keyframes[i - 1];
+    if (current === undefined || previous === undefined || current.timeSeconds <= previous.timeSeconds) return false;
+  }
+  return true;
+}, { message: 'keyframes must be in strictly increasing timeSeconds order' });
 
 const motionStyleSchema = z.enum(['push_in', 'pull_out', 'alternate', 'none']);
 
@@ -119,6 +838,36 @@ const clipPlanSchema = z.object({
   }).optional()
 });
 
+const assembleFromEditPlanSchema = z.object({
+  sequenceName: z.string().min(1).describe('Name for the new sequence'),
+  assetPaths: z.array(z.string().min(1)).min(1).describe('Absolute paths to video or image assets in edit-plan order'),
+  clipDuration: z.number().finite().positive().optional().describe('Default placement duration in seconds for omitted clipPlan times. Defaults to 4.0.'),
+  videoTrackIndex: z.number().int().min(0).optional().describe('Default video track index. Defaults to 0.'),
+  transitionName: z.string().optional().describe('Default transition when clipPlan does not override it.'),
+  transitionDuration: z.number().finite().min(0).optional().describe('Transition duration in seconds. Defaults to 0.5.'),
+  clipPlan: z.array(clipPlanSchema).optional().describe('Optional explicit edit plan. Each step can override timing, track, transition, motion, trim, effects, and color.'),
+  dryRun: z.boolean().optional().describe('When true, returns the normalized plan without touching Premiere.'),
+  includePostcondition: z.boolean().optional().describe('When true, attaches a list_sequence_tracks postcondition after assembly. Defaults to true.')
+});
+
+type CaptionSidecarFormat = z.infer<typeof captionSidecarFormatSchema>;
+type PremiereCaptionFormat = z.infer<typeof premiereCaptionFormatSchema>;
+
+interface CaptionSourceArgs {
+  captions?: CaptionEntry[];
+  inputPath?: string;
+  sequenceId?: string;
+  format?: CaptionSidecarFormat;
+}
+
+interface LoadedCaptionSource {
+  captions: CaptionEntry[];
+  source: 'inline' | 'sidecar' | 'sequence';
+  inputPath?: string;
+  sequenceId?: string;
+  format?: CaptionSidecarFormat;
+}
+
 export class PremiereProTools {
   private bridge: PremiereProTransport;
   private logger: Logger;
@@ -131,6 +880,28 @@ export class PremiereProTools {
   getAvailableTools(): MCPTool[] {
     return [
       // Discovery Tools (NEW)
+      {
+        name: 'test_connection',
+        description: 'Fast smoke test for the Premiere bridge. Returns Premiere version, active project, active sequence, and round-trip status without mutating the project.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'bridge_health_report',
+        description: 'Non-mutating diagnostics for the Premiere bridge: temp directory, stale command/response files, Premiere install, CEP extension paths, and live round-trip status.',
+        inputSchema: z.object({
+          staleAfterSeconds: z.number().int().min(1).optional().describe('Age in seconds after which command/response files are considered stale. Defaults to 300.')
+        })
+      },
+      {
+        name: 'live_tool_sweep_safe',
+        description: 'Creates a disposable scratch Premiere project, runs a bounded live tool sweep inside that project, and writes a JSON report. Use instead of broad live sweeps on working projects.',
+        inputSchema: z.object({
+          scratchProjectName: z.string().optional().describe('Optional scratch project name. Defaults to a timestamped Premiere MCP Safe Sweep name. Must be a plain file name, not a path.'),
+          scratchProjectDir: z.string().min(1).describe('Required directory where the disposable scratch project will be created. This is the containment root for the project and report.'),
+          reportPath: z.string().optional().describe('Optional JSON report output path. Relative paths resolve inside scratchProjectDir; absolute paths must also stay inside scratchProjectDir.'),
+          mode: z.enum(['smoke']).optional().describe('Sweep breadth. P0 supports smoke only: create the scratch project, verify bridge connectivity, and run read-only inventory checks. Defaults to smoke.')
+        })
+      },
       {
         name: 'list_project_items',
         description: 'Lists all media items, bins, and assets in the current Premiere Pro project. Use this to discover available media before performing operations.',
@@ -146,9 +917,9 @@ export class PremiereProTools {
       },
       {
         name: 'list_sequence_tracks',
-        description: 'Lists all video and audio tracks in a specific sequence with their properties and clips.',
+        description: 'Lists all video and audio tracks in a sequence with their properties and clips. If sequenceId is provided it must resolve; otherwise the active sequence is used.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to list tracks for')
+          sequenceId: z.string().optional().describe('Optional sequence ID to list tracks for. If provided and not found, the tool fails instead of falling back to the active sequence.')
         })
       },
       {
@@ -176,6 +947,11 @@ export class PremiereProTools {
           motionStyle: motionStyleSchema.optional().describe('Fallback motion style when clipPlan does not override it. Defaults to "alternate" in template mode.'),
           clipPlan: z.array(clipPlanSchema).optional().describe('Optional explicit edit plan. When provided, each step can override timing, track, transition, motion, trim, effects, and color.')
         })
+      },
+      {
+        name: 'assemble_from_edit_plan',
+        description: 'Generic edit-plan assembly wrapper around assemble_product_spot. Supports dry-run plan normalization and optional list_sequence_tracks postcondition after assembly.',
+        inputSchema: assembleFromEditPlanSchema
       },
       {
         name: 'build_brand_spot_from_mogrt_and_assets',
@@ -273,11 +1049,11 @@ export class PremiereProTools {
         description: 'Creates a new sequence in the project. A sequence is a timeline where you edit clips.',
         inputSchema: z.object({
           name: z.string().describe('The name for the new sequence'),
-          presetPath: z.string().optional().describe('Optional path to a sequence preset file for custom settings'),
-          width: z.number().optional().describe('Sequence width in pixels'),
-          height: z.number().optional().describe('Sequence height in pixels'),
-          frameRate: z.number().optional().describe('Frame rate (e.g., 24, 25, 30, 60)'),
-          sampleRate: z.number().optional().describe('Audio sample rate (e.g., 48000)')
+          presetPath: z.string().optional().describe('Currently unsupported by Premiere ExtendScript createNewSequence; rejected to avoid opening native New Sequence dialog'),
+          width: z.number().optional().describe('Currently unsupported during create_sequence; use set_sequence_settings/duplicate templates after creation where live-verified'),
+          height: z.number().optional().describe('Currently unsupported during create_sequence; use set_sequence_settings/duplicate templates after creation where live-verified'),
+          frameRate: z.number().optional().describe('Currently unsupported during create_sequence; use set_sequence_settings/duplicate templates after creation where live-verified'),
+          sampleRate: z.number().optional().describe('Currently unsupported during create_sequence; use set_sequence_settings/duplicate templates after creation where live-verified')
         })
       },
       {
@@ -365,6 +1141,59 @@ export class PremiereProTools {
           effectName: z.string().describe('The name of the effect to apply (e.g., "Gaussian Blur", "Lumetri Color")'),
           parameters: z.record(z.any()).optional().describe('Key-value pairs for the effect\'s parameters')
         })
+      },
+      {
+        name: 'list_clip_effects',
+        description: 'Lists components/effects applied to a timeline clip, including component match names and best-effort property values. Pass sequenceId when the clip ID came from a non-active sequence.',
+        inputSchema: z.object({
+          clipId: z.string().min(1).describe('The ID of the timeline clip to inspect'),
+          sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.')
+        })
+      },
+      {
+        name: 'set_effect_parameter',
+        description: 'Sets an existing clip component/effect property by component and property name, matchName, or index. Use list_clip_effects first to discover selectors.',
+        inputSchema: setEffectParameterSchema
+      },
+      {
+        name: 'set_clip_opacity',
+        description: 'Sets a timeline clip opacity percentage (0-100) via the built-in Opacity component. Pass sequenceId for clips outside the active sequence.',
+        inputSchema: setClipOpacitySchema
+      },
+      {
+        name: 'set_clip_blend_mode',
+        description: 'Sets a timeline clip Opacity > Blend Mode numeric value. Use list_clip_effects first to inspect current Blend Mode values; defaults to property index 1 because Premiere exposes duplicate Blend Mode properties.',
+        inputSchema: setClipBlendModeSchema
+      },
+      {
+        name: 'set_clip_scale',
+        description: 'Sets a timeline clip Motion > Scale percentage. Pass sequenceId for clips outside the active sequence.',
+        inputSchema: setClipScaleSchema
+      },
+      {
+        name: 'set_clip_scale_mode',
+        description: 'Computes and applies Motion scaling for fit, fill, or non-uniform stretch from explicit source and sequence dimensions. Returns supported:false without mutating when dimensions are missing.',
+        inputSchema: setClipScaleModeSchema
+      },
+      {
+        name: 'set_clip_position',
+        description: 'Sets a timeline clip Motion > Position using X/Y values. Premiere may expose these as normalized coordinates; use list_clip_effects first to inspect current values. Pass sequenceId for clips outside the active sequence.',
+        inputSchema: setClipPositionSchema
+      },
+      {
+        name: 'batch_set_clip_properties',
+        description: 'Sets multiple clip properties in one bridge roundtrip: opacity, Opacity > Blend Mode, Motion scale/scale width/uniform scale/position/rotation/anchor/anti-flicker/crop, and optional positive QE speed percent. Uses preflight checks before mutating component properties. Use reverse_clip for reverse playback.',
+        inputSchema: batchSetClipPropertiesSchema
+      },
+      {
+        name: 'set_clip_speed_settings',
+        description: 'Sets live-supported clip source timing controls (source in/out/duration via Premiere Time objects) and optionally attempts positive QE speed percent with explicit success/error reporting. Use reverse_clip for reverse playback and this instead of legacy speed_change.',
+        inputSchema: setClipSpeedSettingsSchema
+      },
+      {
+        name: 'set_clip_time_remap_settings',
+        description: 'Sets Time Remapping > Speed static values/keyframes only when Premiere exposes a real Time Remapping component property; otherwise returns supported:false without mutating. Use reverse_clip for reverse playback.',
+        inputSchema: setClipTimeRemapSettingsSchema
       },
       {
         name: 'add_transition',
@@ -504,6 +1333,25 @@ export class PremiereProTools {
           format: z.enum(['mp4', 'mov', 'avi', 'h264', 'prores']).optional().describe('The export format or codec'),
           quality: z.enum(['low', 'medium', 'high', 'maximum']).optional().describe('Export quality setting'),
           resolution: z.string().optional().describe('Export resolution (e.g., "1920x1080", "3840x2160")')
+        })
+      },
+      {
+        name: 'list_export_presets',
+        description: 'Lists .epr export presets from common Adobe/AME preset folders and optional filesystem roots without contacting Premiere.',
+        inputSchema: z.object({
+          searchRoots: z.array(z.string().min(1)).optional().describe('Additional directories or .epr files to scan for export presets.'),
+          includeAdobeDefaults: z.boolean().optional().default(true).describe('Whether to include common macOS Adobe/AME preset directories. Defaults to true.'),
+          query: z.string().optional().describe('Optional case-insensitive filter matched against preset name or path.')
+        })
+      },
+      {
+        name: 'qc_rendered_media',
+        description: 'Checks a rendered media file on disk using stat and ffprobe when available; does not contact Premiere.',
+        inputSchema: z.object({
+          filePath: z.string().min(1).describe('Path to the rendered media file to inspect.'),
+          expectedDurationSeconds: z.number().finite().min(0).optional().describe('Optional expected duration in seconds.'),
+          durationToleranceSeconds: z.number().finite().min(0).optional().describe('Allowed duration difference in seconds. Defaults to 0.5.'),
+          minSizeBytes: z.number().int().min(0).optional().describe('Minimum acceptable file size in bytes. Defaults to 1.')
         })
       },
       {
@@ -686,6 +1534,56 @@ export class PremiereProTools {
           clipId: z.string().describe('The ID of the clip'),
           sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.')
         })
+      },
+      {
+        name: 'scan_conform_media_metadata',
+        description: 'Read-only conform diagnostic: scans project/bin media metadata into normalized reel/timecode/raster records for offline-to-online matching.',
+        inputSchema: scanConformMediaMetadataSchema
+      },
+      {
+        name: 'snapshot_sequence_for_conform',
+        description: 'Read-only conform diagnostic: snapshots a sequence into frame-based track/clip/effect summaries with explicit picture/passthrough/ignore roles.',
+        inputSchema: snapshotSequenceForConformSchema
+      },
+      {
+        name: 'analyze_stacked_online_conform',
+        description: 'Dry-run stacked online conform analyzer: matches offline sequence clips to online media, reports confidence/handles, and plans upper-track placements without mutation.',
+        inputSchema: analyzeStackedOnlineConformSchema
+      },
+      {
+        name: 'create_stacked_online_conform_sequence',
+        description: 'Executes a safe stacked online conform plan by duplicating the source sequence, ensuring upper video tracks, and placing online clips above the offline edit. Defaults to dry-run.',
+        inputSchema: createStackedOnlineConformSequenceSchema
+      },
+      {
+        name: 'copy_conform_clip_effects',
+        description: 'Copies supported offline clip effects/transforms to a stacked online clip with resolution-aware Motion scale conversion and explicit unsupported-component reporting. Defaults to dry-run.',
+        inputSchema: copyConformClipEffectsSchema
+      },
+      {
+        name: 'qc_stacked_online_conform',
+        description: 'Plans or executes paired QC frame exports for stacked online conform clips, restoring track visibility after live exports. Defaults to dry-run.',
+        inputSchema: qcStackedOnlineConformSchema
+      },
+      {
+        name: 'scan_timeline_cleanup_state',
+        description: 'Read-only timeline cleanup dependency audit: scans tracks, clips, components, mattes/masks, graphics/titles, adjustment layers, nests, and unsupported visual risks without mutating Premiere.',
+        inputSchema: scanTimelineCleanupStateSchema
+      },
+      {
+        name: 'analyze_timeline_cleanup',
+        description: 'Dry-run timeline cleanup classifier: builds prove-safe-or-preserve actions and manual-review buckets from a cleanup snapshot without mutating Premiere.',
+        inputSchema: analyzeTimelineCleanupSchema
+      },
+      {
+        name: 'create_clean_timeline_sequence',
+        description: 'Executes a validated timeline cleanup action plan by duplicating the source sequence first, then applying only safe_remove/safe_reorganize actions on the duplicate. Defaults to dry-run.',
+        inputSchema: createCleanTimelineSequenceSchema
+      },
+      {
+        name: 'qc_timeline_cleanup',
+        description: 'Plans or executes before/after frame exports for timeline cleanup QC, with structural checks for unsafe removals and output containment. Defaults to dry-run.',
+        inputSchema: qcTimelineCleanupSchema
       },
       {
         name: 'set_clip_properties',
@@ -920,13 +1818,53 @@ export class PremiereProTools {
 
       // Captions
       {
+        name: 'probe_native_transcription_capabilities',
+        description: 'Diagnostic-only native transcription/caption surface probe. Reports supported:false plus observed Adobe/Premiere method-name/type diagnostics; does not treat speculative method names as live-supported APIs and does not call external speech-to-text services.',
+        inputSchema: probeNativeTranscriptionCapabilitiesSchema
+      },
+      {
+        name: 'generate_sequence_transcript',
+        description: 'Catalog entry for generating a sequence transcript with Adobe/Premiere native transcription only. No third-party STT is used; implementation will report host capability limits instead of pretending unsupported hosts can transcribe.',
+        inputSchema: generateSequenceTranscriptSchema
+      },
+      {
+        name: 'generate_captions_from_premiere_transcript',
+        description: 'Catalog entry for creating captions from an existing Adobe/Premiere native transcript. Uses Premiere native caption generation only, no third-party STT, and does not perform external speech-to-text.',
+        inputSchema: generateCaptionsFromPremiereTranscriptSchema
+      },
+      {
+        name: 'format_captions',
+        description: 'Formats inline or sidecar caption cues into caption sidecar-friendly structure. This is a sidecar caption utility, not speech-to-text.',
+        inputSchema: formatCaptionsSchema
+      },
+      {
+        name: 'qc_captions',
+        description: 'Runs sidecar caption quality-control checks such as timing, reading speed, overlaps, line length, and empty text. This does not transcribe audio.',
+        inputSchema: qcCaptionsSchema
+      },
+      {
+        name: 'search_captions',
+        description: 'Searches inline or sidecar caption cues by text query or regex and returns matching cue time ranges. This does not transcribe audio.',
+        inputSchema: searchCaptionsSchema
+      },
+      {
+        name: 'export_captions',
+        description: 'Exports inline or sidecar caption cues to a requested caption sidecar format. This does not use speech-to-text.',
+        inputSchema: exportCaptionsSchema
+      },
+      {
+        name: 'import_captions_to_sequence',
+        description: 'Catalog entry for importing a caption sidecar into a Premiere sequence using native Adobe/Premiere caption import where available. This does not transcribe audio.',
+        inputSchema: importCaptionsToSequenceSchema
+      },
+      {
         name: 'create_caption_track',
         description: 'Creates a caption track from a caption/subtitle file.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
-          projectItemId: z.string().describe('The ID of the caption file project item'),
-          startTime: z.number().optional().describe('Start time in seconds for the captions'),
-          captionFormat: z.string().optional().describe('Caption format (e.g., "Subtitle Default")')
+          sequenceId: z.string().min(1).describe('The ID of the sequence'),
+          projectItemId: z.string().min(1).describe('The ID of the caption file project item'),
+          startTime: z.number().finite().min(0).optional().describe('Start time in seconds for the captions'),
+          captionFormat: premiereCaptionFormatSchema.optional()
         })
       },
       {
@@ -935,6 +1873,16 @@ export class PremiereProTools {
         inputSchema: z.object({
           sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.')
         })
+      },
+      {
+        name: 'remove_caption_tracks',
+        description: 'Capability-honest native caption cleanup: reports or removes caption tracks only through Premiere caption track collections when public remove/delete APIs are exposed. Defaults to dry-run.',
+        inputSchema: removeCaptionTracksSchema
+      },
+      {
+        name: 'duplicate_sequence_without_captions',
+        description: 'Duplicates a sequence and removes native caption tracks from the duplicate when Premiere exposes public caption removal APIs. Defaults to dry-run.',
+        inputSchema: duplicateSequenceWithoutCaptionsSchema
       },
       {
         name: 'rename_project_item',
@@ -1151,18 +2099,46 @@ export class PremiereProTools {
     try {
       switch (name) {
         // Discovery Tools
+        case 'test_connection':
+          return await this.testConnection();
+        case 'bridge_health_report':
+          return await this.bridgeHealthReport(args.staleAfterSeconds);
+        case 'live_tool_sweep_safe':
+          return await this.liveToolSweepSafe(args as LiveToolSweepSafeArgs);
         case 'list_project_items':
           return await this.listProjectItems(args.includeBins, args.includeMetadata);
         case 'list_sequences':
           return await this.listSequences();
         case 'list_sequence_tracks':
           return await this.listSequenceTracks(args.sequenceId);
+        case 'scan_conform_media_metadata':
+          return await this.scanConformMediaMetadata(args as ScanConformMediaMetadataArgs);
+        case 'snapshot_sequence_for_conform':
+          return await this.snapshotSequenceForConform(args as SnapshotSequenceForConformArgs);
+        case 'analyze_stacked_online_conform':
+          return await this.analyzeStackedOnlineConformTool(args as AnalyzeStackedOnlineConformToolArgs);
+        case 'create_stacked_online_conform_sequence':
+          return await this.createStackedOnlineConformSequence(args as CreateStackedOnlineConformSequenceArgs);
+        case 'copy_conform_clip_effects':
+          return await this.copyConformClipEffects(args as CopyConformClipEffectsArgs);
+        case 'qc_stacked_online_conform':
+          return await this.qcStackedOnlineConform(args as QcStackedOnlineConformArgs);
+        case 'scan_timeline_cleanup_state':
+          return await this.scanTimelineCleanupState(args as ScanTimelineCleanupStateArgs);
+        case 'analyze_timeline_cleanup':
+          return await this.analyzeTimelineCleanupTool(args as AnalyzeTimelineCleanupToolArgs);
+        case 'create_clean_timeline_sequence':
+          return await this.createCleanTimelineSequence(args as CreateCleanTimelineSequenceArgs);
+        case 'qc_timeline_cleanup':
+          return await this.qcTimelineCleanup(args as QcTimelineCleanupArgs);
         case 'get_project_info':
           return await this.getProjectInfo();
         case 'build_motion_graphics_demo':
           return await this.buildMotionGraphicsDemo(args.sequenceName);
         case 'assemble_product_spot':
           return await this.assembleProductSpot(args as AssembleProductSpotArgs);
+        case 'assemble_from_edit_plan':
+          return await this.assembleFromEditPlan(args as AssembleFromEditPlanArgs);
         case 'build_brand_spot_from_mogrt_and_assets':
           return await this.buildBrandSpotFromMogrtAndAssets(args as BuildBrandSpotArgs);
 
@@ -1197,6 +2173,26 @@ export class PremiereProTools {
           return await this.deleteSequence(args.sequenceId);
         case 'read_sequence_captions':
           return await this.readSequenceCaptions(args.sequenceId);
+        case 'remove_caption_tracks':
+          return await this.removeCaptionTracks(args as RemoveCaptionTracksArgs);
+        case 'duplicate_sequence_without_captions':
+          return await this.duplicateSequenceWithoutCaptions(args as DuplicateSequenceWithoutCaptionsArgs);
+        case 'probe_native_transcription_capabilities':
+          return await this.probeNativeTranscriptionCapabilities(args.sequenceId, args.includeDiagnostics);
+        case 'generate_sequence_transcript':
+          return await this.generateSequenceTranscript(args);
+        case 'generate_captions_from_premiere_transcript':
+          return await this.generateCaptionsFromPremiereTranscript(args);
+        case 'format_captions':
+          return await this.formatCaptions(args);
+        case 'qc_captions':
+          return await this.qcCaptionsTool(args);
+        case 'search_captions':
+          return await this.searchCaptionsTool(args);
+        case 'export_captions':
+          return await this.exportCaptions(args);
+        case 'import_captions_to_sequence':
+          return await this.importCaptionsToSequence(args);
         case 'rename_project_item':
           return await this.renameProjectItem(args.projectItemId, args.newName);
 
@@ -1217,6 +2213,26 @@ export class PremiereProTools {
         // Effects and Transitions
         case 'apply_effect':
           return await this.applyEffect(args.clipId, args.effectName, args.parameters);
+        case 'list_clip_effects':
+          return await this.listClipEffects(args.clipId, args.sequenceId);
+        case 'set_effect_parameter':
+          return await this.setEffectParameter(args as SetEffectParameterArgs);
+        case 'set_clip_opacity':
+          return await this.setClipOpacity(args.clipId, args.opacity, args.sequenceId);
+        case 'set_clip_blend_mode':
+          return await this.setClipBlendMode(args.clipId, args.blendMode, args.blendModePropertyIndex, args.sequenceId);
+        case 'set_clip_scale':
+          return await this.setClipScale(args.clipId, args.scale, args.sequenceId);
+        case 'set_clip_scale_mode':
+          return await this.setClipScaleMode(args as SetClipScaleModeArgs);
+        case 'set_clip_position':
+          return await this.setClipPosition(args.clipId, args.x, args.y, args.sequenceId);
+        case 'batch_set_clip_properties':
+          return await this.batchSetClipProperties(args as BatchClipPropertiesArgs);
+        case 'set_clip_speed_settings':
+          return await this.setClipSpeedSettings(args as SetClipSpeedSettingsArgs);
+        case 'set_clip_time_remap_settings':
+          return await this.setClipTimeRemapSettings(args as SetClipTimeRemapSettingsArgs);
         case 'remove_effect':
           return await this.removeEffect(args.clipId, args.effectName);
         case 'add_transition':
@@ -1254,6 +2270,10 @@ export class PremiereProTools {
         // Export and Rendering
         case 'export_sequence':
           return await this.exportSequence(args.sequenceId, args.outputPath, args.presetPath, args.format, args.quality, args.resolution);
+        case 'list_export_presets':
+          return await this.listExportPresets(args as ListExportPresetsArgs);
+        case 'qc_rendered_media':
+          return await this.qcRenderedMedia(args as QcRenderedMediaArgs);
         case 'export_frame':
           return await this.exportFrame(args.sequenceId, args.time, args.outputPath, args.format);
 
@@ -1450,7 +2470,1026 @@ export class PremiereProTools {
     }
   }
 
+  private normalizeCaptionEntries(captions: CaptionEntry[]): CaptionEntry[] {
+    return captions.map((caption) => {
+      const start = Number(caption.start);
+      const end = Number(caption.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
+        throw new Error(`Invalid caption timing: ${caption.start} -> ${caption.end}`);
+      }
+
+      const normalized: CaptionEntry = {
+        start,
+        end,
+        text: String(caption.text ?? '')
+      };
+      if (caption.id !== undefined) normalized.id = String(caption.id);
+      if (caption.index !== undefined) normalized.index = Number(caption.index);
+      return normalized;
+    });
+  }
+
+  private getPremiereCaptionFormatDescriptor(format?: PremiereCaptionFormat): { key: PremiereCaptionFormat; constantName: string; numericFallback?: number } {
+    const key = format ?? 'subtitle';
+    const mapping: Record<PremiereCaptionFormat, { constantName: string; numericFallback?: number }> = {
+      subtitle: { constantName: 'CAPTION_FORMAT_SUBTITLE', numericFallback: 11 },
+      'cea-608': { constantName: 'CAPTION_FORMAT_608', numericFallback: 1 },
+      'cea-708': { constantName: 'CAPTION_FORMAT_708', numericFallback: 2 },
+      teletext: { constantName: 'CAPTION_FORMAT_TELETEXT', numericFallback: 3 }
+    };
+    return { key, ...mapping[key] };
+  }
+
+  private inferCaptionFormat(filePath: string): CaptionSidecarFormat {
+    const extension = extname(filePath).replace(/^\./, '').toLowerCase();
+    const supportedFormats: CaptionSidecarFormat[] = ['srt', 'vtt', 'json', 'csv'];
+    if (supportedFormats.includes(extension as CaptionSidecarFormat)) {
+      return extension as CaptionSidecarFormat;
+    }
+    throw new Error(`Could not infer caption format from path: ${filePath}`);
+  }
+
+  private splitCsvLine(line: string): string[] {
+    const fields: string[] = [];
+    let field = '';
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      const next = line[index + 1];
+      if (char === '"') {
+        if (quoted && next === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (char === ',' && !quoted) {
+        fields.push(field);
+        field = '';
+      } else if (char !== undefined) {
+        field += char;
+      }
+    }
+    fields.push(field);
+    return fields;
+  }
+
+  private splitCsvRecords(source: string): string[] {
+    const normalized = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const records: string[] = [];
+    let record = '';
+    let quoted = false;
+
+    for (let index = 0; index < normalized.length; index += 1) {
+      const char = normalized[index];
+      const next = normalized[index + 1];
+      if (char === '"') {
+        record += char;
+        if (quoted && next === '"') {
+          record += next;
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (char === '\n' && !quoted) {
+        if (record.trim().length > 0) records.push(record);
+        record = '';
+      } else if (char !== undefined) {
+        record += char;
+      }
+    }
+
+    if (quoted) throw new Error('CSV caption sidecar has an unterminated quoted field');
+    if (record.trim().length > 0) records.push(record);
+    return records;
+  }
+
+  private parseCsvCaptions(source: string): CaptionEntry[] {
+    const lines = this.splitCsvRecords(source);
+    if (lines.length < 2) return [];
+    const header = this.splitCsvLine(lines[0] ?? '').map((field) => field.trim().toLowerCase());
+    const startIndex = header.indexOf('start');
+    const endIndex = header.indexOf('end');
+    const textIndex = header.indexOf('text');
+    const idIndex = header.indexOf('id');
+    if (startIndex < 0 || endIndex < 0 || textIndex < 0) {
+      throw new Error('CSV caption sidecar must include start,end,text columns');
+    }
+
+    return this.normalizeCaptionEntries(lines.slice(1).map((line, rowIndex) => {
+      const fields = this.splitCsvLine(line);
+      const entry: CaptionEntry = {
+        index: rowIndex + 1,
+        start: this.parseCaptionTimeField(fields[startIndex] ?? ''),
+        end: this.parseCaptionTimeField(fields[endIndex] ?? ''),
+        text: fields[textIndex] ?? ''
+      };
+      if (idIndex >= 0 && fields[idIndex] !== undefined && fields[idIndex] !== '') {
+        entry.id = fields[idIndex];
+      }
+      return entry;
+    }));
+  }
+
+  private parseCaptionTimeField(value: string): number {
+    const trimmed = value.trim();
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) return numeric;
+    const normalized = trimmed.replace(',', '.');
+    const pieces = normalized.split(':');
+    if (pieces.length < 2 || pieces.length > 3) {
+      throw new Error(`Invalid caption time field: ${value}`);
+    }
+    const secondsPart = Number(pieces[pieces.length - 1]);
+    const minutesPart = Number(pieces[pieces.length - 2]);
+    const hoursPart = pieces.length === 3 ? Number(pieces[0]) : 0;
+    if (!Number.isFinite(secondsPart) || !Number.isFinite(minutesPart) || !Number.isFinite(hoursPart)) {
+      throw new Error(`Invalid caption time field: ${value}`);
+    }
+    return hoursPart * 3600 + minutesPart * 60 + secondsPart;
+  }
+
+  private parseCaptionJson(source: string): CaptionEntry[] {
+    const parsed = JSON.parse(source) as unknown;
+    const cues = Array.isArray(parsed)
+      ? parsed
+      : typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as { captions?: unknown }).captions)
+        ? (parsed as { captions: unknown[] }).captions
+        : null;
+    if (cues === null) {
+      throw new Error('JSON caption sidecar must be an array or an object with a captions array');
+    }
+    return this.normalizeCaptionEntries(cues.map((cue) => cue as CaptionEntry));
+  }
+
+  private parseCaptionSidecar(source: string, format: CaptionSidecarFormat): CaptionEntry[] {
+    switch (format) {
+      case 'srt':
+        return this.normalizeCaptionEntries(parseSrt(source));
+      case 'vtt':
+        return this.normalizeCaptionEntries(parseVtt(source));
+      case 'json':
+        return this.parseCaptionJson(source);
+      case 'csv':
+        return this.parseCsvCaptions(source);
+      default:
+        throw new Error(`Caption format '${format}' is not supported by the sidecar parser yet. Supported parse formats: srt, vtt, json, csv.`);
+    }
+  }
+
+  private serializeCaptionSidecar(captions: CaptionEntry[], format: CaptionSidecarFormat): string {
+    switch (format) {
+      case 'srt':
+        return serializeSrt(captions);
+      case 'vtt':
+        return serializeVtt(captions);
+      case 'json':
+        return `${serializeJson(captions)}\n`;
+      case 'csv':
+        return `${serializeCsv(captions)}\n`;
+      default:
+        throw new Error(`Caption format '${format}' is not supported by sidecar export yet. Supported export formats: srt, vtt, json, csv.`);
+    }
+  }
+
+  private mergeCaptionEntries(entries: CaptionEntry[], mergeGapSeconds?: number): CaptionEntry[] {
+    if (mergeGapSeconds === undefined) return entries;
+    if (entries.length === 0) return [];
+
+    const sorted = [...entries].sort((left, right) => left.start - right.start || left.end - right.end);
+    const merged: CaptionEntry[] = [];
+    let current: CaptionEntry = { ...(sorted[0] as CaptionEntry) };
+
+    for (const next of sorted.slice(1)) {
+      const gap = next.start - current.end;
+      if (gap >= 0 && gap <= mergeGapSeconds) {
+        current = {
+          ...current,
+          end: Math.max(current.end, next.end),
+          text: [current.text, next.text].filter((text) => text.trim().length > 0).join(' ')
+        };
+      } else {
+        merged.push(current);
+        current = { ...next };
+      }
+    }
+
+    merged.push(current);
+    return merged;
+  }
+
+  private async loadCaptionSource(args: CaptionSourceArgs): Promise<LoadedCaptionSource> {
+    if (args.captions !== undefined) {
+      return {
+        captions: this.normalizeCaptionEntries(args.captions),
+        source: 'inline'
+      };
+    }
+
+    if (args.inputPath !== undefined) {
+      const format = args.format ?? this.inferCaptionFormat(args.inputPath);
+      const source = await fs.readFile(args.inputPath, 'utf8');
+      return {
+        captions: this.parseCaptionSidecar(source, format),
+        source: 'sidecar',
+        inputPath: args.inputPath,
+        format
+      };
+    }
+
+    if (args.sequenceId !== undefined) {
+      const readback = await this.readSequenceCaptions(args.sequenceId);
+      if (!readback.success || readback.supported === false) {
+        const reason = readback.error ?? readback.message ?? 'Premiere did not expose readable native caption data for this sequence';
+        throw new Error(`Failed to read captions from sequence ${args.sequenceId}: ${reason}`);
+      }
+      const rawCaptions = Array.isArray(readback.captions) ? readback.captions as CaptionEntry[] : [];
+      return {
+        captions: this.normalizeCaptionEntries(rawCaptions),
+        source: 'sequence',
+        sequenceId: args.sequenceId
+      };
+    }
+
+    throw new Error('Provide captions, inputPath, or sequenceId');
+  }
+
+  private async writeCaptionOutput(outputPath: string, content: string, overwrite = false): Promise<void> {
+    if (!overwrite && await this.pathExists(outputPath)) {
+      throw new Error(`Output caption file already exists: ${outputPath}`);
+    }
+    await fs.mkdir(dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, content, 'utf8');
+  }
+
+  private async formatCaptions(args: Record<string, any>): Promise<any> {
+    const loaded = await this.loadCaptionSource(args as CaptionSourceArgs);
+    const merged = this.mergeCaptionEntries(loaded.captions, args.mergeGapSeconds);
+    const captions = formatCaptionEntries(merged, {
+      maxCharsPerLine: args.splitLongLines === false ? undefined : args.maxCharsPerLine,
+      maxLines: args.maxLines,
+      normalizeWhitespace: args.trimWhitespace !== false
+    });
+    const result: Record<string, any> = {
+      success: true,
+      source: loaded.source,
+      captionCount: captions.length,
+      captions
+    };
+
+    if (args.outputPath !== undefined) {
+      const format = (args.format as CaptionSidecarFormat | undefined) ?? this.inferCaptionFormat(args.outputPath);
+      await this.writeCaptionOutput(args.outputPath, this.serializeCaptionSidecar(captions, format), args.overwrite === true);
+      result.outputPath = args.outputPath;
+      result.format = format;
+    }
+
+    return result;
+  }
+
+  private async qcCaptionsTool(args: Record<string, any>): Promise<any> {
+    const loaded = await this.loadCaptionSource(args as CaptionSourceArgs);
+    const options: CaptionQcOptions = {};
+    if (args.minDurationSeconds !== undefined) options.minDuration = args.minDurationSeconds;
+    if (args.maxDurationSeconds !== undefined) options.maxDuration = args.maxDurationSeconds;
+    if (args.maxReadingCps !== undefined) options.maxCps = args.maxReadingCps;
+    if (args.maxCharsPerLine !== undefined) options.maxCharsPerLine = args.maxCharsPerLine;
+    if (args.maxLines !== undefined) options.maxLines = args.maxLines;
+    if (Array.isArray(args.bannedTerms)) options.bannedTerms = args.bannedTerms;
+    if (args.caseSensitiveBannedTerms !== undefined) options.caseSensitiveBannedTerms = args.caseSensitiveBannedTerms;
+
+    let findings: CaptionQcFinding[] = runCaptionQc(loaded.captions, options);
+    if (args.allowOverlaps === true) findings = findings.filter((finding) => finding.code !== 'overlap');
+    if (args.requireNonEmptyText === false) findings = findings.filter((finding) => finding.code !== 'emptyText');
+
+    const summary = {
+      errors: findings.filter((finding) => finding.severity === 'error').length,
+      warnings: findings.filter((finding) => finding.severity === 'warning').length
+    };
+    const result = {
+      success: true,
+      source: loaded.source,
+      captionCount: loaded.captions.length,
+      findingCount: findings.length,
+      summary,
+      findings
+    };
+
+    if (args.outputPath !== undefined) {
+      await this.writeCaptionOutput(args.outputPath, `${JSON.stringify(result, null, 2)}\n`, args.overwrite === true);
+    }
+
+    return args.outputPath === undefined ? result : { ...result, outputPath: args.outputPath };
+  }
+
+  private async searchCaptionsTool(args: Record<string, any>): Promise<any> {
+    const loaded = await this.loadCaptionSource(args as CaptionSourceArgs);
+    const contextCues = args.contextCues ?? 0;
+    const matches = runCaptionSearch(loaded.captions, args.query, {
+      regex: args.useRegex === true,
+      caseSensitive: args.caseSensitive === true,
+      before: contextCues,
+      after: contextCues
+    });
+    const result = {
+      success: true,
+      source: loaded.source,
+      captionCount: loaded.captions.length,
+      matchCount: matches.length,
+      matches
+    };
+
+    if (args.outputPath !== undefined) {
+      await this.writeCaptionOutput(args.outputPath, `${JSON.stringify(result, null, 2)}\n`, args.overwrite === true);
+    }
+
+    return args.outputPath === undefined ? result : { ...result, outputPath: args.outputPath };
+  }
+
+  private async exportCaptions(args: Record<string, any>): Promise<any> {
+    const loaded = await this.loadCaptionSource(args as CaptionSourceArgs);
+    const outputPath = String(args.outputPath);
+    if (args.overwrite !== true && await this.pathExists(outputPath)) {
+      return {
+        success: false,
+        error: `Output caption file already exists: ${outputPath}`,
+        outputPath
+      };
+    }
+
+    const format = args.format as CaptionSidecarFormat;
+    await this.writeCaptionOutput(outputPath, this.serializeCaptionSidecar(loaded.captions, format), args.overwrite === true);
+    return {
+      success: true,
+      source: loaded.source,
+      outputPath,
+      format,
+      captionCount: loaded.captions.length
+    };
+  }
+
+  private async importCaptionsToSequence(args: Record<string, any>): Promise<any> {
+    const filePath = String(args.filePath);
+    if (!await this.pathExists(filePath)) {
+      return { success: false, error: `Caption sidecar file not found: ${filePath}`, filePath };
+    }
+
+    let sidecarFormat: CaptionSidecarFormat;
+    try {
+      sidecarFormat = this.inferCaptionFormat(filePath);
+    } catch (_error) {
+      return {
+        success: false,
+        error: `Unsupported caption sidecar format for Premiere import: ${filePath}. Supported native import sidecar formats are srt and vtt.`,
+        filePath
+      };
+    }
+    if (!['srt', 'vtt'].includes(sidecarFormat)) {
+      return {
+        success: false,
+        error: `Unsupported caption sidecar format for Premiere import: ${sidecarFormat}. Supported native import sidecar formats are srt and vtt.`,
+        filePath,
+        format: sidecarFormat
+      };
+    }
+
+    const importResult = await this.importMedia(filePath);
+    if (!importResult.success) {
+      return { ...importResult, success: false, filePath };
+    }
+
+    const projectItemId = importResult.id ?? importResult.projectItemId ?? importResult.itemId;
+    if (typeof projectItemId !== 'string' || projectItemId.length === 0) {
+      return {
+        success: false,
+        error: 'Caption sidecar imported, but Premiere did not return a project item ID for createCaptionTrack.',
+        importResult,
+        filePath
+      };
+    }
+
+    const createResult = await this.createCaptionTrack(String(args.sequenceId), projectItemId, args.startTime, args.captionFormat);
+    if (!createResult.success) {
+      return { ...createResult, success: false, importResult, projectItemId, filePath };
+    }
+
+    const result: Record<string, any> = {
+      ...createResult,
+      success: true,
+      message: 'Caption sidecar imported and caption track created',
+      sequenceId: args.sequenceId,
+      projectItemId,
+      filePath,
+      importResult
+    };
+
+    if (args.verifyReadback === true) {
+      result.readback = await this.readSequenceCaptions(String(args.sequenceId));
+    }
+
+    return result;
+  }
+
+  private buildNativeCapabilityProbeScript(sequenceId?: string, includeDiagnostics?: boolean): string {
+    const request = JSON.stringify({ sequenceId: sequenceId ?? null, includeDiagnostics: includeDiagnostics === true });
+    return `
+      (function __probeNativeTranscriptionCapabilities() {
+        try {
+          var request = ${request};
+          var diagnosticTranscriptMethods = ['createTranscript', 'generateTranscript', 'transcribe', 'transcribeSequence', 'startTranscription'];
+          var diagnosticSpeechMethods = ['speechToText', 'analyzeSpeech', 'createSpeechTranscript'];
+          var diagnosticCaptionMethods = ['createCaptionsFromTranscript', 'generateCaptionsFromTranscript', 'createCaptions', 'generateCaptions'];
+          var probedMethodTypes = {
+            transcript: diagnosticTranscriptMethods,
+            speech: diagnosticSpeechMethods,
+            caption: diagnosticCaptionMethods
+          };
+          function findSequence(sequenceId) {
+            if (!app.project) return null;
+            if (sequenceId && typeof __findSequence === 'function') return __findSequence(sequenceId);
+            return app.project.activeSequence || null;
+          }
+          function inspectObject(target, label, methods, category) {
+            var matches = [];
+            if (!target) return matches;
+            for (var i = 0; i < methods.length; i++) {
+              var name = methods[i];
+              try {
+                var valueType = typeof target[name];
+                if (valueType === 'function') matches.push({ label: label, method: name, category: category, valueType: valueType });
+              } catch (inspectError) {
+                matches.push({ label: label, method: name, category: category, valueType: 'unavailable', error: inspectError.toString() });
+              }
+            }
+            return matches;
+          }
+          var sequence = findSequence(request.sequenceId);
+          var candidates = [];
+          candidates = candidates.concat(inspectObject(sequence, 'sequence', diagnosticTranscriptMethods, 'transcript'));
+          candidates = candidates.concat(inspectObject(sequence, 'sequence', diagnosticSpeechMethods, 'speech'));
+          candidates = candidates.concat(inspectObject(sequence, 'sequence', diagnosticCaptionMethods, 'caption'));
+          candidates = candidates.concat(inspectObject(app.project, 'project', diagnosticTranscriptMethods, 'transcript'));
+          candidates = candidates.concat(inspectObject(app, 'app', diagnosticSpeechMethods, 'speech'));
+          candidates = candidates.concat(inspectObject(app, 'app', diagnosticCaptionMethods, 'caption'));
+          var diagnostics = {
+            premiereVersion: app.version || null,
+            sequenceFound: !!sequence,
+            sequenceId: sequence ? sequence.sequenceID || null : null,
+            sequenceName: sequence ? sequence.name || null : null,
+            candidates: candidates,
+            probedMethodTypes: probedMethodTypes,
+            liveVerifiedPublicApi: false
+          };
+          if (!request.includeDiagnostics) {
+            diagnostics = { candidates: candidates, probedMethodTypes: probedMethodTypes, liveVerifiedPublicApi: false };
+          }
+          return JSON.stringify({
+            success: true,
+            supported: false,
+            transcriptSupported: false,
+            captionSupported: false,
+            speechAnalysisSupported: false,
+            diagnosticOnly: true,
+            liveVerifiedPublicApi: false,
+            nativeAdobeOnly: true,
+            noExternalSpeechToText: true,
+            message: 'Native transcription probing is diagnostic-only. Method-name matches are not treated as support until a public API is live-verified.',
+            diagnostics: diagnostics
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, supported: false, error: e.toString() });
+        }
+      })();
+    `;
+  }
+
+  private async probeNativeTranscriptionCapabilities(sequenceId?: string, includeDiagnostics?: boolean): Promise<any> {
+    return await this.bridge.executeScript(this.buildNativeCapabilityProbeScript(sequenceId, includeDiagnostics));
+  }
+
+  private buildGenerateSequenceTranscriptScript(args: Record<string, any>): string {
+    const request = JSON.stringify({ sequenceId: args.sequenceId ?? null, dryRun: args.dryRun === true, poll: args.poll === true });
+    return `
+      (function __generateSequenceTranscriptNative() {
+        try {
+          var request = ${request};
+          var diagnosticTranscriptMethods = ['createTranscript', 'generateTranscript', 'transcribe', 'transcribeSequence', 'startTranscription'];
+          function findSequence(sequenceId) {
+            if (!app.project) return null;
+            if (sequenceId && typeof __findSequence === 'function') return __findSequence(sequenceId);
+            return app.project.activeSequence || null;
+          }
+          function findDiagnosticCandidates(sequence) {
+            var candidates = [];
+            var targets = [{ target: sequence, label: 'sequence' }, { target: app.project, label: 'project' }, { target: app, label: 'app' }];
+            for (var t = 0; t < targets.length; t++) {
+              var current = targets[t];
+              if (!current.target) continue;
+              for (var i = 0; i < diagnosticTranscriptMethods.length; i++) {
+                var method = diagnosticTranscriptMethods[i];
+                try {
+                  if (typeof current.target[method] === 'function') candidates.push({ label: current.label, method: method });
+                } catch (_) {}
+              }
+            }
+            return candidates;
+          }
+          var sequence = findSequence(request.sequenceId);
+          if (!sequence) return JSON.stringify({ success: false, supported: false, error: 'Sequence not found for native transcript generation' });
+          var candidates = findDiagnosticCandidates(sequence);
+          return JSON.stringify({
+            success: true,
+            supported: false,
+            dryRun: request.dryRun,
+            nativeAdobeOnly: true,
+            noExternalSpeechToText: true,
+            message: 'Premiere Speech to Text / Transcribe Sequence is not exposed as a public live-verified ExtendScript API in this MCP implementation. Use the Premiere UI to transcribe, then process exported/readable captions with sidecar tools.',
+            diagnostics: { sequenceId: sequence.sequenceID || null, sequenceName: sequence.name || null, diagnosticTranscriptMethods: diagnosticTranscriptMethods, candidates: candidates, pollRequested: request.poll }
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, supported: false, error: e.toString() });
+        }
+      })();
+    `;
+  }
+
+  private async generateSequenceTranscript(args: Record<string, any>): Promise<any> {
+    return await this.bridge.executeScript(this.buildGenerateSequenceTranscriptScript(args));
+  }
+
+  private buildGenerateCaptionsFromTranscriptScript(args: Record<string, any>): string {
+    const request = JSON.stringify({
+      sequenceId: args.sequenceId ?? null,
+      dryRun: args.dryRun === true,
+      captionFormat: args.captionFormat ?? null,
+      maxCharsPerLine: args.maxCharsPerLine ?? null,
+      maxLines: args.maxLines ?? null
+    });
+    return `
+      (function __generateCaptionsFromPremiereTranscriptNative() {
+        try {
+          var request = ${request};
+          var diagnosticCaptionMethods = ['createCaptionsFromTranscript', 'generateCaptionsFromTranscript', 'createCaptions', 'generateCaptions', 'createCaptionTrackFromTranscript'];
+          function findSequence(sequenceId) {
+            if (!app.project) return null;
+            if (sequenceId && typeof __findSequence === 'function') return __findSequence(sequenceId);
+            return app.project.activeSequence || null;
+          }
+          function findDiagnosticCandidates(sequence) {
+            var candidates = [];
+            var targets = [{ target: sequence, label: 'sequence' }, { target: app.project, label: 'project' }, { target: app, label: 'app' }];
+            for (var t = 0; t < targets.length; t++) {
+              var current = targets[t];
+              if (!current.target) continue;
+              for (var i = 0; i < diagnosticCaptionMethods.length; i++) {
+                var method = diagnosticCaptionMethods[i];
+                try {
+                  if (typeof current.target[method] === 'function') candidates.push({ label: current.label, method: method });
+                } catch (_) {}
+              }
+            }
+            return candidates;
+          }
+          var sequence = findSequence(request.sequenceId);
+          if (!sequence) return JSON.stringify({ success: false, supported: false, error: 'Sequence not found for native caption generation from transcript' });
+          var candidates = findDiagnosticCandidates(sequence);
+          var options = { captionFormat: request.captionFormat, maxCharsPerLine: request.maxCharsPerLine, maxLines: request.maxLines };
+          return JSON.stringify({
+            success: true,
+            supported: false,
+            dryRun: request.dryRun,
+            nativeAdobeOnly: true,
+            noExternalSpeechToText: true,
+            message: 'Premiere caption generation from transcript is not exposed as a public live-verified ExtendScript API in this MCP implementation. Use the Premiere UI to generate captions, then process exported/readable captions with sidecar tools.',
+            options: options,
+            diagnostics: { sequenceId: sequence.sequenceID || null, sequenceName: sequence.name || null, diagnosticCaptionMethods: diagnosticCaptionMethods, candidates: candidates }
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, supported: false, error: e.toString() });
+        }
+      })();
+    `;
+  }
+
+  private async generateCaptionsFromPremiereTranscript(args: Record<string, any>): Promise<any> {
+    return await this.bridge.executeScript(this.buildGenerateCaptionsFromTranscriptScript(args));
+  }
+
   // Discovery Tools Implementation
+  private async testConnection(): Promise<any> {
+    const script = `
+      try {
+        var project = app.project;
+        var activeSequence = project && project.activeSequence ? project.activeSequence : null;
+        return JSON.stringify({
+          success: true,
+          connected: true,
+          premiereVersion: app.version || null,
+          project: project ? {
+            name: project.name || null,
+            path: project.path || null
+          } : null,
+          activeSequence: activeSequence ? {
+            id: activeSequence.sequenceID || null,
+            name: activeSequence.name || null
+          } : null,
+          bridge: {
+            mode: "cep-extendscript",
+            reachable: true
+          }
+        });
+      } catch (e) {
+        return JSON.stringify({
+          success: false,
+          connected: false,
+          error: e.toString()
+        });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await fs.access(path);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private async firstExistingPath(paths: string[]): Promise<string | null> {
+    for (const candidatePath of paths) {
+      if (await this.pathExists(candidatePath)) {
+        return candidatePath;
+      }
+    }
+    return null;
+  }
+
+  private getBridgeDiagnostics(): PremiereProBridgeDiagnostics | null {
+    const bridgeWithDiagnostics = this.bridge as PremiereProTransport & {
+      getDiagnostics?: () => PremiereProBridgeDiagnostics;
+    };
+    return bridgeWithDiagnostics.getDiagnostics ? bridgeWithDiagnostics.getDiagnostics() : null;
+  }
+
+  private async bridgeHealthReport(staleAfterSeconds = 300): Promise<any> {
+    const warnings: string[] = [];
+    const now = Date.now();
+    const bridgeDiagnostics = this.getBridgeDiagnostics();
+    const fallbackTempDir = process.env.PREMIERE_TEMP_DIR || '/tmp/premiere-mcp-bridge';
+    const tempDir = (bridgeDiagnostics?.tempDir || fallbackTempDir).replace(/\/$/, '');
+    const tempDirCheck = {
+      path: tempDir,
+      exists: false,
+      readable: false,
+      writable: false,
+      commandFiles: 0,
+      responseFiles: 0,
+      staleCommandFiles: 0,
+      staleResponseFiles: 0
+    };
+
+    try {
+      await fs.access(tempDir);
+      tempDirCheck.exists = true;
+    } catch (_error) {
+      warnings.push(`Bridge temp directory does not exist: ${tempDir}`);
+    }
+
+    if (tempDirCheck.exists) {
+      try {
+        await fs.access(tempDir, constants.R_OK);
+        tempDirCheck.readable = true;
+      } catch (_error) {
+        warnings.push(`Bridge temp directory is not readable: ${tempDir}`);
+      }
+
+      try {
+        await fs.access(tempDir, constants.W_OK);
+        tempDirCheck.writable = true;
+      } catch (_error) {
+        warnings.push(`Bridge temp directory is not writable: ${tempDir}`);
+      }
+
+      try {
+        const entries = await fs.readdir(tempDir);
+        const commandFiles = entries.filter((entry) => /^command-.*\.json$/.test(entry));
+        const responseFiles = entries.filter((entry) => /^response-.*\.json$/.test(entry));
+        tempDirCheck.commandFiles = commandFiles.length;
+        tempDirCheck.responseFiles = responseFiles.length;
+
+        for (const entry of commandFiles) {
+          const stat = await fs.stat(join(tempDir, entry));
+          if ((now - stat.mtimeMs) / 1000 > staleAfterSeconds) tempDirCheck.staleCommandFiles += 1;
+        }
+        for (const entry of responseFiles) {
+          const stat = await fs.stat(join(tempDir, entry));
+          if ((now - stat.mtimeMs) / 1000 > staleAfterSeconds) tempDirCheck.staleResponseFiles += 1;
+        }
+      } catch (error) {
+        warnings.push(`Could not inspect bridge temp directory: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (tempDirCheck.staleCommandFiles > 0 || tempDirCheck.staleResponseFiles > 0) {
+      warnings.push(`Found stale bridge files: ${tempDirCheck.staleCommandFiles} command, ${tempDirCheck.staleResponseFiles} response`);
+    }
+
+    const defaultPremierePath = '/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app';
+    const commonPremierePaths = [
+      defaultPremierePath,
+      '/Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro 2025.app',
+      '/Applications/Adobe Premiere Pro 2024/Adobe Premiere Pro 2024.app',
+      '/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app'
+    ];
+    const premierePaths = Array.from(new Set([
+      bridgeDiagnostics?.premierePath || null,
+      ...commonPremierePaths
+    ].filter((candidatePath): candidatePath is string => Boolean(candidatePath))));
+    const foundPremierePath = await this.firstExistingPath(premierePaths);
+    if (!foundPremierePath) {
+      warnings.push('Adobe Premiere Pro was not found in known macOS install paths');
+    }
+
+    const homeDir = process.env.HOME || '';
+    const preferredPremierePath = bridgeDiagnostics?.premierePath || foundPremierePath || defaultPremierePath;
+    const cepAppBundlePath = join(preferredPremierePath, 'Contents/CEP/extensions/MCPBridgeCEP');
+    const cepUserPath = homeDir ? join(homeDir, 'Library/Application Support/Adobe/CEP/extensions/MCPBridgeCEP') : null;
+    const cepExtension = {
+      appBundlePath: cepAppBundlePath,
+      appBundleExists: await this.pathExists(cepAppBundlePath),
+      userPath: cepUserPath,
+      userExists: cepUserPath ? await this.pathExists(cepUserPath) : false,
+      recommendedPath: cepAppBundlePath
+    };
+    if (!cepExtension.appBundleExists && !cepExtension.userExists) {
+      warnings.push('CEP bridge extension was not found in the selected app bundle path or user-level CEP path');
+    }
+
+    let roundTrip: any;
+    try {
+      roundTrip = await this.testConnection();
+    } catch (error) {
+      roundTrip = {
+        success: false,
+        connected: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+    if (!roundTrip.success || !roundTrip.connected) {
+      warnings.push(`Premiere bridge round trip failed: ${roundTrip.error || 'unknown error'}`);
+    }
+
+    return {
+      success: tempDirCheck.exists && tempDirCheck.readable && tempDirCheck.writable && Boolean(roundTrip.success && roundTrip.connected),
+      generatedAt: new Date().toISOString(),
+      checks: {
+        bridge: bridgeDiagnostics || {
+          tempDir,
+          communicationMethod: 'unknown',
+          usesExternalTempDir: Boolean(process.env.PREMIERE_TEMP_DIR),
+          isInitialized: null,
+          sessionId: null,
+          premierePath: null
+        },
+        tempDir: tempDirCheck,
+        premiereInstallation: {
+          found: Boolean(foundPremierePath),
+          foundPath: foundPremierePath,
+          bridgeReportedPath: bridgeDiagnostics?.premierePath || null,
+          checkedPaths: premierePaths
+        },
+        cepExtension,
+        roundTrip
+      },
+      warnings
+    };
+  }
+
+  private summarizeLiveSweepResult(result: any): any {
+    if (result == null || typeof result !== 'object') {
+      return result;
+    }
+
+    const summary: Record<string, any> = {};
+    for (const key of ['success', 'message', 'error', 'name', 'path', 'projectPath', 'sequenceId', 'id', 'connected', 'premiereVersion']) {
+      if (key in result) {
+        summary[key] = result[key];
+      }
+    }
+    if (result.project && typeof result.project === 'object') {
+      summary.project = {
+        name: result.project.name,
+        path: result.project.path
+      };
+    }
+    if (result.sequence && typeof result.sequence === 'object') {
+      summary.sequence = {
+        id: result.sequence.id,
+        name: result.sequence.name
+      };
+    }
+    if (Array.isArray(result.sequences)) summary.sequenceCount = result.sequences.length;
+    if (Array.isArray(result.items)) summary.itemCount = result.items.length;
+    if (Array.isArray(result.bins)) summary.binCount = result.bins.length;
+    return summary;
+  }
+
+  private countSweepResults(results: Array<{ status: string }>): Record<string, number> {
+    return {
+      total: results.length,
+      executed: results.filter((entry) => entry.status === 'executed').length,
+      runtime_failure: results.filter((entry) => entry.status === 'runtime_failure').length,
+      skipped: results.filter((entry) => entry.status === 'skipped').length
+    };
+  }
+
+  private isPathInside(parentPath: string, childPath: string): boolean {
+    const parent = resolve(parentPath);
+    const child = resolve(childPath);
+    const childRelativeToParent = relative(parent, child);
+    return childRelativeToParent === '' || (
+      childRelativeToParent !== '' &&
+      !childRelativeToParent.startsWith('..') &&
+      !isAbsolute(childRelativeToParent)
+    );
+  }
+
+  private validateScratchProjectName(name: string): void {
+    if (!name.trim()) {
+      throw new Error('scratchProjectName must not be empty');
+    }
+    if (name.includes('/') || name.includes('\\') || name === '.' || name === '..' || name.split(/[\\/]/).includes('..')) {
+      throw new Error('scratchProjectName must be a plain project name, not a path');
+    }
+  }
+
+  private resolveSafeSweepReportPath(scratchProjectDir: string, requestedReportPath: string | undefined, runId: number): string {
+    const defaultReportPath = join(scratchProjectDir, `live-tool-sweep-safe-${runId}.json`);
+    const reportPath = requestedReportPath
+      ? (isAbsolute(requestedReportPath) ? resolve(requestedReportPath) : resolve(scratchProjectDir, requestedReportPath))
+      : defaultReportPath;
+
+    if (!this.isPathInside(scratchProjectDir, reportPath)) {
+      throw new Error('reportPath must resolve inside scratchProjectDir');
+    }
+    return reportPath;
+  }
+
+  private async prepareSafeSweepReportPath(scratchProjectDir: string, reportPath: string): Promise<void> {
+    const scratchRealPath = await fs.realpath(scratchProjectDir);
+    const reportDir = dirname(reportPath);
+    const relativeReportDir = relative(scratchProjectDir, reportDir);
+
+    if (relativeReportDir && (isAbsolute(relativeReportDir) || relativeReportDir === '..' || relativeReportDir.startsWith(`..${sep}`) || relativeReportDir.split(/[\\/]+/).includes('..'))) {
+      throw new Error('reportPath must resolve inside scratchProjectDir');
+    }
+
+    let currentDir = scratchProjectDir;
+    const reportDirParts = relativeReportDir.split(/[\\/]+/).filter(Boolean);
+    for (const part of reportDirParts) {
+      currentDir = join(currentDir, part);
+      try {
+        const directoryStat = await fs.lstat(currentDir);
+        if (directoryStat.isSymbolicLink()) {
+          throw new Error('reportPath parent directories must not contain symbolic links');
+        }
+        if (!directoryStat.isDirectory()) {
+          throw new Error('reportPath parent must be a directory');
+        }
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') {
+          throw error;
+        }
+        await fs.mkdir(currentDir, { mode: 0o700 });
+        const directoryStat = await fs.lstat(currentDir);
+        if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+          throw new Error('reportPath parent must be a real directory');
+        }
+      }
+
+      const currentDirRealPath = await fs.realpath(currentDir);
+      if (!this.isPathInside(scratchRealPath, currentDirRealPath)) {
+        throw new Error('reportPath must stay inside scratchProjectDir after resolving symlinks');
+      }
+    }
+
+    const reportDirRealPath = await fs.realpath(reportDir);
+    if (!this.isPathInside(scratchRealPath, reportDirRealPath)) {
+      throw new Error('reportPath must stay inside scratchProjectDir after resolving symlinks');
+    }
+
+    try {
+      const reportFileStat = await fs.lstat(reportPath);
+      if (reportFileStat.isSymbolicLink()) {
+        throw new Error('reportPath must not be a symbolic link');
+      }
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
+  private async writeSafeSweepReport(scratchProjectDir: string, reportPath: string, report: Record<string, any>): Promise<void> {
+    await this.prepareSafeSweepReportPath(scratchProjectDir, reportPath);
+    const noFollowFlag = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+    const handle = await fs.open(
+      reportPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | noFollowFlag,
+      0o600
+    );
+    try {
+      await handle.writeFile(JSON.stringify(report, null, 2));
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async liveToolSweepSafe(args: LiveToolSweepSafeArgs): Promise<any> {
+    const runId = Date.now();
+    const mode = args.mode || 'smoke';
+    const scratchProjectDir = resolve(args.scratchProjectDir);
+    const scratchProjectName = args.scratchProjectName || `Premiere MCP Safe Sweep ${runId}`;
+    this.validateScratchProjectName(scratchProjectName);
+    const reportPath = this.resolveSafeSweepReportPath(scratchProjectDir, args.reportPath, runId);
+    const results: any[] = [];
+
+    const record = (name: string, toolArgs: Record<string, any>, result: any, note?: string) => {
+      results.push({
+        name,
+        status: result?.success === false ? 'runtime_failure' : 'executed',
+        args: toolArgs,
+        note,
+        result: this.summarizeLiveSweepResult(result)
+      });
+    };
+
+    const invoke = async (name: string, toolArgs: Record<string, any>, fn: () => Promise<any>, note?: string) => {
+      try {
+        const result = await fn();
+        record(name, toolArgs, result, note);
+        return result;
+      } catch (error) {
+        const result = {
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        };
+        record(name, toolArgs, result, note);
+        return result;
+      }
+    };
+
+    const writeReport = async (extra: Record<string, any> = {}) => {
+      const counts = this.countSweepResults(results);
+      const report = {
+        success: counts.runtime_failure === 0,
+        runId,
+        mode,
+        scratchProjectName,
+        scratchProjectDir,
+        scratchProjectPath: extra.scratchProjectPath || null,
+        reportPath,
+        counts,
+        results,
+        ...extra
+      };
+      await this.writeSafeSweepReport(scratchProjectDir, reportPath, report);
+      return report;
+    };
+
+    await fs.mkdir(scratchProjectDir, { recursive: true });
+    await this.prepareSafeSweepReportPath(scratchProjectDir, reportPath);
+
+    const createArgs = { name: scratchProjectName, location: scratchProjectDir };
+    const createdProject = await invoke(
+      'create_project',
+      createArgs,
+      () => this.createProject(scratchProjectName, scratchProjectDir),
+      'create disposable scratch project before running any mutating sweep steps'
+    );
+    const scratchProjectPath = createdProject.projectPath || join(scratchProjectDir, `${scratchProjectName}.prproj`);
+
+    if (!createdProject.success) {
+      const report = await writeReport({
+        success: false,
+        stage: 'create_project',
+        error: createdProject.error || 'Scratch project creation failed',
+        scratchProjectPath
+      });
+      return report;
+    }
+
+    await invoke('test_connection', {}, () => this.testConnection(), 'verify bridge round trip in the scratch project');
+    await invoke('list_sequences', {}, () => this.listSequences(), 'verify scratch sequence inventory is readable');
+    await invoke('list_project_items', {}, () => this.listProjectItems(), 'verify scratch project inventory is readable');
+
+    return await writeReport({ scratchProjectPath });
+  }
+
   private async listProjectItems(includeBins = true, _includeMetadata = false): Promise<any> {
     const script = `
       try {
@@ -1496,7 +3535,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequences = [];
-        
+
         for (var i = 0; i < app.project.sequences.numSequences; i++) {
           var seq = app.project.sequences[i];
           sequences.push({
@@ -1523,81 +3562,177 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
-  private async listSequenceTracks(sequenceId: string): Promise<any> {
+  private async listSequenceTracks(sequenceId?: string): Promise<any> {
+    const sequenceIdJson = sequenceId ? JSON.stringify(sequenceId) : 'null';
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
-        if (!sequence) {
-          sequence = app.project.activeSequence;
+        var requestedSequenceId = ${sequenceIdJson};
+        var sequence = requestedSequenceId ? __findSequence(requestedSequenceId) : app.project.activeSequence;
+        var warnings = [];
+        if (requestedSequenceId && !sequence) {
+          return JSON.stringify({
+            success: false,
+            error: "Sequence not found by id: " + requestedSequenceId,
+            requestedSequenceId: requestedSequenceId,
+            warnings: warnings
+          });
         }
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "Sequence not found"
+            error: "No active sequence found",
+            requestedSequenceId: requestedSequenceId,
+            warnings: warnings
           });
+        }
+
+        function __safeString(value) {
+          try {
+            if (value === null || value === undefined) return null;
+            return String(value);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __safeSeconds(timeObj, label, clipWarnings) {
+          try {
+            if (timeObj && typeof timeObj.seconds === "number") return timeObj.seconds;
+            if (timeObj && timeObj.seconds !== undefined && timeObj.seconds !== null) {
+              var numberValue = Number(timeObj.seconds);
+              return isFinite(numberValue) ? numberValue : null;
+            }
+          } catch (timeError) {
+            clipWarnings.push(label + " unavailable: " + timeError.toString());
+          }
+          return null;
+        }
+
+        function __clipEnabled(clip, clipWarnings) {
+          try {
+            if (clip && typeof clip.isEnabled === "function") return !!clip.isEnabled();
+            if (clip && clip.disabled !== undefined) return !clip.disabled;
+            if (clip && clip.enabled !== undefined) return !!clip.enabled;
+          } catch (enabledError) {
+            clipWarnings.push("enabled unavailable: " + enabledError.toString());
+          }
+          return null;
+        }
+
+        function __clipLinked(clip, clipWarnings) {
+          try {
+            if (clip && typeof clip.isLinked === "function") return !!clip.isLinked();
+            if (clip && clip.linked !== undefined) return !!clip.linked;
+          } catch (linkedError) {
+            clipWarnings.push("linked unavailable: " + linkedError.toString());
+          }
+          return null;
+        }
+
+        function __clipProjectItemSummary(clip, clipWarnings) {
+          var item = null;
+          try {
+            item = clip && clip.projectItem ? clip.projectItem : null;
+          } catch (projectItemError) {
+            clipWarnings.push("projectItem unavailable: " + projectItemError.toString());
+          }
+
+          var projectItemId = null;
+          var projectItemName = null;
+          var mediaPath = null;
+          if (item) {
+            try { projectItemId = item.nodeId !== undefined && item.nodeId !== null ? String(item.nodeId) : null; } catch (idError) { clipWarnings.push("projectItemId unavailable: " + idError.toString()); }
+            try { projectItemName = item.name !== undefined && item.name !== null ? String(item.name) : null; } catch (nameError) { clipWarnings.push("projectItemName unavailable: " + nameError.toString()); }
+            try {
+              if (typeof item.getMediaPath === "function") mediaPath = item.getMediaPath();
+            } catch (mediaPathError) {
+              clipWarnings.push("mediaPath unavailable: " + mediaPathError.toString());
+            }
+          }
+
+          return {
+            projectItemId: projectItemId,
+            projectItemName: projectItemName,
+            mediaPath: mediaPath
+          };
+        }
+
+        function __clipSummary(clip, trackType, trackIndex, clipIndex) {
+          var clipWarnings = [];
+          var itemSummary = __clipProjectItemSummary(clip, clipWarnings);
+          return {
+            id: __safeString(clip.nodeId),
+            name: __safeString(clip.name),
+            startTime: __safeSeconds(clip.start, "startTime", clipWarnings),
+            endTime: __safeSeconds(clip.end, "endTime", clipWarnings),
+            duration: __safeSeconds(clip.duration, "duration", clipWarnings),
+            inPoint: __safeSeconds(clip.inPoint, "inPoint", clipWarnings),
+            outPoint: __safeSeconds(clip.outPoint, "outPoint", clipWarnings),
+            trackType: trackType,
+            trackIndex: trackIndex,
+            clipIndex: clipIndex,
+            enabled: __clipEnabled(clip, clipWarnings),
+            linked: __clipLinked(clip, clipWarnings),
+            projectItemId: itemSummary.projectItemId,
+            projectItemName: itemSummary.projectItemName,
+            mediaPath: itemSummary.mediaPath,
+            warnings: clipWarnings
+          };
         }
 
         var videoTracks = [];
         var audioTracks = [];
 
         for (var i = 0; i < sequence.videoTracks.numTracks; i++) {
-          var track = sequence.videoTracks[i];
-          var clips = [];
+          var videoTrack = sequence.videoTracks[i];
+          var videoClips = [];
 
-          for (var j = 0; j < track.clips.numItems; j++) {
-            var clip = track.clips[j];
-            clips.push({
-              id: clip.nodeId,
-              name: clip.name,
-              startTime: clip.start.seconds,
-              endTime: clip.end.seconds,
-              duration: clip.duration.seconds
-            });
+          for (var j = 0; j < videoTrack.clips.numItems; j++) {
+            var videoClip = videoTrack.clips[j];
+            videoClips.push(__clipSummary(videoClip, "video", i, j));
           }
 
           videoTracks.push({
             index: i,
-            name: track.name || "Video " + (i + 1),
-            clips: clips,
-            clipCount: clips.length
+            trackType: "video",
+            name: videoTrack.name || "Video " + (i + 1),
+            clips: videoClips,
+            clipCount: videoClips.length
           });
         }
 
-        for (var i = 0; i < sequence.audioTracks.numTracks; i++) {
-          var track = sequence.audioTracks[i];
-          var clips = [];
+        for (var a = 0; a < sequence.audioTracks.numTracks; a++) {
+          var audioTrack = sequence.audioTracks[a];
+          var audioClips = [];
 
-          for (var j = 0; j < track.clips.numItems; j++) {
-            var clip = track.clips[j];
-            clips.push({
-              id: clip.nodeId,
-              name: clip.name,
-              startTime: clip.start.seconds,
-              endTime: clip.end.seconds,
-              duration: clip.duration.seconds
-            });
+          for (var c = 0; c < audioTrack.clips.numItems; c++) {
+            var audioClip = audioTrack.clips[c];
+            audioClips.push(__clipSummary(audioClip, "audio", a, c));
           }
 
           audioTracks.push({
-            index: i,
-            name: track.name || "Audio " + (i + 1),
-            clips: clips,
-            clipCount: clips.length
+            index: a,
+            trackType: "audio",
+            name: audioTrack.name || "Audio " + (a + 1),
+            clips: audioClips,
+            clipCount: audioClips.length
           });
         }
 
         return JSON.stringify({
           success: true,
-          sequenceId: "${sequenceId}",
+          sequenceId: sequence.sequenceID || requestedSequenceId,
+          requestedSequenceId: requestedSequenceId,
           sequenceName: sequence.name,
           videoTracks: videoTracks,
           audioTracks: audioTracks,
           totalVideoTracks: videoTracks.length,
-          totalAudioTracks: audioTracks.length
+          totalAudioTracks: audioTracks.length,
+          warnings: warnings
         });
       } catch (e) {
         return JSON.stringify({
@@ -1605,6 +3740,2208 @@ export class PremiereProTools {
           error: e.toString()
         });
       }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async scanConformMediaMetadata(args: ScanConformMediaMetadataArgs): Promise<any> {
+    const payload = JSON.stringify({
+      projectItemIds: args.projectItemIds || [],
+      mediaPaths: args.mediaPaths || [],
+      binId: args.binId || null,
+      includeOffline: args.includeOffline === true,
+      includeSequences: args.includeSequences === true,
+      includeXmp: args.includeXmp === true,
+      metadataFields: args.metadataFields || []
+    });
+
+    const script = `
+      function __scanConformMediaMetadata() {
+        try {
+          var payload = ${payload};
+          var requestedIds = payload.projectItemIds || [];
+          var requestedPaths = payload.mediaPaths || [];
+          var requestedPathMap = {};
+          for (var rp = 0; rp < requestedPaths.length; rp++) {
+            requestedPathMap[String(requestedPaths[rp])] = true;
+          }
+
+          function __findProjectItem(id) {
+            function walk(parent) {
+              if (!parent || !parent.children) return null;
+              for (var i = 0; i < parent.children.numItems; i++) {
+                var child = parent.children[i];
+                if (String(child.nodeId) === String(id)) return child;
+                var found = walk(child);
+                if (found) return found;
+              }
+              return null;
+            }
+            return walk(app.project.rootItem);
+          }
+
+          function __walkProjectItems(parent, items) {
+            if (!parent || !parent.children) return;
+            for (var i = 0; i < parent.children.numItems; i++) {
+              var child = parent.children[i];
+              items.push(child);
+              __walkProjectItems(child, items);
+            }
+          }
+
+          function __safeSeconds(timeObj) {
+            try {
+              if (timeObj && typeof timeObj.seconds === 'number') return timeObj.seconds;
+            } catch (ignored) {}
+            return null;
+          }
+
+          function __readMetadata(item) {
+            var metadata = { project: null, xmp: null, selectedFields: {}, warnings: [] };
+            try { metadata.project = item.getProjectMetadata(); } catch (e) { metadata.warnings.push('getProjectMetadata unavailable: ' + e.toString()); }
+            if (payload.includeXmp) {
+              try { metadata.xmp = item.getXMPMetadata(); } catch (e2) { metadata.warnings.push('getXMPMetadata unavailable: ' + e2.toString()); }
+            }
+            for (var f = 0; f < payload.metadataFields.length; f++) {
+              var field = payload.metadataFields[f];
+              var haystack = String(metadata.project || '') + '\\n' + String(metadata.xmp || '');
+              var index = haystack.indexOf(field);
+              metadata.selectedFields[field] = index >= 0 ? index : null;
+            }
+            return metadata;
+          }
+
+          function __metadataValue(raw, patterns) {
+            var text = String(raw || '');
+            for (var p = 0; p < patterns.length; p++) {
+              var match = patterns[p].exec(text);
+              if (match && match[1]) return match[1];
+            }
+            return null;
+          }
+
+          function __safeNumber(value) {
+            var numberValue = Number(value);
+            return isFinite(numberValue) ? numberValue : null;
+          }
+
+          function __readFootageInterpretation(item, warnings) {
+            try {
+              if (!item || !item.getFootageInterpretation) return null;
+              var interp = item.getFootageInterpretation();
+              return {
+                frameRate: __safeNumber(interp.frameRate),
+                pixelAspectRatio: __safeNumber(interp.pixelAspectRatio),
+                fieldType: interp.fieldType !== undefined ? interp.fieldType : null,
+                removePulldown: interp.removePulldown !== undefined ? interp.removePulldown : null,
+                alphaUsage: interp.alphaUsage !== undefined ? interp.alphaUsage : null
+              };
+            } catch (footageError) {
+              warnings.push('getFootageInterpretation unavailable: ' + footageError.toString());
+              return null;
+            }
+          }
+
+          function __isNtscDropFrameRate(frameRate) {
+            return Math.abs(frameRate - 29.97) < 0.02 || Math.abs(frameRate - 59.94) < 0.02;
+          }
+
+          function __timecodeToFrames(timecode, frameRate, warnings) {
+            if (!timecode) return null;
+            if (!frameRate) {
+              if (warnings) warnings.push('missingSourceFrameRateForSourceTimecode');
+              return null;
+            }
+            var match = String(timecode).match(/^([0-9]{2})([:;])([0-9]{2})([:;])([0-9]{2})([:;])([0-9]{2})$/);
+            if (!match) {
+              if (warnings) warnings.push('invalidSourceStartTimecode: invalid format');
+              return null;
+            }
+            var hours = Number(match[1]);
+            var minutes = Number(match[3]);
+            var seconds = Number(match[5]);
+            var frames = Number(match[7]);
+            var fps = Math.round(frameRate);
+            if (minutes > 59 || seconds > 59 || frames >= fps) {
+              if (warnings) warnings.push('invalidSourceStartTimecode: fields out of range');
+              return null;
+            }
+            var totalFrames = (((hours * 60 + minutes) * 60 + seconds) * fps) + frames;
+            if (String(timecode).indexOf(';') >= 0) {
+              if (!__isNtscDropFrameRate(frameRate)) {
+                if (warnings) warnings.push('dropFrameTimecodeAtNonNtscRate');
+                return totalFrames;
+              }
+              var dropFrames = Math.round(fps * 0.0666666667);
+              if ((minutes % 10) !== 0 && seconds === 0 && frames < dropFrames) {
+                if (warnings) warnings.push('invalidSourceStartTimecode: Invalid dropped frame label');
+                return null;
+              }
+              var totalMinutes = hours * 60 + minutes;
+              totalFrames -= dropFrames * (totalMinutes - Math.floor(totalMinutes / 10));
+            }
+            return totalFrames;
+          }
+
+          function __itemToConformRecord(item) {
+            var warnings = [];
+            var mediaPath = null;
+            try { mediaPath = item.getMediaPath(); } catch (e) { warnings.push('mediaPath unavailable: ' + e.toString()); }
+            var projectMetadata = null;
+            var xmpMetadata = null;
+            try { projectMetadata = item.getProjectMetadata(); } catch (pm) {}
+            if (payload.includeXmp) {
+              try { xmpMetadata = item.getXMPMetadata(); } catch (xm) {}
+            }
+            var metadataText = String(projectMetadata || '') + '\\n' + String(xmpMetadata || '');
+            var reelName = __metadataValue(metadataText, [/reel(?:Name)?["'\\s:=]+([^"'<>\\n\\r]+)/i, /tape(?:Name)?["'\\s:=]+([^"'<>\\n\\r]+)/i, /cameraRoll["'\\s:=]+([^"'<>\\n\\r]+)/i]);
+            var startTimecode = __metadataValue(metadataText, [/(?:start|source)Timecode["'\\s:=]+([0-9]{2}[:;][0-9]{2}[:;][0-9]{2}[:;][0-9]{2})/i, /timecode["'\\s:=]+([0-9]{2}[:;][0-9]{2}[:;][0-9]{2}[:;][0-9]{2})/i]);
+            var sourceVideoWidth = __safeNumber(__metadataValue(metadataText, [/sourceVideoWidth["'\\s:=]+([0-9.]+)/i, /videoWidth["'\\s:=]+([0-9.]+)/i, /frameWidth["'\\s:=]+([0-9.]+)/i]));
+            var sourceVideoHeight = __safeNumber(__metadataValue(metadataText, [/sourceVideoHeight["'\\s:=]+([0-9.]+)/i, /videoHeight["'\\s:=]+([0-9.]+)/i, /frameHeight["'\\s:=]+([0-9.]+)/i]));
+            var durationSeconds = null;
+            try { durationSeconds = item.getOutPoint().seconds - item.getInPoint().seconds; } catch (dur) {}
+            var footageInterpretation = __readFootageInterpretation(item, warnings);
+            var frameRateValue = footageInterpretation && footageInterpretation.frameRate ? footageInterpretation.frameRate : null;
+            var durationFrames = durationSeconds !== null && frameRateValue ? Math.round(durationSeconds * frameRateValue) : null;
+            var sourceStartFrame = __timecodeToFrames(startTimecode, frameRateValue, warnings);
+            var raster = { width: sourceVideoWidth, height: sourceVideoHeight, pixelAspectRatio: footageInterpretation ? footageInterpretation.pixelAspectRatio : null };
+            return {
+              projectItemId: String(item.nodeId),
+              name: item.name,
+              mediaPath: mediaPath,
+              treePath: item.treePath || null,
+              type: item.type === 2 ? 'bin' : (item.isSequence && item.isSequence() ? 'sequence' : 'footage'),
+              durationSeconds: durationSeconds,
+              durationFrames: durationFrames,
+              frameRate: frameRateValue ? { fps: frameRateValue, nominalFps: Math.round(frameRateValue) } : null,
+              footageInterpretation: footageInterpretation,
+              raster: raster,
+              inPointSeconds: __safeSeconds(item.getInPoint ? item.getInPoint() : null),
+              outPointSeconds: __safeSeconds(item.getOutPoint ? item.getOutPoint() : null),
+              reelName: reelName,
+              tapeName: reelName,
+              sourceStartTimecode: startTimecode,
+              sourceStartFrame: sourceStartFrame,
+              rawMetadata: __readMetadata(item),
+              warnings: warnings
+            };
+          }
+
+          var candidates = [];
+          if (payload.binId) {
+            var bin = __findProjectItem(payload.binId);
+            if (!bin) return JSON.stringify({ success: false, mutationPlanned: false, error: 'Bin not found: ' + payload.binId });
+            __walkProjectItems(bin, candidates);
+          } else if (requestedIds.length > 0) {
+            for (var idIndex = 0; idIndex < requestedIds.length; idIndex++) {
+              var item = __findProjectItem(requestedIds[idIndex]);
+              if (item) candidates.push(item);
+            }
+          } else {
+            __walkProjectItems(app.project.rootItem, candidates);
+          }
+
+          var items = [];
+          var missingProjectItemIds = [];
+          for (var missingIndex = 0; missingIndex < requestedIds.length; missingIndex++) {
+            if (!__findProjectItem(requestedIds[missingIndex])) missingProjectItemIds.push(requestedIds[missingIndex]);
+          }
+
+          for (var c = 0; c < candidates.length; c++) {
+            var record = __itemToConformRecord(candidates[c]);
+            if (!payload.includeSequences && record.type === 'sequence') continue;
+            if (!payload.includeOffline && !record.mediaPath && record.type !== 'sequence') continue;
+            if (requestedPaths.length > 0 && record.mediaPath && !requestedPathMap[String(record.mediaPath)]) continue;
+            items.push(record);
+          }
+
+          return JSON.stringify({
+            success: true,
+            mutationPlanned: false,
+            scannedAt: new Date().toISOString(),
+            criteria: payload,
+            items: items,
+            totalItems: items.length,
+            missingProjectItemIds: missingProjectItemIds,
+            warnings: missingProjectItemIds.length ? ['missingProjectItems'] : []
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: false, error: e.toString() });
+        }
+      }
+      return __scanConformMediaMetadata();
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async snapshotSequenceForConform(args: SnapshotSequenceForConformArgs): Promise<any> {
+    const payload = JSON.stringify({
+      sequenceId: args.sequenceId,
+      trackRoles: args.trackRoles || {},
+      includeEffects: args.includeEffects !== false,
+      includeKeyframes: args.includeKeyframes === true,
+      includeDisabled: args.includeDisabled === true
+    });
+
+    const script = `
+      function __snapshotSequenceForConform() {
+        try {
+          var payload = ${payload};
+          var defaults = { includeDisabled: false };
+          if (payload.includeDisabled !== true) payload.includeDisabled = defaults.includeDisabled;
+          var sequence = __findSequence(payload.sequenceId);
+          if (!sequence) return JSON.stringify({ success: false, mutationPlanned: false, error: 'Sequence not found: ' + payload.sequenceId });
+
+          function __secondsToFrame(seconds, frameRate) {
+            if (seconds === null || seconds === undefined || isNaN(seconds) || !frameRate) return null;
+            return Math.round(Number(seconds) * frameRate);
+          }
+
+          function __timeSeconds(timeObj) {
+            try {
+              if (timeObj && typeof timeObj.seconds === 'number') return timeObj.seconds;
+            } catch (ignored) {}
+            return null;
+          }
+
+          function __clipProjectItem(clip) {
+            try { return clip.projectItem || null; } catch (e) { return null; }
+          }
+
+          function __safeNumber(value) {
+            var numberValue = Number(value);
+            return isFinite(numberValue) ? numberValue : null;
+          }
+
+          function __metadataValue(raw, patterns) {
+            var text = String(raw || '');
+            for (var p = 0; p < patterns.length; p++) {
+              var match = patterns[p].exec(text);
+              if (match && match[1]) return match[1];
+            }
+            return null;
+          }
+
+          function __isNtscDropFrameRate(frameRate) {
+            return Math.abs(frameRate - 29.97) < 0.02 || Math.abs(frameRate - 59.94) < 0.02;
+          }
+
+          function __timecodeToFrames(timecode, frameRate, warnings) {
+            if (!timecode) return null;
+            if (!frameRate) {
+              if (warnings) warnings.push('missingSourceFrameRateForSourceTimecode');
+              return null;
+            }
+            var match = String(timecode).match(/^([0-9]{2})([:;])([0-9]{2})([:;])([0-9]{2})([:;])([0-9]{2})$/);
+            if (!match) {
+              if (warnings) warnings.push('invalidSourceStartTimecode: invalid format');
+              return null;
+            }
+            var hours = Number(match[1]);
+            var minutes = Number(match[3]);
+            var seconds = Number(match[5]);
+            var frames = Number(match[7]);
+            var fps = Math.round(frameRate);
+            if (minutes > 59 || seconds > 59 || frames >= fps) {
+              if (warnings) warnings.push('invalidSourceStartTimecode: fields out of range');
+              return null;
+            }
+            var totalFrames = (((hours * 60 + minutes) * 60 + seconds) * fps) + frames;
+            if (String(timecode).indexOf(';') >= 0) {
+              if (!__isNtscDropFrameRate(frameRate)) {
+                if (warnings) warnings.push('dropFrameTimecodeAtNonNtscRate');
+                return totalFrames;
+              }
+              var dropFrames = Math.round(fps * 0.0666666667);
+              if ((minutes % 10) !== 0 && seconds === 0 && frames < dropFrames) {
+                if (warnings) warnings.push('invalidSourceStartTimecode: Invalid dropped frame label');
+                return null;
+              }
+              var totalMinutes = hours * 60 + minutes;
+              totalFrames -= dropFrames * (totalMinutes - Math.floor(totalMinutes / 10));
+            }
+            return totalFrames;
+          }
+
+          function __readItemConformIdentity(item, sequenceFrameRate, warnings) {
+            var projectMetadata = null;
+            try { if (item && item.getProjectMetadata) projectMetadata = item.getProjectMetadata(); } catch (metadataError) { warnings.push('projectMetadataUnavailable'); }
+            var metadataText = String(projectMetadata || '');
+            var sourceStartTimecode = __metadataValue(metadataText, [/(?:start|source)Timecode["'\\s:=]+([0-9]{2}[:;][0-9]{2}[:;][0-9]{2}[:;][0-9]{2})/i, /timecode["'\\s:=]+([0-9]{2}[:;][0-9]{2}[:;][0-9]{2}[:;][0-9]{2})/i]);
+            var reelName = __metadataValue(metadataText, [/reel(?:Name)?["'\\s:=]+([^"'<>\\n\\r]+)/i, /tape(?:Name)?["'\\s:=]+([^"'<>\\n\\r]+)/i, /cameraRoll["'\\s:=]+([^"'<>\\n\\r]+)/i]);
+            var footageInterpretation = null;
+            try {
+              if (item && item.getFootageInterpretation) {
+                var interp = item.getFootageInterpretation();
+                footageInterpretation = {
+                  frameRate: __safeNumber(interp.frameRate),
+                  pixelAspectRatio: __safeNumber(interp.pixelAspectRatio),
+                  fieldType: interp.fieldType !== undefined ? interp.fieldType : null
+                };
+              }
+            } catch (footageError) { warnings.push('getFootageInterpretation unavailable: ' + footageError.toString()); }
+            var sourceFrameRate = footageInterpretation && footageInterpretation.frameRate ? footageInterpretation.frameRate : null;
+            return {
+              reelName: reelName,
+              tapeName: reelName,
+              sourceStartTimecode: sourceStartTimecode,
+              sourceStartFrame: __timecodeToFrames(sourceStartTimecode, sourceFrameRate, warnings),
+              frameRate: sourceFrameRate ? { fps: sourceFrameRate, nominalFps: Math.round(sourceFrameRate) } : null,
+              footageInterpretation: footageInterpretation,
+              raster: { width: null, height: null, pixelAspectRatio: footageInterpretation ? footageInterpretation.pixelAspectRatio : null }
+            };
+          }
+
+          function __clipEnabled(clip) {
+            try {
+              if (clip && typeof clip.isEnabled === 'function') return clip.isEnabled();
+              if (clip && clip.disabled !== undefined) return !clip.disabled;
+            } catch (_) { }
+            return true;
+          }
+
+          function __effectSummary(clip) {
+            var effects = [];
+            if (!payload.includeEffects) return effects;
+            try {
+              if (!clip.components) return effects;
+              for (var ci = 0; ci < clip.components.numItems; ci++) {
+                var component = clip.components[ci];
+                var properties = [];
+                try {
+                  for (var pi = 0; pi < component.properties.numItems; pi++) {
+                    var prop = component.properties[pi];
+                    var value = null;
+                    var keyframed = false;
+                    try { value = prop.getValue(); } catch (pv) {}
+                    try {
+                      if (payload.includeKeyframes && prop.areKeyframesSupported && prop.areKeyframesSupported() && prop.isTimeVarying && prop.isTimeVarying()) keyframed = true;
+                    } catch (kf) {}
+                    properties.push({
+                      index: pi,
+                      displayName: prop.displayName || null,
+                      matchName: prop.matchName || null,
+                      value: value,
+                      keyframed: keyframed,
+                      keyframesIncluded: payload.includeKeyframes
+                    });
+                  }
+                } catch (propsError) {}
+                effects.push({
+                  index: ci,
+                  displayName: component.displayName || null,
+                  matchName: component.matchName || null,
+                  properties: properties
+                });
+              }
+            } catch (e) {
+              effects.push({ unsupported: true, error: e.toString() });
+            }
+            return effects;
+          }
+
+          function __clipSnapshot(clip, trackType, trackIndex, clipIndex, frameRate) {
+            var item = __clipProjectItem(clip);
+            var warnings = [];
+            var mediaPath = null;
+            try { if (item) mediaPath = item.getMediaPath(); } catch (mp) { warnings.push('mediaPathUnavailable'); }
+            var projectItemId = item ? String(item.nodeId) : null;
+            var mediaIdentityDetails = __readItemConformIdentity(item, frameRate, warnings);
+            var mediaIdentity = {
+              projectItemId: projectItemId,
+              mediaPath: mediaPath,
+              name: item ? item.name : null,
+              treePath: item ? (item.treePath || null) : null,
+              reelName: mediaIdentityDetails.reelName,
+              tapeName: mediaIdentityDetails.tapeName,
+              sourceStartTimecode: mediaIdentityDetails.sourceStartTimecode,
+              sourceStartFrame: mediaIdentityDetails.sourceStartFrame,
+              frameRate: mediaIdentityDetails.frameRate,
+              footageInterpretation: mediaIdentityDetails.footageInterpretation,
+              raster: mediaIdentityDetails.raster
+            };
+            var timelineStartSeconds = __timeSeconds(clip.start);
+            var timelineEndSeconds = __timeSeconds(clip.end);
+            var sourceInSeconds = __timeSeconds(clip.inPoint);
+            var sourceOutSeconds = __timeSeconds(clip.outPoint);
+            var timelineStartFrame = __secondsToFrame(timelineStartSeconds, frameRate);
+            var timelineEndFrame = __secondsToFrame(timelineEndSeconds, frameRate);
+            var sourceFrameRate = mediaIdentityDetails.frameRate && mediaIdentityDetails.frameRate.fps ? mediaIdentityDetails.frameRate.fps : null;
+            if (!sourceFrameRate && (sourceInSeconds !== null || sourceOutSeconds !== null)) warnings.push('missingSourceFrameRateForSourceInOut');
+            var sourceInFrame = __secondsToFrame(sourceInSeconds, sourceFrameRate);
+            var sourceOutFrame = __secondsToFrame(sourceOutSeconds, sourceFrameRate);
+            return {
+              offlineClipId: String(clip.nodeId),
+              clipId: String(clip.nodeId),
+              name: clip.name,
+              trackType: trackType,
+              trackIndex: trackIndex,
+              clipIndex: clipIndex,
+              timelineStartSeconds: timelineStartSeconds,
+              timelineEndSeconds: timelineEndSeconds,
+              timelineStartFrame: timelineStartFrame,
+              timelineEndFrame: timelineEndFrame,
+              timelineDurationFrames: timelineStartFrame !== null && timelineEndFrame !== null ? timelineEndFrame - timelineStartFrame : null,
+              sourceInSeconds: sourceInSeconds,
+              sourceOutSeconds: sourceOutSeconds,
+              sourceInFrame: sourceInFrame,
+              sourceOutFrame: sourceOutFrame,
+              sourceDurationFrames: sourceInFrame !== null && sourceOutFrame !== null ? sourceOutFrame - sourceInFrame : null,
+              durationFrames: sourceInFrame !== null && sourceOutFrame !== null ? sourceOutFrame - sourceInFrame : null,
+              sourceStartTimecode: mediaIdentityDetails.sourceStartTimecode,
+              sourceStartFrame: mediaIdentityDetails.sourceStartFrame,
+              frameRate: mediaIdentityDetails.frameRate,
+              raster: mediaIdentityDetails.raster,
+              projectItemId: projectItemId,
+              mediaPath: mediaPath,
+              mediaIdentity: mediaIdentity,
+              effectsSnapshot: __effectSummary(clip),
+              warnings: warnings
+            };
+          }
+
+          var frameRate = null;
+          try { frameRate = Number(sequence.timebase) ? (254016000000 / Number(sequence.timebase)) : null; } catch (rateError) {}
+          var tracks = [];
+          var clips = [];
+          var roleMaps = payload.trackRoles || {};
+
+          for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+            var vTrack = sequence.videoTracks[vt];
+            var vRole = roleMaps.video && roleMaps.video[String(vt)] ? roleMaps.video[String(vt)] : 'picture';
+            var videoClipCount = 0;
+            for (var vc = 0; vc < vTrack.clips.numItems; vc++) {
+              var vClip = vTrack.clips[vc];
+              if (!(payload.includeDisabled || __clipEnabled(vClip))) continue;
+              var vSnap = __clipSnapshot(vClip, 'video', vt, vc, frameRate);
+              clips.push(vSnap);
+              videoClipCount++;
+            }
+            tracks.push({ trackType: 'video', trackIndex: vt, name: vTrack.name || ('Video ' + (vt + 1)), role: vRole, clipCount: videoClipCount, warnings: [] });
+          }
+
+          for (var at = 0; at < sequence.audioTracks.numTracks; at++) {
+            var aTrack = sequence.audioTracks[at];
+            var aRole = roleMaps.audio && roleMaps.audio[String(at)] ? roleMaps.audio[String(at)] : 'audio';
+            var audioClipCount = 0;
+            for (var ac = 0; ac < aTrack.clips.numItems; ac++) {
+              var aClip = aTrack.clips[ac];
+              if (!(payload.includeDisabled || __clipEnabled(aClip))) continue;
+              var aSnap = __clipSnapshot(aClip, 'audio', at, ac, frameRate);
+              clips.push(aSnap);
+              audioClipCount++;
+            }
+            tracks.push({ trackType: 'audio', trackIndex: at, name: aTrack.name || ('Audio ' + (at + 1)), role: aRole, clipCount: audioClipCount, warnings: [] });
+          }
+
+          return JSON.stringify({
+            success: true,
+            mutationPlanned: false,
+            sequence: {
+              sequenceId: sequence.sequenceID,
+              name: sequence.name,
+              frameRate: { fps: frameRate, nominalFps: Math.round(frameRate) },
+              width: sequence.frameSizeHorizontal || null,
+              height: sequence.frameSizeVertical || null
+            },
+            tracks: tracks,
+            clips: clips,
+            warnings: []
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: false, error: e.toString() });
+        }
+      }
+      return __snapshotSequenceForConform();
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async scanTimelineCleanupState(args: ScanTimelineCleanupStateArgs): Promise<any> {
+    const payload = JSON.stringify({
+      sequenceId: args.sequenceId,
+      includeDisabled: args.includeDisabled !== false,
+      includeEffects: args.includeEffects !== false,
+      includeKeyframes: args.includeKeyframes === true,
+    });
+
+    const script = `
+      function __scanTimelineCleanupState() {
+        try {
+          var payload = ${payload};
+          var sequence = __findSequence(payload.sequenceId);
+          if (!sequence) return JSON.stringify({ success: false, mutationPlanned: false, error: 'Sequence not found: ' + payload.sequenceId });
+          var globalWarnings = [];
+          if (!payload.includeEffects) globalWarnings.push('effectInspectionDisabled: cleanup cannot prove visual dependencies without component/effect inspection');
+
+          function __safeSeconds(timeObj) {
+            try {
+              if (timeObj && typeof timeObj.seconds === 'number') return timeObj.seconds;
+            } catch (_) { }
+            return null;
+          }
+
+          function __clipEnabled(clip) {
+            try {
+              if (clip && typeof clip.isEnabled === 'function') return clip.isEnabled();
+              if (clip && clip.disabled !== undefined) return !clip.disabled;
+            } catch (_) { }
+            return true;
+          }
+
+          function __clipProjectItem(clip) {
+            try { return clip.projectItem || null; } catch (_) { return null; }
+          }
+
+          function __isNestedItem(item) {
+            try { if (item && item.isSequence && item.isSequence()) return true; } catch (_) { }
+            return false;
+          }
+
+          function __safeValue(prop) {
+            try { if (prop && typeof prop.getValue === 'function') return prop.getValue(); } catch (_) { }
+            return null;
+          }
+
+          function __propertySummary(prop, propertyIndex, riskFlags) {
+            var displayName = null;
+            var matchName = null;
+            var value = null;
+            var keyframed = false;
+            try { displayName = prop.displayName || null; } catch (_) { }
+            try { matchName = prop.matchName || null; } catch (_) { }
+            value = __safeValue(prop);
+            try {
+              if (payload.includeKeyframes && prop && prop.areKeyframesSupported && prop.areKeyframesSupported() && prop.isTimeVarying && prop.isTimeVarying()) {
+                keyframed = true;
+                riskFlags.keyframe = true;
+              }
+            } catch (_) { }
+            var propText = String(displayName || '') + ' ' + String(matchName || '');
+            if (/mask/i.test(propText)) riskFlags.mask = true;
+            if (/matte/i.test(propText)) riskFlags.matte = true;
+            if (/opacity/i.test(propText) && typeof value === 'number' && value < 100) riskFlags.opacity = true;
+            if (/blend.?mode/i.test(propText) && value !== null && value !== 0 && String(value).toLowerCase() !== 'normal') riskFlags.blendMode = true;
+            return { index: propertyIndex, displayName: displayName, matchName: matchName, value: value, keyframed: keyframed };
+          }
+
+          function __effectSummary(clip, riskFlags, trackMatteDependencies) {
+            var effects = [];
+            if (!payload.includeEffects) {
+              riskFlags.unsupportedEffect = true;
+              return [{ unsupported: true, error: 'effectInspectionDisabled' }];
+            }
+            try {
+              if (!clip.components) {
+                riskFlags.unsupportedEffect = true;
+                return [{ unsupported: true, error: 'clipComponentsUnavailable' }];
+              }
+              for (var ci = 0; ci < clip.components.numItems; ci++) {
+                var component = clip.components[ci];
+                var displayName = null;
+                var matchName = null;
+                try { displayName = component.displayName || null; } catch (_) { }
+                try { matchName = component.matchName || null; } catch (_) { }
+                var componentText = String(displayName || '') + ' ' + String(matchName || '');
+                if (/Track Matte/i.test(componentText)) {
+                  riskFlags.trackMatte = true;
+                  trackMatteDependencies.push({ effectName: displayName || matchName || 'Track Matte', targetTrackIndex: null, sourceTrackIndex: null });
+                }
+                if (/Set Matte/i.test(componentText)) {
+                  riskFlags.matte = true;
+                  trackMatteDependencies.push({ effectName: displayName || matchName || 'Set Matte', targetTrackIndex: null, sourceTrackIndex: null });
+                }
+                if (/matte/i.test(componentText)) riskFlags.matte = true;
+                if (/mask/i.test(componentText)) riskFlags.mask = true;
+                if (/adjustment/i.test(componentText)) riskFlags.adjustment = true;
+                var knownComponent = /Motion|Opacity|Crop|Time Remapping|Volume|Channel Volume|Panner/i.test(componentText);
+                if (!knownComponent) riskFlags.unsupportedEffect = true;
+                var properties = [];
+                try {
+                  if (component.properties) {
+                    for (var pi = 0; pi < component.properties.numItems; pi++) {
+                      properties.push(__propertySummary(component.properties[pi], pi, riskFlags));
+                    }
+                  }
+                } catch (propertyError) {
+                  riskFlags.unsupportedEffect = true;
+                  properties.push({ error: propertyError.toString() });
+                }
+                effects.push({ index: ci, displayName: displayName, matchName: matchName, properties: properties });
+              }
+            } catch (effectError) {
+              riskFlags.unsupportedEffect = true;
+              effects.push({ unsupported: true, error: effectError.toString() });
+            }
+            return effects;
+          }
+
+          function __riskFlagNames(riskFlags) {
+            var names = [];
+            for (var key in riskFlags) if (riskFlags.hasOwnProperty(key) && riskFlags[key]) names.push(key);
+            return names;
+          }
+
+          function __readTrackState(track, trackType, trackIndex) {
+            var warnings = [];
+            var visible = null;
+            var locked = null;
+            var muted = null;
+            try {
+              if (track && typeof track.isVisible === 'function') visible = track.isVisible();
+              else if (track && typeof track.isVisible === 'boolean') visible = track.isVisible;
+            } catch (visibilityError) { warnings.push('visibilityUnavailable: ' + visibilityError.toString()); }
+            try {
+              if (track && typeof track.isLocked === 'function') locked = track.isLocked();
+              else if (track && typeof track.isLocked === 'boolean') locked = track.isLocked;
+            } catch (lockError) { warnings.push('lockedStateUnavailable: ' + lockError.toString()); }
+            try {
+              if (trackType === 'audio' && track && typeof track.isMuted === 'function') muted = track.isMuted();
+            } catch (muteError) { warnings.push('muteStateUnavailable: ' + muteError.toString()); }
+            var name = null;
+            try { name = track.name || (trackType === 'video' ? 'Video ' : 'Audio ') + (trackIndex + 1); } catch (_) { name = (trackType === 'video' ? 'Video ' : 'Audio ') + (trackIndex + 1); }
+            if (/matte|track.?index|dependency|unknown|unsupported/i.test(String(name || ''))) warnings.push('trackNameMayIndicateDependency');
+            return { trackType: trackType, trackIndex: trackIndex, name: name, clipCount: track && track.clips ? track.clips.numItems : 0, locked: locked, muted: muted, visible: visible, warnings: warnings };
+          }
+
+          function __clipSnapshot(clip, trackType, trackIndex, clipIndex) {
+            var warnings = [];
+            var riskMap = {};
+            var item = __clipProjectItem(clip);
+            var itemName = item ? String(item.name || '') : '';
+            var clipName = '';
+            try { clipName = String(clip.name || itemName || ''); } catch (_) { clipName = itemName; }
+            var nameText = clipName + ' ' + itemName;
+            var enabled = __clipEnabled(clip);
+            if (/adjustment/i.test(nameText)) riskMap.adjustmentLayer = true;
+            if (/graphic|mogrt|essential graphic|lower third/i.test(nameText)) riskMap.graphic = true;
+            if (/title|caption/i.test(nameText)) riskMap.title = true;
+            if (/matte/i.test(nameText)) riskMap.matte = true;
+            if (__isNestedItem(item)) riskMap.nestedSequence = true;
+            if (trackType === 'video') warnings.push('linkedAudioUnknown: video clip may have linked or synchronized audio');
+            var trackMatteDependencies = [];
+            var effects = __effectSummary(clip, riskMap, trackMatteDependencies);
+            var effectNames = [];
+            for (var ei = 0; ei < effects.length; ei++) {
+              if (effects[ei].displayName) effectNames.push(effects[ei].displayName);
+              else if (effects[ei].matchName) effectNames.push(effects[ei].matchName);
+            }
+            var startTime = __safeSeconds(clip.start);
+            var endTime = __safeSeconds(clip.end);
+            var duration = __safeSeconds(clip.duration);
+            if (duration === null && startTime !== null && endTime !== null) duration = endTime - startTime;
+            var mediaPath = null;
+            var projectItemId = null;
+            try { if (item && item.nodeId !== undefined) projectItemId = String(item.nodeId); } catch (_) { }
+            try { if (item && item.getMediaPath) mediaPath = item.getMediaPath(); } catch (mediaError) { warnings.push('mediaPathUnavailable: ' + mediaError.toString()); }
+            return {
+              clipId: String(clip.nodeId),
+              trackType: trackType,
+              trackIndex: trackIndex,
+              clipIndex: clipIndex,
+              name: clipName,
+              startTime: startTime || 0,
+              endTime: endTime || 0,
+              duration: duration || 0,
+              enabled: enabled,
+              hasVideo: trackType === 'video',
+              hasAudio: trackType === 'audio',
+              isAdjustmentLayer: !!riskMap.adjustmentLayer,
+              isGraphic: !!riskMap.graphic,
+              isTitle: !!riskMap.title,
+              isNestedSequence: !!riskMap.nestedSequence,
+              hasMasks: !!riskMap.mask,
+              hasKeyframes: !!riskMap.keyframe,
+              effects: effectNames,
+              componentNames: effectNames,
+              trackMatteDependencies: trackMatteDependencies,
+              riskFlags: __riskFlagNames(riskMap),
+              unsupportedFeatures: riskMap.unsupportedEffect ? ['unsupportedEffectInspection'] : [],
+              projectItemId: projectItemId,
+              mediaPath: mediaPath,
+              warnings: warnings
+            };
+          }
+
+          var tracks = [];
+          var clips = [];
+          for (var vt = 0; sequence.videoTracks && vt < sequence.videoTracks.numTracks; vt++) {
+            var vTrack = sequence.videoTracks[vt];
+            tracks.push(__readTrackState(vTrack, 'video', vt));
+            if (vTrack && vTrack.clips) {
+              for (var vc = 0; vc < vTrack.clips.numItems; vc++) {
+                var vClip = vTrack.clips[vc];
+                if (!payload.includeDisabled && !__clipEnabled(vClip)) continue;
+                clips.push(__clipSnapshot(vClip, 'video', vt, vc));
+              }
+            }
+          }
+          for (var at = 0; sequence.audioTracks && at < sequence.audioTracks.numTracks; at++) {
+            var aTrack = sequence.audioTracks[at];
+            tracks.push(__readTrackState(aTrack, 'audio', at));
+            if (aTrack && aTrack.clips) {
+              for (var ac = 0; ac < aTrack.clips.numItems; ac++) {
+                var aClip = aTrack.clips[ac];
+                if (!payload.includeDisabled && !__clipEnabled(aClip)) continue;
+                clips.push(__clipSnapshot(aClip, 'audio', at, ac));
+              }
+            }
+          }
+
+          return JSON.stringify({
+            success: true,
+            mutationPlanned: false,
+            sequence: { sequenceId: sequence.sequenceID, name: sequence.name },
+            tracks: tracks,
+            clips: clips,
+            warnings: globalWarnings
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: false, error: e.toString() });
+        }
+      }
+      return __scanTimelineCleanupState();
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async analyzeTimelineCleanupTool(args: AnalyzeTimelineCleanupToolArgs): Promise<any> {
+    let cleanupSnapshot = args.cleanupSnapshot;
+    if (!cleanupSnapshot) {
+      if (!args.sequenceId) {
+        return { success: false, mutationPlanned: false, error: 'sequenceId or cleanupSnapshot is required' };
+      }
+      const snapshot = await this.scanTimelineCleanupState({
+        sequenceId: args.sequenceId,
+        includeDisabled: true,
+        includeEffects: true,
+        includeKeyframes: false,
+      });
+      if (!snapshot?.success) {
+        return {
+          success: false,
+          mutationPlanned: false,
+          error: snapshot?.error || 'Failed to scan sequence for timeline cleanup analysis',
+          snapshot,
+        };
+      }
+      cleanupSnapshot = snapshot as TimelineCleanupSnapshot;
+    }
+
+    return analyzeTimelineCleanup({
+      cleanupSnapshot,
+      ...(args.mode ? { mode: args.mode } : {}),
+      ...(args.removeDisabledClips !== undefined ? { removeDisabledClips: args.removeDisabledClips } : {}),
+      ...(args.removeFullyCoveredClips !== undefined ? { removeFullyCoveredClips: args.removeFullyCoveredClips } : {}),
+      ...(args.organizeGraphics !== undefined ? { organizeGraphics: args.organizeGraphics } : {}),
+    });
+  }
+
+  private async createCleanTimelineSequence(args: CreateCleanTimelineSequenceArgs): Promise<any> {
+    const planArgs = {
+      sourceSequenceId: args.sourceSequenceId,
+      cleanSequenceName: args.cleanSequenceName,
+      duplicateSequence: args.duplicateSequence ?? true,
+      ...(args.allowMutatingSourceSequence !== undefined ? { allowMutatingSourceSequence: args.allowMutatingSourceSequence } : {}),
+      ...(args.analysisId ? { analysisId: args.analysisId } : {}),
+      actions: args.actions,
+    };
+    const validation = validateTimelineCleanupExecutionPlan(planArgs);
+    if (!validation.safe) {
+      return {
+        success: false,
+        dryRun: args.dryRun ?? true,
+        mutationPlanned: false,
+        error: 'Unsafe timeline cleanup plan',
+        validation,
+      };
+    }
+
+    const dryRun = args.dryRun ?? true;
+    if (dryRun) {
+      return {
+        success: true,
+        dryRun: true,
+        mutationPlanned: false,
+        validation,
+        operations: validation.operations,
+      };
+    }
+
+    const actionKey = (action: any): string => JSON.stringify({
+      type: action.type,
+      clipId: action.clipId ?? null,
+      trackType: action.trackType,
+      trackIndex: action.trackIndex,
+      targetTrackIndex: action.targetTrackIndex ?? null,
+      targetTrackName: action.targetTrackName ?? null,
+    });
+    const freshSnapshot = await this.scanTimelineCleanupState({
+      sequenceId: args.sourceSequenceId,
+      includeDisabled: true,
+      includeEffects: true,
+      includeKeyframes: false,
+    });
+    if (!freshSnapshot?.success) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: freshSnapshot?.error || 'Failed to re-scan source sequence before live timeline cleanup execution',
+        freshSnapshot,
+      };
+    }
+    const freshAnalysis = analyzeTimelineCleanup({
+      cleanupSnapshot: freshSnapshot as TimelineCleanupSnapshot,
+      ...(args.mode ? { mode: args.mode } : {}),
+      ...(args.removeDisabledClips !== undefined ? { removeDisabledClips: args.removeDisabledClips } : {}),
+      ...(args.removeFullyCoveredClips !== undefined ? { removeFullyCoveredClips: args.removeFullyCoveredClips } : {}),
+      ...(args.organizeGraphics !== undefined ? { organizeGraphics: args.organizeGraphics } : {}),
+    });
+    if (freshAnalysis.analysisId !== args.analysisId) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: 'Timeline cleanup analysisId does not match fresh source analysis',
+        expectedAnalysisId: freshAnalysis.analysisId,
+        providedAnalysisId: args.analysisId,
+        freshAnalysisSummary: freshAnalysis.summary,
+      };
+    }
+    const freshSafeActionKeys = new Set(freshAnalysis.actionPlan.map(actionKey));
+    const actionsNotFreshlyProven = args.actions.filter((action) => !freshSafeActionKeys.has(actionKey(action)));
+    if (actionsNotFreshlyProven.length > 0) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: 'Requested cleanup action is not present in fresh timeline cleanup analysis; refusing live mutation',
+        actionsNotFreshlyProven,
+        freshAnalysisSummary: freshAnalysis.summary,
+      };
+    }
+
+    const executableOperations = validation.operations.filter((operation: any) => operation.type !== 'duplicateSequence');
+    const payload = JSON.stringify({ ...planArgs, actions: executableOperations });
+    const script = `
+      function __createCleanTimelineSequence(payload) {
+        try {
+          var sourceSeq = __findSequence(payload.sourceSequenceId);
+          if (!sourceSeq) return JSON.stringify({ success: false, mutationPlanned: false, error: 'Source sequence not found: ' + payload.sourceSequenceId });
+
+          function __findClipInSequence(sequence, clipId) {
+            var collections = [sequence.videoTracks, sequence.audioTracks];
+            for (var ci = 0; ci < collections.length; ci++) {
+              var tracks = collections[ci];
+              if (!tracks) continue;
+              for (var ti = 0; ti < tracks.numTracks; ti++) {
+                var track = tracks[ti];
+                if (!track || !track.clips) continue;
+                for (var c = 0; c < track.clips.numItems; c++) {
+                  var clip = track.clips[c];
+                  if (clip && String(clip.nodeId) === String(clipId)) return { clip: clip, track: track, trackIndex: ti, clipIndex: c };
+                }
+              }
+            }
+            return null;
+          }
+
+          function __trackCollection(sequence, trackType) {
+            return trackType === 'video' ? sequence.videoTracks : sequence.audioTracks;
+          }
+
+          function __preflightTimelineCleanupExecution(sequence, payload) {
+            var errors = [];
+            var warnings = [];
+            for (var i = 0; i < payload.actions.length; i++) {
+              var action = payload.actions[i];
+              if (action.type === 'removeTrack') {
+                var tracks = __trackCollection(sequence, action.trackType);
+                if (!tracks || action.trackIndex >= tracks.numTracks) errors.push({ actionIndex: i, error: 'track index out of range', action: action });
+                else if (tracks.numTracks <= 1) errors.push({ actionIndex: i, error: 'refusing to delete the only ' + action.trackType + ' track on this host', action: action });
+                else if (tracks[action.trackIndex].clips && tracks[action.trackIndex].clips.numItems > 0) errors.push({ actionIndex: i, error: 'refusing to delete non-empty track during preflight', action: action });
+              } else if (action.type === 'removeClip') {
+                var clipInfo = __findClipInSequence(sequence, action.clipId);
+                if (!clipInfo) errors.push({ actionIndex: i, error: 'clip not found', action: action });
+              } else if (action.type === 'reorganizeClip') {
+                warnings.push({ actionIndex: i, warning: 'reorganizeClip is reported but live track moves are host-dependent; action will be skipped unless targetTrackName-only organization becomes supported', action: action });
+              } else {
+                errors.push({ actionIndex: i, error: 'unknown action type', action: action });
+              }
+            }
+            return { success: errors.length === 0, errors: errors, warnings: warnings };
+          }
+
+          function __findItemForSequence(parent, seqId) {
+            if (!parent || !parent.children) return null;
+            for (var pi = 0; pi < parent.children.numItems; pi++) {
+              var item = parent.children[pi];
+              if (!item) continue;
+              try {
+                var seq = item.getSequence && item.getSequence();
+                if (seq && seq.sequenceID === seqId) return item;
+              } catch (_) { }
+              if (item.type === 2) {
+                var nested = __findItemForSequence(item, seqId);
+                if (nested) return nested;
+              }
+            }
+            return null;
+          }
+
+          function __cloneSequenceAndResolve(sourceSequence, desiredName) {
+            var beforeSequenceIds = {};
+            for (var bi = 0; bi < app.project.sequences.numSequences; bi++) {
+              beforeSequenceIds[String(app.project.sequences[bi].sequenceID)] = true;
+            }
+            var cloneResult = null;
+            var cloneReturnType = null;
+            try {
+              cloneResult = sourceSequence.clone();
+              cloneReturnType = typeof cloneResult;
+            } catch (cloneError) {
+              return { success: false, cloneAttempted: true, error: 'Sequence.clone failed: ' + cloneError.toString(), cloneReturnType: cloneReturnType };
+            }
+            var targetSequence = null;
+            try {
+              if (cloneResult && cloneResult.sequenceID !== undefined) targetSequence = cloneResult;
+            } catch (_) { }
+            if (!targetSequence) {
+              var candidates = [];
+              for (var ci = 0; ci < app.project.sequences.numSequences; ci++) {
+                var candidate = app.project.sequences[ci];
+                if (candidate && !beforeSequenceIds[String(candidate.sequenceID)]) candidates.push(candidate);
+              }
+              if (candidates.length !== 1) {
+                var candidateIds = [];
+                for (var cii = 0; cii < candidates.length; cii++) candidateIds.push(candidates[cii].sequenceID);
+                return { success: false, cloneAttempted: true, error: 'Unable to identify cloned sequence after Sequence.clone()', cloneReturnType: cloneReturnType, candidateCount: candidates.length, candidateIds: candidateIds };
+              }
+              targetSequence = candidates[0];
+            }
+            var renamedAtSequence = false;
+            try { targetSequence.name = desiredName; renamedAtSequence = true; } catch (_) { }
+            var renamedAtProjectItem = false;
+            var targetProjectItem = __findItemForSequence(app.project.rootItem, targetSequence.sequenceID);
+            if (targetProjectItem) {
+              try { targetProjectItem.name = desiredName; renamedAtProjectItem = true; } catch (_) { }
+            }
+            return { success: true, sequence: targetSequence, sequenceId: targetSequence.sequenceID, cloneReturnType: cloneReturnType, renamedAtSequence: renamedAtSequence, renamedAtProjectItem: renamedAtProjectItem };
+          }
+
+          var preflight = __preflightTimelineCleanupExecution(sourceSeq, payload);
+          if (!preflight.success) {
+            return JSON.stringify({ success: false, mutationPlanned: false, sourceSequenceId: payload.sourceSequenceId, error: 'Timeline cleanup execution preflight failed', preflight: preflight });
+          }
+
+          var cloneResolution = __cloneSequenceAndResolve(sourceSeq, payload.cleanSequenceName);
+          if (!cloneResolution.success) {
+            return JSON.stringify({ success: false, mutationPlanned: cloneResolution.cloneAttempted === true, sourceSequenceId: payload.sourceSequenceId, error: cloneResolution.error, cloneResolution: cloneResolution });
+          }
+          var targetSequence = cloneResolution.sequence;
+          app.project.activeSequence = targetSequence;
+
+          var actionsApplied = [];
+          var actionsSkipped = [];
+          var actionsFailed = [];
+          for (var a = 0; a < payload.actions.length; a++) {
+            var current = payload.actions[a];
+            try {
+              if (current.type === 'removeClip') {
+                var targetClipInfo = __findClipInSequence(targetSequence, current.clipId);
+                if (!targetClipInfo) actionsFailed.push({ action: current, error: 'clip not found on duplicated sequence' });
+                else {
+                  targetClipInfo.clip.remove(false, true);
+                  actionsApplied.push(current);
+                }
+              } else if (current.type === 'removeTrack') {
+                var targetTracks = __trackCollection(targetSequence, current.trackType);
+                if (!targetTracks || current.trackIndex >= targetTracks.numTracks) actionsFailed.push({ action: current, error: 'track not found on duplicated sequence' });
+                else if (targetTracks[current.trackIndex].clips && targetTracks[current.trackIndex].clips.numItems > 0) actionsFailed.push({ action: current, error: 'refusing to delete non-empty track on duplicated sequence' });
+                else if (targetTracks.numTracks <= 1) actionsFailed.push({ action: current, error: 'refusing to delete the only ' + current.trackType + ' track on duplicated sequence' });
+                else {
+                  app.enableQE();
+                  app.project.activeSequence = targetSequence;
+                  if (targetSequence.openInTimeline) targetSequence.openInTimeline();
+                  var qeSeq = qe.project.getActiveSequence();
+                  var beforeTrackCount = targetTracks.numTracks;
+                  var removeMethodName = current.trackType === 'video' ? 'removeVideoTrack' : 'removeAudioTrack';
+                  if (!qeSeq || typeof qeSeq[removeMethodName] !== 'function') {
+                    actionsFailed.push({ action: current, error: removeMethodName + ' is unavailable on this Premiere host' });
+                  } else {
+                    var qeRemoveResult = qeSeq[removeMethodName](current.trackIndex);
+                    var afterTrackCount = targetTracks.numTracks;
+                    if (afterTrackCount < beforeTrackCount) {
+                      actionsApplied.push({ type: current.type, trackType: current.trackType, trackIndex: current.trackIndex, classification: current.classification, reason: current.reason, removeMethod: removeMethodName, qeResult: String(qeRemoveResult) });
+                    } else {
+                      actionsFailed.push({ action: current, error: removeMethodName + ' made no progress', beforeTrackCount: beforeTrackCount, afterTrackCount: afterTrackCount, qeResult: String(qeRemoveResult) });
+                    }
+                  }
+                }
+              } else if (current.type === 'reorganizeClip') {
+                actionsSkipped.push({ action: current, warning: 'reorganizeClip skipped: live clip track moves are not capability-proven on this host' });
+              }
+            } catch (actionError) {
+              actionsFailed.push({ action: current, error: actionError.toString() });
+            }
+          }
+
+          var warnings = [];
+          for (var w = 0; w < actionsSkipped.length; w++) {
+            if (actionsSkipped[w] && actionsSkipped[w].warning) warnings.push(actionsSkipped[w].warning);
+          }
+
+          return JSON.stringify({
+            success: actionsFailed.length === 0,
+            mutationPlanned: true,
+            sourceSequenceId: payload.sourceSequenceId,
+            duplicatedSequenceId: targetSequence.sequenceID,
+            cleanSequenceId: targetSequence.sequenceID,
+            cleanSequenceName: payload.cleanSequenceName,
+            cloneReturnType: cloneResolution.cloneReturnType,
+            renamedAtSequence: cloneResolution.renamedAtSequence,
+            renamedAtProjectItem: cloneResolution.renamedAtProjectItem,
+            actionsApplied: actionsApplied,
+            actionsSkipped: actionsSkipped,
+            actionsFailed: actionsFailed,
+            preflightWarnings: preflight.warnings,
+            warnings: warnings
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: false, error: e.toString() });
+        }
+      }
+      return __createCleanTimelineSequence(${payload});
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async qcTimelineCleanup(args: QcTimelineCleanupArgs): Promise<any> {
+    const dryRun = args.dryRun ?? true;
+    if (!dryRun && !args.allowedOutputRoot) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: 'allowedOutputRoot is required for live timeline cleanup QC export',
+      };
+    }
+
+    const plan = planTimelineCleanupQc({
+      sourceSequenceId: args.sourceSequenceId,
+      ...(args.cleanSequenceId ? { cleanSequenceId: args.cleanSequenceId } : {}),
+      outputDir: args.outputDir,
+      ...(args.allowedOutputRoot ? { allowedOutputRoot: args.allowedOutputRoot } : {}),
+      cleanupResult: args.cleanupResult,
+      ...(args.sampleTimes ? { sampleTimes: args.sampleTimes } : {}),
+      ...(args.format ? { format: args.format } : {}),
+    });
+
+    if (dryRun) {
+      return { success: true, dryRun: true, mutationPlanned: false, plan };
+    }
+
+    if (!plan.safeToExecute) {
+      return { success: false, dryRun: false, mutationPlanned: false, error: 'Timeline cleanup QC plan is not safe to execute', plan };
+    }
+
+    const payload = JSON.stringify(plan);
+    const script = `
+      function __qcTimelineCleanup(payload) {
+        try {
+          app.enableQE();
+          var exportedFrames = [];
+          var failedExports = [];
+          var qcFolder = new Folder(payload.outputDir);
+          if (!qcFolder.exists) qcFolder.create();
+          for (var i = 0; i < payload.frameExports.length; i++) {
+            var frameExport = payload.frameExports[i];
+            var sequence = __findSequence(frameExport.sequenceId);
+            if (!sequence) {
+              failedExports.push({ frameExport: frameExport, error: 'Sequence not found for QC frame export' });
+              continue;
+            }
+            if (sequence.openInTimeline) {
+              try { sequence.openInTimeline(); } catch (_) { }
+            }
+            app.project.activeSequence = sequence;
+            var qeSequence = qe.project.getActiveSequence();
+            if (!qeSequence) {
+              failedExports.push({ frameExport: frameExport, error: 'QE active sequence unavailable for QC frame export' });
+              continue;
+            }
+            var methodName = frameExport.format === 'jpg' ? 'exportFrameJPEG' : (frameExport.format === 'tiff' ? 'exportFrameTiff' : 'exportFramePNG');
+            if (typeof qeSequence[methodName] !== 'function') {
+              failedExports.push({ frameExport: frameExport, error: 'Frame export method unavailable: ' + methodName });
+              continue;
+            }
+            function __extensionForFormat(format) { return format === 'jpg' ? '.jpg' : (format === 'tiff' ? '.tiff' : '.png'); }
+            function __stripFormatExtension(outputPath, format) {
+              var ext = __extensionForFormat(format);
+              var lowerPath = String(outputPath).toLowerCase();
+              if (lowerPath.lastIndexOf(ext) === lowerPath.length - ext.length) return String(outputPath).substring(0, String(outputPath).length - ext.length);
+              return String(outputPath);
+            }
+            var exportBasePath = __stripFormatExtension(frameExport.outputPath, frameExport.format);
+            var actualOutputPath = exportBasePath + __extensionForFormat(frameExport.format);
+            var timeNumber = Number(frameExport.time);
+            var timeString = String(timeNumber);
+            var timeTicks = timeString;
+            try { var exportTime = new Time(); exportTime.seconds = timeNumber; timeTicks = String(exportTime.ticks); } catch (timeError) { }
+            var exportError = null;
+            function __tryExport(timeValue, signatureName) {
+              try {
+                qeSequence[methodName](String(timeValue), exportBasePath);
+                if (File(actualOutputPath).exists) return { success: true, outputPath: actualOutputPath, requestedOutputPath: frameExport.outputPath, exportBasePath: exportBasePath, exportSignature: signatureName };
+                exportError = signatureName + ' returned without creating ' + actualOutputPath;
+                return null;
+              } catch (e0) { exportError = signatureName + ': ' + e0.toString(); return null; }
+            }
+            var exportResult = __tryExport(timeString, 'secondsString_outputBase') || __tryExport(timeTicks, 'ticksString_outputBase');
+            if (exportResult) {
+              exportResult.view = frameExport.view;
+              exportResult.sequenceId = frameExport.sequenceId;
+              exportResult.time = frameExport.time;
+              exportResult.format = frameExport.format;
+              exportedFrames.push(exportResult);
+            } else failedExports.push({ frameExport: frameExport, error: exportError || 'Frame export failed' });
+          }
+          return JSON.stringify({
+            success: failedExports.length === 0,
+            mutationPlanned: true,
+            sourceSequenceId: payload.sourceSequenceId,
+            cleanSequenceId: payload.cleanSequenceId,
+            exportedFrames: exportedFrames,
+            failedExports: failedExports,
+            structuralReport: payload.structuralReport,
+            summary: payload.summary,
+            warnings: payload.warnings || []
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: false, error: e.toString() });
+        }
+      }
+      return __qcTimelineCleanup(${payload});
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async analyzeStackedOnlineConformTool(args: AnalyzeStackedOnlineConformToolArgs): Promise<any> {
+    let sequenceSnapshot = args.sequenceSnapshot;
+    if (!sequenceSnapshot) {
+      if (!args.sequenceId) {
+        return { success: false, mutationPlanned: false, error: 'sequenceId or sequenceSnapshot is required' };
+      }
+      const snapshot = await this.snapshotSequenceForConform({
+        sequenceId: args.sequenceId,
+        includeEffects: true,
+        includeKeyframes: false,
+      });
+      if (!snapshot?.success) {
+        return {
+          success: false,
+          mutationPlanned: false,
+          error: snapshot?.error || 'Failed to snapshot sequence for conform analysis',
+          snapshot,
+        };
+      }
+      sequenceSnapshot = snapshot;
+    }
+
+    return analyzeStackedOnlineConform({
+      sequenceSnapshot,
+      onlineMedia: args.onlineMedia,
+      ...(args.sourceTrackIndices ? { sourceTrackIndices: args.sourceTrackIndices } : {}),
+      ...(args.targetTrackBySourceTrack ? { targetTrackBySourceTrack: args.targetTrackBySourceTrack } : {}),
+      ...(args.matchFields ? { matchFields: args.matchFields } : {}),
+      ...(args.toleranceFrames !== undefined ? { toleranceFrames: args.toleranceFrames } : {}),
+      ...(args.minConfidence !== undefined ? { minConfidence: args.minConfidence } : {}),
+      ...(args.strictFrameRate !== undefined ? { strictFrameRate: args.strictFrameRate } : {}),
+    });
+  }
+
+  private async createStackedOnlineConformSequence(args: CreateStackedOnlineConformSequenceArgs): Promise<any> {
+    const planArgs: StackedConformExecutionPlanArgs = {
+      sourceSequenceId: args.sourceSequenceId,
+      conformSequenceName: args.conformSequenceName,
+      placementPlan: [...args.placementPlan].sort((a, b) => {
+        if (a.targetTrackIndex !== b.targetTrackIndex) return a.targetTrackIndex - b.targetTrackIndex;
+        if (a.startTime !== b.startTime) return a.startTime - b.startTime;
+        return a.offlineClipId.localeCompare(b.offlineClipId);
+      }),
+      ...(args.existingVideoTrackCount !== undefined ? { existingVideoTrackCount: args.existingVideoTrackCount } : {}),
+      duplicateSequence: args.duplicateSequence ?? true,
+      ...(args.allowMutatingSourceSequence !== undefined ? { allowMutatingSourceSequence: args.allowMutatingSourceSequence } : {}),
+    };
+    const validation = validateStackedConformExecutionPlan(planArgs);
+
+    if (!validation.safe) {
+      return {
+        success: false,
+        dryRun: args.dryRun ?? true,
+        mutationPlanned: false,
+        error: 'Unsafe stacked conform plan',
+        validation,
+      };
+    }
+
+    const dryRun = args.dryRun ?? true;
+    if (dryRun) {
+      return {
+        success: true,
+        dryRun: true,
+        mutationPlanned: false,
+        validation,
+        operations: validation.operations,
+      };
+    }
+
+    const payload = JSON.stringify(planArgs);
+    const script = `
+      function __createStackedOnlineConformSequence(payload) {
+        try {
+          app.enableQE();
+          var originalSeq = __findSequence(payload.sourceSequenceId);
+          if (!originalSeq) return JSON.stringify({ success: false, mutationPlanned: false, error: "Source sequence not found" });
+
+          function __findProjectItem(id) {
+            function walk(parent) {
+              if (!parent || !parent.children) return null;
+              for (var i = 0; i < parent.children.numItems; i++) {
+                var child = parent.children[i];
+                if (!child) continue;
+                if (String(child.nodeId) === String(id)) return child;
+                var found = walk(child);
+                if (found) return found;
+              }
+              return null;
+            }
+            return walk(app.project.rootItem);
+          }
+
+          function __projectItemDurationSeconds(item) {
+            try {
+              if (!item || !item.getInPoint || !item.getOutPoint) return null;
+              var inPoint = item.getInPoint();
+              var outPoint = item.getOutPoint();
+              if (!inPoint || !outPoint || typeof inPoint.seconds !== 'number' || typeof outPoint.seconds !== 'number') return null;
+              var duration = outPoint.seconds - inPoint.seconds;
+              return duration >= 0 ? duration : null;
+            } catch (_) {
+              return null;
+            }
+          }
+
+          function __preflightStackedConformExecution(sequence, payload) {
+            var preExistingVideoTrackCount = sequence.videoTracks ? sequence.videoTracks.numTracks : 0;
+            var failedPlacements = [];
+            var missingOnlineProjectItems = [];
+            var trackCreationFailures = [];
+            var maxTargetTrackIndex = preExistingVideoTrackCount - 1;
+            for (var preflightIndex = 0; preflightIndex < payload.placementPlan.length; preflightIndex++) {
+              var preflightPlacement = payload.placementPlan[preflightIndex];
+              if (preflightPlacement.targetTrackIndex > maxTargetTrackIndex) maxTargetTrackIndex = preflightPlacement.targetTrackIndex;
+              if (preflightPlacement.targetTrackIndex < preExistingVideoTrackCount) {
+                failedPlacements.push({
+                  offlineClipId: preflightPlacement.offlineClipId,
+                  targetTrackIndex: preflightPlacement.targetTrackIndex,
+                  error: 'targetTrackIndex < preExistingVideoTrackCount; refusing to place online media onto an existing/offline track'
+                });
+              }
+              if (typeof preflightPlacement.sourceOutPoint !== 'number' || preflightPlacement.sourceOutPoint <= preflightPlacement.sourceInPoint) {
+                failedPlacements.push({
+                  offlineClipId: preflightPlacement.offlineClipId,
+                  onlineProjectItemId: preflightPlacement.onlineProjectItemId,
+                  error: 'sourceOutPoint must be provided and greater than sourceInPoint for live conform placement'
+                });
+              }
+              var preflightOnlineItem = __findProjectItem(preflightPlacement.onlineProjectItemId);
+              if (!preflightOnlineItem) {
+                missingOnlineProjectItems.push(preflightPlacement.onlineProjectItemId);
+                failedPlacements.push({
+                  offlineClipId: preflightPlacement.offlineClipId,
+                  onlineProjectItemId: preflightPlacement.onlineProjectItemId,
+                  error: 'Online project item not found'
+                });
+              } else {
+                if (!preflightOnlineItem.setInPoint || !preflightOnlineItem.setOutPoint) {
+                  failedPlacements.push({
+                    offlineClipId: preflightPlacement.offlineClipId,
+                    onlineProjectItemId: preflightPlacement.onlineProjectItemId,
+                    error: 'cannotSetProjectItemInOut'
+                  });
+                }
+                var projectItemDurationSeconds = __projectItemDurationSeconds(preflightOnlineItem);
+                if (projectItemDurationSeconds !== null && preflightPlacement.sourceOutPoint > projectItemDurationSeconds + 0.001) {
+                  failedPlacements.push({
+                    offlineClipId: preflightPlacement.offlineClipId,
+                    onlineProjectItemId: preflightPlacement.onlineProjectItemId,
+                    sourceOutPoint: preflightPlacement.sourceOutPoint,
+                    projectItemDurationSeconds: projectItemDurationSeconds,
+                    error: 'sourceOutPointExceedsProjectItemDuration'
+                  });
+                }
+                try {
+                  var originalInPoint = preflightOnlineItem.getInPoint ? preflightOnlineItem.getInPoint() : null;
+                  if (!originalInPoint || originalInPoint.ticks === undefined) {
+                    failedPlacements.push({ offlineClipId: preflightPlacement.offlineClipId, onlineProjectItemId: preflightPlacement.onlineProjectItemId, error: 'originalInPointUnavailable' });
+                  }
+                } catch (preflightInError) {
+                  failedPlacements.push({ offlineClipId: preflightPlacement.offlineClipId, onlineProjectItemId: preflightPlacement.onlineProjectItemId, error: 'originalInPointUnavailable: ' + preflightInError.toString() });
+                }
+                try {
+                  var originalOutPoint = preflightOnlineItem.getOutPoint ? preflightOnlineItem.getOutPoint() : null;
+                  if (!originalOutPoint || originalOutPoint.ticks === undefined) {
+                    failedPlacements.push({ offlineClipId: preflightPlacement.offlineClipId, onlineProjectItemId: preflightPlacement.onlineProjectItemId, error: 'originalOutPointUnavailable' });
+                  }
+                } catch (preflightOutError) {
+                  failedPlacements.push({ offlineClipId: preflightPlacement.offlineClipId, onlineProjectItemId: preflightPlacement.onlineProjectItemId, error: 'originalOutPointUnavailable: ' + preflightOutError.toString() });
+                }
+              }
+            }
+            var tracksNeeded = Math.max(0, maxTargetTrackIndex + 1 - preExistingVideoTrackCount);
+            if (tracksNeeded > payload.placementPlan.length) {
+              trackCreationFailures.push({
+                error: 'trackCreationFailures: sparse targetTrackIndex would require more new tracks than placements',
+                tracksNeeded: tracksNeeded,
+                maxTargetTrackIndex: maxTargetTrackIndex,
+                preExistingVideoTrackCount: preExistingVideoTrackCount
+              });
+            }
+            return {
+              success: failedPlacements.length === 0 && trackCreationFailures.length === 0,
+              preExistingVideoTrackCount: preExistingVideoTrackCount,
+              missingOnlineProjectItems: missingOnlineProjectItems,
+              trackCreationFailures: trackCreationFailures,
+              failedPlacements: failedPlacements
+            };
+          }
+
+          var executionPreflight = __preflightStackedConformExecution(originalSeq, payload);
+          if (!executionPreflight.success) {
+            return JSON.stringify({
+              success: false,
+              mutationPlanned: false,
+              sourceSequenceId: payload.sourceSequenceId,
+              duplicatedSequenceId: null,
+              error: 'Stacked conform execution preflight failed',
+              preExistingVideoTrackCount: executionPreflight.preExistingVideoTrackCount,
+              missingOnlineProjectItems: executionPreflight.missingOnlineProjectItems,
+              trackCreationFailures: executionPreflight.trackCreationFailures,
+              failedPlacements: executionPreflight.failedPlacements
+            });
+          }
+
+          function __findItemForSequence(parent, seqId) {
+            if (!parent || !parent.children) return null;
+            for (var i = 0; i < parent.children.numItems; i++) {
+              var item = parent.children[i];
+              if (!item) continue;
+              try {
+                var seq = item.getSequence && item.getSequence();
+                if (seq && seq.sequenceID === seqId) return item;
+              } catch (_) { }
+              if (item.type === 2) {
+                var nested = __findItemForSequence(item, seqId);
+                if (nested) return nested;
+              }
+            }
+            return null;
+          }
+
+          function __cloneSequenceAndResolve(sourceSequence, desiredName) {
+            var beforeSequenceIds = {};
+            for (var bi = 0; bi < app.project.sequences.numSequences; bi++) {
+              beforeSequenceIds[String(app.project.sequences[bi].sequenceID)] = true;
+            }
+            var cloneResult = null;
+            var cloneReturnType = null;
+            try {
+              cloneResult = sourceSequence.clone();
+              cloneReturnType = typeof cloneResult;
+            } catch (cloneError) {
+              return { success: false, cloneAttempted: true, error: 'Sequence.clone failed: ' + cloneError.toString(), cloneReturnType: cloneReturnType };
+            }
+            var targetSequence = null;
+            try {
+              if (cloneResult && cloneResult.sequenceID !== undefined) targetSequence = cloneResult;
+            } catch (_) { }
+            if (!targetSequence) {
+              var candidates = [];
+              for (var ci = 0; ci < app.project.sequences.numSequences; ci++) {
+                var candidate = app.project.sequences[ci];
+                if (candidate && !beforeSequenceIds[String(candidate.sequenceID)]) candidates.push(candidate);
+              }
+              if (candidates.length !== 1) {
+                var candidateIds = [];
+                for (var cii = 0; cii < candidates.length; cii++) candidateIds.push(candidates[cii].sequenceID);
+                return { success: false, cloneAttempted: true, error: 'Unable to identify cloned sequence after Sequence.clone()', cloneReturnType: cloneReturnType, candidateCount: candidates.length, candidateIds: candidateIds };
+              }
+              targetSequence = candidates[0];
+            }
+            var renamedAtSequence = false;
+            try { targetSequence.name = desiredName; renamedAtSequence = true; } catch (_) { }
+            var renamedAtProjectItem = false;
+            var targetProjectItem = __findItemForSequence(app.project.rootItem, targetSequence.sequenceID);
+            if (targetProjectItem) {
+              try { targetProjectItem.name = desiredName; renamedAtProjectItem = true; } catch (_) { }
+            }
+            return { success: true, sequence: targetSequence, sequenceId: targetSequence.sequenceID, cloneReturnType: cloneReturnType, renamedAtSequence: renamedAtSequence, renamedAtProjectItem: renamedAtProjectItem };
+          }
+
+          var cloneResolution = __cloneSequenceAndResolve(originalSeq, payload.conformSequenceName);
+          if (!cloneResolution.success) {
+            return JSON.stringify({ success: false, mutationPlanned: cloneResolution.cloneAttempted === true, sourceSequenceId: payload.sourceSequenceId, duplicatedSequenceId: null, error: cloneResolution.error, cloneResolution: cloneResolution });
+          }
+          var targetSequence = cloneResolution.sequence;
+          app.project.activeSequence = targetSequence;
+          var renamedAtProjectItem = cloneResolution.renamedAtProjectItem;
+
+          function __ensureVideoTrack(targetSequence, trackIndex, maxTracksToCreate) {
+            var trackCreationFailures = [];
+            var attempts = 0;
+            while (targetSequence.videoTracks.numTracks <= trackIndex) {
+              if (attempts >= maxTracksToCreate) {
+                trackCreationFailures.push({
+                  targetTrackIndex: trackIndex,
+                  error: 'trackCreationFailures: maximum bounded track creation attempts reached'
+                });
+                return { track: null, trackCreationFailures: trackCreationFailures };
+              }
+              app.project.activeSequence = targetSequence;
+              var qeSeq = qe.project.getActiveSequence();
+              var beforeTrackCount = targetSequence.videoTracks.numTracks;
+              var insertVideoIdx = targetSequence.videoTracks.numTracks;
+              qeSeq.addTracks(1, insertVideoIdx, 0, 0, 1, 0, 0);
+              attempts++;
+              if (targetSequence.videoTracks.numTracks <= beforeTrackCount) {
+                trackCreationFailures.push({
+                  targetTrackIndex: trackIndex,
+                  error: 'trackCreationNoProgress'
+                });
+                return { track: null, trackCreationFailures: trackCreationFailures };
+              }
+            }
+            return { track: targetSequence.videoTracks[trackIndex], trackCreationFailures: trackCreationFailures };
+          }
+
+          function __findPlacedClip(track, projectItemId, startTime) {
+            if (!track || !track.clips) return null;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var clip = track.clips[c];
+              if (!clip) continue;
+              try {
+                var sameItem = clip.projectItem && clip.projectItem.nodeId === projectItemId;
+                var sameStart = clip.start && Math.abs(clip.start.seconds - startTime) < 0.01;
+                if (sameItem && sameStart) return clip;
+              } catch (_) { }
+            }
+            return null;
+          }
+
+          function __restoreProjectItemInOut(projectItem, originalInPoint, originalOutPoint, warnings) {
+            try {
+              if (projectItem && projectItem.setInPoint && originalInPoint && originalInPoint.ticks !== undefined) projectItem.setInPoint(originalInPoint.ticks, 4);
+            } catch (restoreInError) { warnings.push('restoreProjectItemInPointFailed: ' + restoreInError.toString()); }
+            try {
+              if (projectItem && projectItem.setOutPoint && originalOutPoint && originalOutPoint.ticks !== undefined) projectItem.setOutPoint(originalOutPoint.ticks, 4);
+            } catch (restoreOutError) { warnings.push('restoreProjectItemOutPointFailed: ' + restoreOutError.toString()); }
+          }
+
+          function __audioClipKeyMap(sequence) {
+            var map = {};
+            if (!sequence.audioTracks) return map;
+            for (var a = 0; a < sequence.audioTracks.numTracks; a++) {
+              var audioTrack = sequence.audioTracks[a];
+              if (!audioTrack || !audioTrack.clips) continue;
+              for (var c = 0; c < audioTrack.clips.numItems; c++) {
+                var clip = audioTrack.clips[c];
+                if (!clip) continue;
+                try {
+                  var projectItemId = clip.projectItem && clip.projectItem.nodeId ? String(clip.projectItem.nodeId) : '';
+                  var startSeconds = clip.start && typeof clip.start.seconds === 'number' ? clip.start.seconds.toFixed(3) : '';
+                  map[projectItemId + '|' + startSeconds + '|' + String(clip.nodeId)] = true;
+                } catch (_) { }
+              }
+            }
+            return map;
+          }
+
+          function __countNewLinkedAudioCounterparts(sequence, projectItemId, startTime, beforeAudioClipKeys) {
+            var linkedAudioInserted = 0;
+            if (!sequence.audioTracks) return linkedAudioInserted;
+            for (var a = 0; a < sequence.audioTracks.numTracks; a++) {
+              var audioTrack = sequence.audioTracks[a];
+              if (!audioTrack || !audioTrack.clips) continue;
+              for (var c = 0; c < audioTrack.clips.numItems; c++) {
+                var clip = audioTrack.clips[c];
+                if (!clip) continue;
+                try {
+                  var sameItem = clip.projectItem && clip.projectItem.nodeId === projectItemId;
+                  var sameStart = clip.start && Math.abs(clip.start.seconds - startTime) < 0.01;
+                  var startSeconds = clip.start && typeof clip.start.seconds === 'number' ? clip.start.seconds.toFixed(3) : '';
+                  var key = String(projectItemId) + '|' + startSeconds + '|' + String(clip.nodeId);
+                  if (sameItem && sameStart && !beforeAudioClipKeys[key]) linkedAudioInserted++;
+                } catch (_) { }
+              }
+            }
+            return linkedAudioInserted;
+          }
+
+          var placedClips = [];
+          var failedPlacements = [];
+          var warnings = [];
+          for (var p = 0; p < payload.placementPlan.length; p++) {
+            var placement = payload.placementPlan[p];
+            var onlineItem = __findProjectItem(placement.onlineProjectItemId);
+            if (!onlineItem) {
+              failedPlacements.push({ offlineClipId: placement.offlineClipId, error: "Online project item not found", onlineProjectItemId: placement.onlineProjectItemId });
+              continue;
+            }
+
+            var trackResult = __ensureVideoTrack(targetSequence, placement.targetTrackIndex, payload.placementPlan.length);
+            if (trackResult.trackCreationFailures && trackResult.trackCreationFailures.length > 0) {
+              failedPlacements.push({ offlineClipId: placement.offlineClipId, onlineProjectItemId: placement.onlineProjectItemId, trackCreationFailures: trackResult.trackCreationFailures, error: 'trackCreationFailures' });
+              warnings.push('trackCreationFailures');
+              continue;
+            }
+            var targetTrack = trackResult.track;
+            var inTicks = __secondsToTicks(placement.sourceInPoint);
+            var outTicks = __secondsToTicks(placement.sourceOutPoint);
+            var originalInPoint = null;
+            var originalOutPoint = null;
+            try { if (onlineItem.getInPoint) originalInPoint = onlineItem.getInPoint(); } catch (originalInError) { warnings.push('readProjectItemInPointFailed: ' + originalInError.toString()); }
+            try { if (onlineItem.getOutPoint) originalOutPoint = onlineItem.getOutPoint(); } catch (originalOutError) { warnings.push('readProjectItemOutPointFailed: ' + originalOutError.toString()); }
+            var beforeAudioClipKeys = __audioClipKeyMap(targetSequence);
+            try {
+              if (onlineItem.setInPoint) onlineItem.setInPoint(inTicks, 4);
+              if (onlineItem.setOutPoint) onlineItem.setOutPoint(outTicks, 4);
+              targetSequence.videoTracks[placement.targetTrackIndex].insertClip(onlineItem, placement.startTime);
+            } catch (placementError) {
+              failedPlacements.push({ offlineClipId: placement.offlineClipId, error: placementError.toString(), onlineProjectItemId: placement.onlineProjectItemId });
+              __restoreProjectItemInOut(onlineItem, originalInPoint, originalOutPoint, warnings);
+              continue;
+            }
+            __restoreProjectItemInOut(onlineItem, originalInPoint, originalOutPoint, warnings);
+
+            var onlineClip = __findPlacedClip(targetTrack, placement.onlineProjectItemId, placement.startTime);
+            var linkedAudioInserted = __countNewLinkedAudioCounterparts(targetSequence, placement.onlineProjectItemId, placement.startTime, beforeAudioClipKeys);
+            if (linkedAudioInserted > 0) warnings.push('linkedAudioInserted: ' + linkedAudioInserted + ' linked audio clip(s) were preserved because stacked conform execution never removes timeline media');
+            placedClips.push({
+              offlineClipId: placement.offlineClipId,
+              onlineProjectItemId: placement.onlineProjectItemId,
+              onlineClipId: onlineClip ? onlineClip.nodeId : null,
+              targetTrackIndex: placement.targetTrackIndex,
+              startTime: placement.startTime,
+              sourceInPoint: placement.sourceInPoint,
+              sourceOutPoint: placement.sourceOutPoint,
+              duration: placement.duration,
+              linkedAudioInserted: linkedAudioInserted
+            });
+          }
+
+          return JSON.stringify({
+            success: failedPlacements.length === 0,
+            mutationPlanned: true,
+            sourceSequenceId: payload.sourceSequenceId,
+            duplicatedSequenceId: targetSequence.sequenceID,
+            conformSequenceName: payload.conformSequenceName,
+            cloneReturnType: cloneResolution.cloneReturnType,
+            renamedAtSequence: cloneResolution.renamedAtSequence,
+            renamedAtProjectItem: renamedAtProjectItem,
+            placedClips: placedClips,
+            failedPlacements: failedPlacements,
+            warnings: warnings.concat(failedPlacements.length > 0 ? ["Some placements failed; offline edit remains preserved in duplicated sequence"] : [])
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: true, error: e.toString() });
+        }
+      }
+
+      var __stackedConformPayload = ${payload};
+      return __createStackedOnlineConformSequence(__stackedConformPayload);
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async copyConformClipEffects(args: CopyConformClipEffectsArgs): Promise<any> {
+    const normalizedSourceEffects = normalizeEffectSnapshots(args.sourceEffects || []);
+    if (normalizedSourceEffects.length === 0) {
+      return {
+        success: false,
+        dryRun: args.dryRun ?? true,
+        mutationPlanned: false,
+        error: 'sourceEffects are required so supported and unsupported effects can be planned explicitly',
+      };
+    }
+
+    const planInput: BuildEffectCopyPlanArgs = {
+      sourceClipId: args.sourceClipId,
+      targetClipId: args.targetClipId,
+      sourceEffects: normalizedSourceEffects,
+      ...(args.offlineSourceRaster ? { offlineSourceRaster: args.offlineSourceRaster as RasterDimensions } : {}),
+      ...(args.onlineSourceRaster ? { onlineSourceRaster: args.onlineSourceRaster as RasterDimensions } : {}),
+      ...(args.supportedComponents ? { supportedComponents: args.supportedComponents } : {}),
+    };
+    const plan = buildEffectCopyPlan(planInput);
+    const dryRun = args.dryRun ?? true;
+
+    if (dryRun) {
+      return {
+        success: true,
+        dryRun: true,
+        mutationPlanned: false,
+        plan,
+      };
+    }
+
+    if (!plan.safeToExecute) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: 'No supported conform effect assignments to execute',
+        plan,
+      };
+    }
+
+    const payload = JSON.stringify({
+      sequenceId: args.sequenceId || null,
+      sourceClipId: args.sourceClipId,
+      targetClipId: args.targetClipId,
+      plan,
+    });
+    const script = `
+      function __copyConformClipEffects(payload) {
+        try {
+          var sourceInfo = __findClip(payload.sourceClipId, payload.sequenceId);
+          if (!sourceInfo) return JSON.stringify({ success: false, mutationPlanned: false, error: "Source clip not found" });
+          var targetInfo = __findClip(payload.targetClipId, payload.sequenceId);
+          if (!targetInfo) return JSON.stringify({ success: false, mutationPlanned: false, error: "Target clip not found" });
+          var sourceClip = sourceInfo.clip;
+          var targetClip = targetInfo.clip;
+
+          function __normalizedName(value) {
+            return String(value || "").toLowerCase().replace(/\s+/g, "");
+          }
+          function __findComponent(clip, componentName) {
+            var wanted = __normalizedName(componentName);
+            for (var c = 0; c < clip.components.numItems; c++) {
+              var component = clip.components[c];
+              if (!component) continue;
+              if (__normalizedName(component.displayName) === wanted || __normalizedName(component.matchName) === wanted) return component;
+            }
+            return null;
+          }
+          function __findProperty(component, propertyName) {
+            var wanted = __normalizedName(propertyName);
+            for (var p = 0; p < component.properties.numItems; p++) {
+              var prop = component.properties[p];
+              if (!prop) continue;
+              if (__normalizedName(prop.displayName) === wanted || __normalizedName(prop.matchName) === wanted) return prop;
+            }
+            return null;
+          }
+
+          var copiedProperties = [];
+          var failedProperties = [];
+          var unsupportedComponents = payload.plan.unsupportedComponents ? payload.plan.unsupportedComponents.slice(0) : [];
+          for (var i = 0; i < payload.plan.assignments.length; i++) {
+            var assignment = payload.plan.assignments[i];
+            var sourceComponent = __findComponent(sourceClip, assignment.componentName);
+            var targetComponent = __findComponent(targetClip, assignment.componentName);
+            if (!sourceComponent || !targetComponent) {
+              unsupportedComponents.push(assignment.componentName);
+              failedProperties.push({ componentName: assignment.componentName, propertyName: assignment.propertyName, error: "Component unavailable on source or target clip" });
+              continue;
+            }
+            var targetProperty = __findProperty(targetComponent, assignment.propertyName);
+            if (!targetProperty || !targetProperty.setValue) {
+              failedProperties.push({ componentName: assignment.componentName, propertyName: assignment.propertyName, error: "Target property cannot be set" });
+              continue;
+            }
+            try {
+              targetProperty.setValue(assignment.value, true);
+              copiedProperties.push({ componentName: assignment.componentName, propertyName: assignment.propertyName, value: assignment.value });
+            } catch (setError) {
+              failedProperties.push({ componentName: assignment.componentName, propertyName: assignment.propertyName, error: setError.toString() });
+            }
+          }
+
+          return JSON.stringify({
+            success: failedProperties.length === 0,
+            mutationPlanned: true,
+            sourceClipId: payload.sourceClipId,
+            targetClipId: payload.targetClipId,
+            copiedProperties: copiedProperties,
+            failedProperties: failedProperties,
+            unsupportedComponents: unsupportedComponents,
+            warnings: payload.plan.warnings || []
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, mutationPlanned: true, error: e.toString() });
+        }
+      }
+
+      var __conformEffectPayload = ${payload};
+      return __copyConformClipEffects(__conformEffectPayload);
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async qcStackedOnlineConform(args: QcStackedOnlineConformArgs): Promise<any> {
+    const dryRun = args.dryRun ?? true;
+    if (!dryRun && !args.allowedOutputRoot) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: 'allowedOutputRoot is required for live QC export',
+      };
+    }
+
+    const plan = planStackedConformQc({
+      sequenceId: args.sequenceId,
+      outputDir: args.outputDir,
+      ...(args.allowedOutputRoot ? { allowedOutputRoot: args.allowedOutputRoot } : {}),
+      comparisons: args.comparisons,
+      ...(args.sampleOffsets ? { sampleOffsets: args.sampleOffsets } : {}),
+      ...(args.format ? { format: args.format } : {}),
+    });
+
+    if (dryRun) {
+      return {
+        success: true,
+        dryRun: true,
+        mutationPlanned: false,
+        plan,
+      };
+    }
+
+    if (!plan.safeToExecute) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        error: 'QC plan is not safe to execute',
+        plan,
+      };
+    }
+
+    const payload = JSON.stringify(plan);
+    const script = `
+      function __qcStackedOnlineConform(payload) {
+        var savedVisibility = [];
+        var savedClipDisabledStates = [];
+        var visibilityReadFailures = [];
+        var clipDisabledReadFailures = [];
+        var isolationMethod = null;
+        function __trackVisibilityIsolationAvailable(track) {
+          return !!(track && typeof track.setVisible === "function" && (typeof track.isVisible === "function" || typeof track.isVisible === "boolean"));
+        }
+        function __setTrackVisible(track, visible) {
+          if (!__trackVisibilityIsolationAvailable(track)) return false;
+          try {
+            track.setVisible(visible);
+            return true;
+          } catch (_) {
+            return false;
+          }
+        }
+        function restoreTrackVisibility(sequence) {
+          var restoreFailures = [];
+          for (var i = 0; i < savedVisibility.length; i++) {
+            var state = savedVisibility[i];
+            if (sequence.videoTracks && state.trackIndex < sequence.videoTracks.numTracks) {
+              if (!__setTrackVisible(sequence.videoTracks[state.trackIndex], state.visible)) {
+                restoreFailures.push({ trackIndex: state.trackIndex, visible: state.visible, error: 'setVisible failed while restoring track visibility' });
+              }
+            } else {
+              restoreFailures.push({ trackIndex: state.trackIndex, visible: state.visible, error: 'track missing while restoring track visibility' });
+            }
+          }
+          return restoreFailures;
+        }
+        function restoreClipDisabledStates(sequence) {
+          var restoreFailures = [];
+          for (var i = 0; i < savedClipDisabledStates.length; i++) {
+            var state = savedClipDisabledStates[i];
+            try {
+              if (!state.clip || typeof state.clip.disabled !== "boolean") {
+                restoreFailures.push({ trackIndex: state.trackIndex, clipIndex: state.clipIndex, clipId: state.clipId, error: 'clip.disabled unavailable while restoring clip disabled state' });
+              } else {
+                state.clip.disabled = state.disabled;
+              }
+            } catch (clipRestoreError) {
+              restoreFailures.push({ trackIndex: state.trackIndex, clipIndex: state.clipIndex, clipId: state.clipId, disabled: state.disabled, error: 'clip.disabled restore failed: ' + clipRestoreError.toString() });
+            }
+          }
+          return restoreFailures;
+        }
+        function __rememberTrack(sequence, trackIndex) {
+          if (!sequence.videoTracks || trackIndex >= sequence.videoTracks.numTracks) return;
+          for (var i = 0; i < savedVisibility.length; i++) {
+            if (savedVisibility[i].trackIndex === trackIndex) return;
+          }
+          var track = sequence.videoTracks[trackIndex];
+          var visibleValue = null;
+          try {
+            if (track && typeof track.isVisible === "function") {
+              visibleValue = track.isVisible();
+            } else if (track && typeof track.isVisible === "boolean") {
+              visibleValue = track.isVisible;
+            } else {
+              visibilityReadFailures.push({ trackIndex: trackIndex, error: 'isVisible unavailable; refusing QC because original track visibility cannot be restored honestly' });
+              return;
+            }
+          } catch (visibilityError) {
+            visibilityReadFailures.push({ trackIndex: trackIndex, error: 'isVisible read failed: ' + visibilityError.toString() });
+            return;
+          }
+          if (typeof visibleValue !== "boolean") {
+            visibilityReadFailures.push({ trackIndex: trackIndex, value: visibleValue, error: 'isVisible returned non-boolean; refusing QC because original track visibility cannot be restored honestly' });
+            return;
+          }
+          savedVisibility.push({ trackIndex: trackIndex, visible: visibleValue });
+        }
+        function __rememberAllVideoTracks(sequence) {
+          if (!sequence.videoTracks) return;
+          for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+            __rememberTrack(sequence, vt);
+          }
+        }
+        function __rememberAllVideoClips(sequence) {
+          if (!sequence.videoTracks) return;
+          for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+            var track = sequence.videoTracks[vt];
+            if (!track || !track.clips) continue;
+            for (var ci = 0; ci < track.clips.numItems; ci++) {
+              var clip = track.clips[ci];
+              try {
+                if (!clip || typeof clip.disabled !== "boolean") {
+                  clipDisabledReadFailures.push({ trackIndex: vt, clipIndex: ci, error: 'clip.disabled unavailable; refusing QC because original clip disabled state cannot be restored honestly' });
+                } else {
+                  savedClipDisabledStates.push({ clip: clip, trackIndex: vt, clipIndex: ci, clipId: String(clip.nodeId), disabled: clip.disabled });
+                }
+              } catch (clipReadError) {
+                clipDisabledReadFailures.push({ trackIndex: vt, clipIndex: ci, error: 'clip.disabled read failed: ' + clipReadError.toString() });
+              }
+            }
+          }
+        }
+        function __allTracksSupportVisibilityIsolation(sequence) {
+          if (!sequence.videoTracks || sequence.videoTracks.numTracks < 1) return false;
+          for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+            if (!__trackVisibilityIsolationAvailable(sequence.videoTracks[vt])) return false;
+          }
+          return true;
+        }
+        function __clipTimeSeconds(timeObject) {
+          try {
+            if (timeObject && typeof timeObject.seconds === "number") return Number(timeObject.seconds);
+            if (timeObject && timeObject.seconds !== undefined) return Number(timeObject.seconds);
+            if (timeObject && timeObject.ticks !== undefined) return parseFloat(String(timeObject.ticks)) / 254016000000.0;
+          } catch (_) { }
+          return null;
+        }
+        function __clipOverlapsExportTime(clip, exportTime) {
+          var startSeconds = __clipTimeSeconds(clip.start);
+          var endSeconds = __clipTimeSeconds(clip.end);
+          if (startSeconds === null || endSeconds === null) return false;
+          var t = Number(exportTime);
+          return startSeconds <= t + 0.0001 && endSeconds >= t - 0.0001;
+        }
+        function __findUniqueClipAtTime(sequence, trackIndex, exportTime) {
+          if (!sequence.videoTracks || trackIndex >= sequence.videoTracks.numTracks) return { success: false, error: "active QC track missing for unique time-overlap resolver" };
+          var track = sequence.videoTracks[trackIndex];
+          if (!track || !track.clips) return { success: false, error: "active QC track has no clips collection for unique time-overlap resolver" };
+          var matchedClip = null;
+          var matchedCount = 0;
+          for (var ci = 0; ci < track.clips.numItems; ci++) {
+            var clip = track.clips[ci];
+            if (clip && __clipOverlapsExportTime(clip, exportTime)) {
+              matchedClip = clip;
+              matchedCount++;
+            }
+          }
+          if (matchedCount === 1) return { success: true, clip: matchedClip, clipId: String(matchedClip.nodeId), resolvedBy: "unique-time-overlap" };
+          return { success: false, error: matchedCount === 0 ? "unique time-overlap resolver found no clip at QC export time" : "unique time-overlap resolver found multiple clips at QC export time", matchedCount: matchedCount };
+        }
+        function __findQcClip(sequence, frameExport) {
+          var activeViewTrackIndex = frameExport.view === "offline" ? frameExport.sourceTrackIndex : frameExport.targetTrackIndex;
+          var activeClipId = frameExport.view === "offline" ? frameExport.offlineClipId : frameExport.onlineClipId;
+          if (!sequence.videoTracks || activeViewTrackIndex >= sequence.videoTracks.numTracks) return { success: false, error: "active QC track missing" };
+          var track = sequence.videoTracks[activeViewTrackIndex];
+          if (!track || !track.clips) return { success: false, error: "active QC track has no clips collection" };
+          if (activeClipId !== undefined && activeClipId !== null) {
+            for (var ci = 0; ci < track.clips.numItems; ci++) {
+              var clip = track.clips[ci];
+              try {
+                if (clip && String(clip.nodeId) === String(activeClipId)) return { success: true, clip: clip, clipId: String(clip.nodeId), resolvedBy: "nodeId" };
+              } catch (_) { }
+            }
+          }
+          return __findUniqueClipAtTime(sequence, activeViewTrackIndex, frameExport.time);
+        }
+        function __preflightClipDisabledFallback(sequence, payload) {
+          var failures = [];
+          var inspectedClips = 0;
+          if (!sequence.videoTracks || sequence.videoTracks.numTracks < 1) {
+            failures.push({ success: false, error: "No video tracks available for clip-disabled QC fallback" });
+            return { success: false, failedExports: failures };
+          }
+          for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+            var track = sequence.videoTracks[vt];
+            if (!track || !track.clips) continue;
+            for (var ci = 0; ci < track.clips.numItems; ci++) {
+              inspectedClips++;
+              var clip = track.clips[ci];
+              try {
+                if (!clip || typeof clip.disabled !== "boolean") {
+                  failures.push({ success: false, error: "clip.disabled isolation unavailable; refusing stacked conform QC export because clip states cannot be restored", trackIndex: vt, clipIndex: ci });
+                }
+              } catch (clipError) {
+                failures.push({ success: false, error: "clip.disabled isolation probe failed: " + clipError.toString(), trackIndex: vt, clipIndex: ci });
+              }
+            }
+          }
+          if (inspectedClips < 1) failures.push({ success: false, error: "clip-disabled fallback found no video clips to isolate" });
+          for (var f = 0; f < payload.frameExports.length; f++) {
+            var frameExport = payload.frameExports[f];
+            var resolvedClip = __findQcClip(sequence, frameExport);
+            if (!resolvedClip.success) {
+              failures.push({ success: false, outputPath: frameExport.outputPath, error: resolvedClip.error || "clip-disabled fallback could not find the requested offline/online clip for QC isolation", matchedCount: resolvedClip.matchedCount, frameExport: frameExport });
+            }
+          }
+          return { success: failures.length === 0, failedExports: failures };
+        }
+        function __preflightQcFrameExports(sequence, payload) {
+          var failures = [];
+          if (!sequence.videoTracks || sequence.videoTracks.numTracks < 1) {
+            failures.push({ success: false, error: "No video tracks available for stacked conform QC" });
+            return { success: false, failedExports: failures, isolationMethod: null };
+          }
+          for (var f = 0; f < payload.frameExports.length; f++) {
+            var frameExport = payload.frameExports[f];
+            if (frameExport.sourceTrackIndex >= sequence.videoTracks.numTracks || frameExport.targetTrackIndex >= sequence.videoTracks.numTracks) {
+              failures.push({
+                success: false,
+                outputPath: frameExport.outputPath,
+                error: "sourceTrackIndex >= sequence.videoTracks.numTracks or targetTrackIndex >= sequence.videoTracks.numTracks",
+                frameExport: frameExport
+              });
+            }
+          }
+          if (failures.length > 0) return { success: false, failedExports: failures, isolationMethod: null };
+          if (__allTracksSupportVisibilityIsolation(sequence)) return { success: true, failedExports: [], isolationMethod: "track-visibility" };
+          var clipFallback = __preflightClipDisabledFallback(sequence, payload);
+          if (clipFallback.success) return { success: true, failedExports: [], isolationMethod: "clip-disabled" };
+          for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+            if (!__trackVisibilityIsolationAvailable(sequence.videoTracks[vt])) {
+              failures.push({ success: false, error: "Track visibility isolation unavailable; refusing stacked conform QC export because offline/online layers cannot be isolated by track visibility and clip-disabled fallback is unavailable", trackIndex: vt });
+            }
+          }
+          failures = failures.concat(clipFallback.failedExports || []);
+          return { success: false, failedExports: failures, isolationMethod: null };
+        }
+        function __setClipDisabledForQc(clip, disabled) {
+          try {
+            if (!clip || typeof clip.disabled !== "boolean") return false;
+            clip.disabled = disabled;
+            return true;
+          } catch (_) {
+            return false;
+          }
+        }
+        function __isolateQcView(sequence, frameExport, method) {
+          var activeViewTrackIndex = frameExport.view === "offline" ? frameExport.sourceTrackIndex : frameExport.targetTrackIndex;
+          if (method === "track-visibility") {
+            for (var vt = 0; vt < sequence.videoTracks.numTracks; vt++) {
+              if (!__setTrackVisible(sequence.videoTracks[vt], vt === activeViewTrackIndex)) {
+                return { success: false, outputPath: frameExport.outputPath, error: "Track visibility isolation unavailable during export", frameExport: frameExport, isolationMethod: method };
+              }
+            }
+            return { success: true, activeViewTrackIndex: activeViewTrackIndex, isolationMethod: method };
+          }
+          if (method === "clip-disabled") {
+            var activeResolution = __findQcClip(sequence, frameExport);
+            if (!activeResolution.success) return { success: false, outputPath: frameExport.outputPath, error: activeResolution.error || "clip-disabled fallback could not find the requested active QC clip", frameExport: frameExport, activeViewTrackIndex: activeViewTrackIndex, matchedCount: activeResolution.matchedCount, isolationMethod: method };
+            var activeClip = activeResolution.clip;
+            var activeClipId = activeResolution.clipId;
+            var activeClipFound = false;
+            for (var cvt = 0; cvt < sequence.videoTracks.numTracks; cvt++) {
+              var track = sequence.videoTracks[cvt];
+              if (!track || !track.clips) continue;
+              for (var ci = 0; ci < track.clips.numItems; ci++) {
+                var clip = track.clips[ci];
+                var isActiveClip = false;
+                try { isActiveClip = clip === activeClip || String(clip.nodeId) === String(activeClipId); } catch (_) { isActiveClip = false; }
+                if (isActiveClip) activeClipFound = true;
+                if (!__setClipDisabledForQc(clip, !isActiveClip)) {
+                  return { success: false, outputPath: frameExport.outputPath, error: "clip.disabled isolation unavailable during export", frameExport: frameExport, trackIndex: cvt, clipIndex: ci, isolationMethod: method };
+                }
+              }
+            }
+            if (!activeClipFound) return { success: false, outputPath: frameExport.outputPath, error: "clip-disabled fallback resolved an active QC clip but could not match it during isolation", frameExport: frameExport, activeViewTrackIndex: activeViewTrackIndex, activeClipId: activeClipId, isolationMethod: method };
+            return { success: true, activeViewTrackIndex: activeViewTrackIndex, activeClipId: String(activeClipId), resolvedBy: activeResolution.resolvedBy, isolationMethod: method };
+          }
+          return { success: false, outputPath: frameExport.outputPath, error: "QC isolation method unavailable", frameExport: frameExport, isolationMethod: method };
+        }
+        function __exportQcFrame(qeSequence, frameExport) {
+          var methodName = frameExport.format === "jpg" ? "exportFrameJPEG" : (frameExport.format === "tiff" ? "exportFrameTiff" : "exportFramePNG");
+          if (typeof qeSequence[methodName] !== "function") {
+            return { success: false, outputPath: frameExport.outputPath, error: "Frame export method unavailable: " + methodName };
+          }
+          function __extensionForFormat(format) { return format === "jpg" ? ".jpg" : (format === "tiff" ? ".tiff" : ".png"); }
+          function __stripFormatExtension(outputPath, format) {
+            var ext = __extensionForFormat(format);
+            var lowerPath = String(outputPath).toLowerCase();
+            if (lowerPath.lastIndexOf(ext) === lowerPath.length - ext.length) return String(outputPath).substring(0, String(outputPath).length - ext.length);
+            return String(outputPath);
+          }
+          var exportBasePath = __stripFormatExtension(frameExport.outputPath, frameExport.format);
+          var actualOutputPath = exportBasePath + __extensionForFormat(frameExport.format);
+          var timeNumber = Number(frameExport.time);
+          var timeString = String(timeNumber);
+          var timeTicks = timeString;
+          try { var exportTime = new Time(); exportTime.seconds = timeNumber; timeTicks = String(exportTime.ticks); } catch (timeError) { }
+          var exportError = null;
+          function tryExport(timeValue, signatureName) {
+            try {
+              qeSequence[methodName](String(timeValue), exportBasePath);
+              if (File(actualOutputPath).exists) return { success: true, outputPath: actualOutputPath, requestedOutputPath: frameExport.outputPath, exportBasePath: exportBasePath, exportSignature: signatureName };
+              exportError = signatureName + " returned without creating " + actualOutputPath;
+              return null;
+            } catch (e0) {
+              exportError = signatureName + ": " + e0.toString();
+              return null;
+            }
+          }
+          var exported = tryExport(timeString, "secondsString_outputBase") || tryExport(timeTicks, "ticksString_outputBase");
+          return exported ? { success: true, outputPath: exported.outputPath, requestedOutputPath: exported.requestedOutputPath, exportBasePath: exported.exportBasePath, exportSignature: exported.exportSignature, time: frameExport.time, view: frameExport.view } : { success: false, outputPath: frameExport.outputPath, error: exportError || "Frame export failed" };
+        }
+
+        try {
+          var sequence = __findSequence(payload.sequenceId);
+          if (!sequence) return JSON.stringify({ success: false, mutationPlanned: false, error: "Sequence not found" });
+          if (sequence.openInTimeline) {
+            try { sequence.openInTimeline(); } catch (_) { }
+          }
+          app.project.activeSequence = sequence;
+          app.enableQE();
+          var qeSequence = qe.project.getActiveSequence();
+          if (!qeSequence) return JSON.stringify({ success: false, mutationPlanned: false, error: "QE active sequence not available for QC export" });
+
+          var preflight = __preflightQcFrameExports(sequence, payload);
+          isolationMethod = preflight.isolationMethod;
+          if (!preflight.success) {
+            return JSON.stringify({
+              success: false,
+              mutationPlanned: false,
+              sequenceId: payload.sequenceId,
+              exportedFrames: [],
+              failedExports: preflight.failedExports,
+              restoredTrackVisibility: false,
+              restoredClipDisabledStates: false,
+              isolationMethod: isolationMethod,
+              structuralReport: payload.structuralReport,
+              visibilityReadFailures: visibilityReadFailures,
+              clipDisabledReadFailures: clipDisabledReadFailures,
+              summary: payload.summary,
+              warnings: (payload.warnings || []).concat(["QC preflight failed before export"])
+            });
+          }
+          if (isolationMethod === "track-visibility") {
+            __rememberAllVideoTracks(sequence);
+          } else if (isolationMethod === "clip-disabled") {
+            __rememberAllVideoClips(sequence);
+          }
+          if (visibilityReadFailures.length > 0 || clipDisabledReadFailures.length > 0) {
+            return JSON.stringify({
+              success: false,
+              mutationPlanned: false,
+              sequenceId: payload.sequenceId,
+              exportedFrames: [],
+              failedExports: [],
+              restoreFailures: [],
+              restoredTrackVisibility: isolationMethod !== "track-visibility",
+              restoredClipDisabledStates: isolationMethod !== "clip-disabled",
+              isolationMethod: isolationMethod,
+              structuralReport: payload.structuralReport,
+              visibilityReadFailures: visibilityReadFailures,
+              clipDisabledReadFailures: clipDisabledReadFailures,
+              summary: payload.summary,
+              warnings: (payload.warnings || []).concat(["QC isolation state read failed before export"])
+            });
+          }
+
+          var qcFolder = new Folder(payload.outputDir);
+          if (!qcFolder.exists) qcFolder.create();
+
+          var exportedFrames = [];
+          var failedExports = [];
+          for (var f = 0; f < payload.frameExports.length; f++) {
+            var frameExport = payload.frameExports[f];
+            var isolation = __isolateQcView(sequence, frameExport, isolationMethod);
+            if (!isolation.success) {
+              failedExports.push(isolation);
+              continue;
+            }
+            var exportResult = __exportQcFrame(qeSequence, frameExport);
+            if (exportResult.success) {
+              exportResult.activeViewTrackIndex = isolation.activeViewTrackIndex;
+              exportResult.isolationMethod = isolation.isolationMethod;
+              if (isolation.activeClipId !== undefined) exportResult.activeClipId = isolation.activeClipId;
+              if (isolation.resolvedBy !== undefined) exportResult.resolvedBy = isolation.resolvedBy;
+              exportedFrames.push(exportResult);
+            } else failedExports.push(exportResult);
+          }
+
+          var restoreFailures = isolationMethod === "track-visibility" ? restoreTrackVisibility(sequence) : restoreClipDisabledStates(sequence);
+          return JSON.stringify({
+            success: failedExports.length === 0 && restoreFailures.length === 0 && visibilityReadFailures.length === 0 && clipDisabledReadFailures.length === 0,
+            mutationPlanned: true,
+            sequenceId: payload.sequenceId,
+            exportedFrames: exportedFrames,
+            failedExports: failedExports,
+            restoreFailures: restoreFailures,
+            visibilityReadFailures: visibilityReadFailures,
+            clipDisabledReadFailures: clipDisabledReadFailures,
+            restoredTrackVisibility: isolationMethod !== "track-visibility" || restoreFailures.length === 0,
+            restoredClipDisabledStates: isolationMethod !== "clip-disabled" || restoreFailures.length === 0,
+            isolationMethod: isolationMethod,
+            structuralReport: payload.structuralReport,
+            summary: payload.summary,
+            warnings: (payload.warnings || []).concat(restoreFailures.length > 0 ? [isolationMethod === "clip-disabled" ? 'Clip disabled state restoration had failures' : 'Track visibility restoration had failures'] : [])
+          });
+        } catch (e) {
+          var trackRestoreFailures = [];
+          var clipRestoreFailures = [];
+          try {
+            var activeSequence = app.project.activeSequence;
+            if (activeSequence) {
+              trackRestoreFailures = restoreTrackVisibility(activeSequence);
+              clipRestoreFailures = restoreClipDisabledStates(activeSequence);
+            }
+          } catch (restoreError) {
+            trackRestoreFailures.push({ error: restoreError.toString() });
+          }
+          var restoreFailures = trackRestoreFailures.concat(clipRestoreFailures);
+          return JSON.stringify({ success: false, mutationPlanned: true, restoreFailures: restoreFailures, visibilityReadFailures: visibilityReadFailures, clipDisabledReadFailures: clipDisabledReadFailures, restoredTrackVisibility: trackRestoreFailures.length === 0, restoredClipDisabledStates: clipRestoreFailures.length === 0, isolationMethod: isolationMethod, structuralReport: payload.structuralReport, error: e.toString() });
+        }
+      }
+
+      var __stackedConformQcPayload = ${payload};
+      return __qcStackedOnlineConform(__stackedConformQcPayload);
     `;
 
     return await this.bridge.executeScript(script);
@@ -1745,6 +6082,101 @@ export class PremiereProTools {
       return false;
     }
     return Object.values(color).some((value) => value !== undefined);
+  }
+
+  private normalizeEditPlanAssembly(args: AssembleFromEditPlanArgs): { assembleArgs: AssembleProductSpotArgs; normalizedPlan: any } {
+    const clipDuration = args.clipDuration ?? 4;
+    const videoTrackIndex = args.videoTrackIndex ?? 0;
+    const hasDirectedPlan = Array.isArray(args.clipPlan) && args.clipPlan.length > 0;
+    const transitionName = args.transitionName ?? (hasDirectedPlan ? undefined : 'Cross Dissolve');
+    const transitionDuration = args.transitionDuration ?? 0.5;
+    const sourceSteps: ClipPlanStep[] = hasDirectedPlan
+      ? args.clipPlan ?? []
+      : args.assetPaths.map((_, index) => ({ assetIndex: index }));
+
+    const normalizedSteps = sourceSteps.map((step, index) => {
+      const assetIndex = step.assetIndex ?? index;
+      const warnings: string[] = [];
+      if (assetIndex >= args.assetPaths.length) {
+        warnings.push(`assetIndex ${assetIndex} is outside assetPaths length ${args.assetPaths.length}`);
+      }
+
+      const normalizedStep: Record<string, any> = {
+        stepIndex: index,
+        assetIndex,
+        assetPath: args.assetPaths[assetIndex] ?? null,
+        time: step.time ?? (index * clipDuration),
+        trackIndex: step.trackIndex ?? videoTrackIndex,
+        insertMode: step.insertMode ?? 'overwrite',
+        warnings
+      };
+
+      if (step.transitionAfter !== undefined) {
+        normalizedStep.transitionAfter = step.transitionAfter;
+      } else if (transitionName !== undefined && index < sourceSteps.length - 1) {
+        normalizedStep.transitionAfter = { name: transitionName, duration: transitionDuration };
+      }
+      if (step.motion !== undefined) normalizedStep.motion = step.motion;
+      if (step.trim !== undefined) normalizedStep.trim = step.trim;
+      if (step.effects !== undefined) normalizedStep.effects = step.effects;
+      if (step.color !== undefined) normalizedStep.color = step.color;
+
+      return normalizedStep;
+    });
+
+    const assembleArgs: AssembleProductSpotArgs = {
+      sequenceName: args.sequenceName,
+      assetPaths: args.assetPaths,
+      motionStyle: 'none'
+    };
+    if (args.clipDuration !== undefined) assembleArgs.clipDuration = args.clipDuration;
+    if (args.videoTrackIndex !== undefined) assembleArgs.videoTrackIndex = args.videoTrackIndex;
+    if (args.transitionName !== undefined) assembleArgs.transitionName = args.transitionName;
+    if (args.transitionDuration !== undefined) assembleArgs.transitionDuration = args.transitionDuration;
+    if (args.clipPlan !== undefined) assembleArgs.clipPlan = args.clipPlan;
+
+    return {
+      assembleArgs,
+      normalizedPlan: {
+        sequenceName: args.sequenceName,
+        assetPaths: args.assetPaths,
+        clipDuration,
+        videoTrackIndex,
+        transitionName,
+        transitionDuration,
+        motionStyle: 'none',
+        clipPlan: normalizedSteps,
+        stepCount: normalizedSteps.length
+      }
+    };
+  }
+
+  private async assembleFromEditPlan(args: AssembleFromEditPlanArgs): Promise<any> {
+    const { assembleArgs, normalizedPlan } = this.normalizeEditPlanAssembly(args);
+
+    if (args.dryRun === true) {
+      return {
+        success: true,
+        dryRun: true,
+        mutationPlanned: false,
+        normalizedPlan,
+        assembleArgs
+      };
+    }
+
+    const result = await this.assembleProductSpot(assembleArgs);
+    const sequenceId = result?.sequenceId ?? result?.sequence?.id;
+    const response: Record<string, any> = {
+      ...result,
+      delegatedTool: 'assemble_product_spot',
+      normalizedPlan
+    };
+
+    if (sequenceId && args.includePostcondition !== false) {
+      response.postcondition = await this.listSequenceTracks(sequenceId);
+    }
+
+    return response;
   }
 
   private async assembleProductSpot(args: AssembleProductSpotArgs): Promise<any> {
@@ -2054,8 +6486,8 @@ export class PremiereProTools {
   private async saveProject(): Promise<any> {
     try {
       await this.bridge.saveProject();
-      return { 
-        success: true, 
+      return {
+        success: true,
         message: 'Project saved successfully',
         timestamp: new Date().toISOString()
       };
@@ -2073,7 +6505,7 @@ export class PremiereProTools {
         var project = app.project;
         var newPath = "${location}/${name}.prproj";
         project.saveAs(newPath);
-        
+
         return JSON.stringify({
           success: true,
           message: "Project saved as: " + newPath,
@@ -2086,7 +6518,7 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -2237,7 +6669,7 @@ export class PremiereProTools {
         var folder = new Folder("${folderPath}");
         var importedItems = [];
         var errors = [];
-        
+
         function importFiles(dir, targetBin) {
           var files = dir.getFiles();
           for (var i = 0; i < files.length; i++) {
@@ -2263,12 +6695,12 @@ export class PremiereProTools {
             }
           }
         }
-        
+
         var targetBin = app.project.rootItem;
         ${binName ? `targetBin = app.project.rootItem.children["${binName}"] || app.project.rootItem;` : ''}
-        
+
         importFiles(folder, targetBin);
-        
+
         return JSON.stringify({
           success: true,
           importedItems: importedItems,
@@ -2283,7 +6715,7 @@ export class PremiereProTools {
         });
       }
     `;
-    
+
     return await this.bridge.executeScript(script);
   }
 
@@ -2313,9 +6745,28 @@ export class PremiereProTools {
   }
 
   // Sequence Management Implementation
-  private async createSequence(name: string, presetPath?: string, _width?: number, _height?: number, _frameRate?: number, _sampleRate?: number): Promise<any> {
+  private async createSequence(name: string, presetPath?: string, width?: number, height?: number, frameRate?: number, sampleRate?: number): Promise<any> {
+    const requestedSettings = {
+      presetPath,
+      width,
+      height,
+      frameRate,
+      sampleRate
+    };
+    const hasUnsupportedSettings = Object.values(requestedSettings).some((value) => value !== undefined && value !== null);
+    if (hasUnsupportedSettings) {
+      return {
+        success: false,
+        supported: false,
+        sequenceName: name,
+        requestedSettings,
+        error: 'create_sequence currently supports non-modal sequence creation by name only. Premiere Pro ExtendScript Project.createNewSequence(sequenceName, sequenceID) does not accept presetPath/width/height/frameRate/sampleRate; passing an empty or preset-path second argument can open the native New Sequence dialog and block the CEP bridge.',
+        hint: 'Call create_sequence with only { name } for a non-modal default sequence, or create/duplicate a template sequence when exact raster/timebase settings are required.'
+      };
+    }
+
     try {
-      const result: any = await this.bridge.createSequence(name, presetPath);
+      const result: any = await this.bridge.createSequence(name);
       if (result?.success === false) {
         return {
           ...result,
@@ -2350,12 +6801,6 @@ export class PremiereProTools {
         var originalSeq = __findSequence(${JSON.stringify(sequenceId)});
         if (!originalSeq) return JSON.stringify({ success: false, error: "Sequence not found" });
 
-        var newSeq = originalSeq.clone();
-        newSeq.name = ${safeName};
-
-        // Sequence.name does NOT propagate to the project panel — find and rename
-        // the matching ProjectItem so the rename is visible to the user and to
-        // future MCP calls.
         function __findItemForSequence(parent, seqId) {
           if (!parent || !parent.children) return null;
           for (var i = 0; i < parent.children.numItems; i++) {
@@ -2373,14 +6818,50 @@ export class PremiereProTools {
           return null;
         }
 
-        var renamedAtItem = false;
-        var newItem = __findItemForSequence(app.project.rootItem, newSeq.sequenceID);
-        if (newItem) {
+        function __cloneSequenceAndResolve(sourceSequence, desiredName) {
+          var beforeSequenceIds = {};
+          for (var bi = 0; bi < app.project.sequences.numSequences; bi++) {
+            beforeSequenceIds[String(app.project.sequences[bi].sequenceID)] = true;
+          }
+          var cloneResult = null;
+          var cloneReturnType = null;
           try {
-            newItem.name = ${safeName};
-            renamedAtItem = true;
-          } catch (_) { /* fall through */ }
+            cloneResult = sourceSequence.clone();
+            cloneReturnType = typeof cloneResult;
+          } catch (cloneError) {
+            return { success: false, cloneAttempted: true, error: 'Sequence.clone failed: ' + cloneError.toString(), cloneReturnType: cloneReturnType };
+          }
+          var targetSequence = null;
+          try {
+            if (cloneResult && cloneResult.sequenceID !== undefined) targetSequence = cloneResult;
+          } catch (_) { }
+          if (!targetSequence) {
+            var candidates = [];
+            for (var ci = 0; ci < app.project.sequences.numSequences; ci++) {
+              var candidate = app.project.sequences[ci];
+              if (candidate && !beforeSequenceIds[String(candidate.sequenceID)]) candidates.push(candidate);
+            }
+            if (candidates.length !== 1) {
+              var candidateIds = [];
+              for (var cii = 0; cii < candidates.length; cii++) candidateIds.push(candidates[cii].sequenceID);
+              return { success: false, cloneAttempted: true, error: 'Unable to identify cloned sequence after Sequence.clone()', cloneReturnType: cloneReturnType, candidateCount: candidates.length, candidateIds: candidateIds };
+            }
+            targetSequence = candidates[0];
+          }
+          var renamedAtSequence = false;
+          try { targetSequence.name = desiredName; renamedAtSequence = true; } catch (_) { }
+          var renamedAtItem = false;
+          var targetProjectItem = __findItemForSequence(app.project.rootItem, targetSequence.sequenceID);
+          if (targetProjectItem) {
+            try { targetProjectItem.name = desiredName; renamedAtItem = true; } catch (_) { }
+          }
+          return { success: true, sequence: targetSequence, projectItem: targetProjectItem, sequenceId: targetSequence.sequenceID, cloneReturnType: cloneReturnType, renamedAtSequence: renamedAtSequence, renamedAtProjectItem: renamedAtItem };
         }
+
+        var cloneResolution = __cloneSequenceAndResolve(originalSeq, ${safeName});
+        if (!cloneResolution.success) return JSON.stringify({ success: false, error: cloneResolution.error, cloneResolution: cloneResolution });
+        var newSeq = cloneResolution.sequence;
+        var newItem = cloneResolution.projectItem;
 
         return JSON.stringify({
           success: true,
@@ -2388,7 +6869,9 @@ export class PremiereProTools {
           newSequenceId: newSeq.sequenceID,
           newName: ${safeName},
           newProjectItemId: newItem ? newItem.nodeId : null,
-          renamedAtProjectItem: renamedAtItem
+          cloneReturnType: cloneResolution.cloneReturnType,
+          renamedAtSequence: cloneResolution.renamedAtSequence,
+          renamedAtProjectItem: cloneResolution.renamedAtProjectItem
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -2423,41 +6906,85 @@ export class PremiereProTools {
     const seqArg = sequenceId ? JSON.stringify(sequenceId) : 'null';
     const script = `
       try {
-        var sequence = ${seqArg} ? __findSequence(${seqArg}) : null;
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var sequence = ${seqArg} ? __findSequence(${seqArg}) : app.project.activeSequence;
+        if (${seqArg} && !sequence) {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: "Sequence not found by id: " + ${seqArg},
+            requestedSequenceId: ${seqArg},
+            captions: []
+          });
+        }
+        if (!sequence) return JSON.stringify({ success: false, supported: false, error: "No active sequence found", captions: [] });
 
-        // Premiere caption tracks live alongside video/audio tracks. Different
-        // Premiere versions expose them differently:
-        //   - sequence.getCaptionTracks() (newer)
+        // Premiere caption tracks live alongside video/audio tracks, but only some
+        // builds expose real caption collections through ExtendScript:
+        //   - sequence.getCaptionTracks() (newer/conditional)
         //   - sequence.captionTracks (some builds)
-        //   - sequence.videoTracks[i] with isCaptioning style flag
-        // Try in that order, return whatever yields {start, end, text} clips.
+        // Do not scan ordinary video tracks or use clip names as caption text;
+        // that would fabricate captions from edit item names.
 
         var tracks = [];
+        var trackSource = null;
+        function __collectionCount(collection) {
+          if (!collection) return 0;
+          if (collection.numItems !== undefined) return collection.numItems;
+          if (collection.numTracks !== undefined) return collection.numTracks;
+          if (collection.length !== undefined) return collection.length;
+          return 0;
+        }
+        function __collectionItem(collection, index) {
+          try { return collection[index]; } catch (_) { return null; }
+        }
         try {
           if (sequence.getCaptionTracks) {
             tracks = sequence.getCaptionTracks();
+            trackSource = 'sequence.getCaptionTracks';
           } else if (sequence.captionTracks) {
             tracks = sequence.captionTracks;
+            trackSource = 'sequence.captionTracks';
           }
-        } catch (_) { /* fall through to track scan */ }
-
-        // Fallback: scan video tracks for caption clip data
-        if ((!tracks || tracks.length === 0) && sequence.videoTracks) {
-          for (var v = 0; v < sequence.videoTracks.numTracks; v++) {
-            var t = sequence.videoTracks[v];
-            if (t && (t.isCaption || t.captionTrack || (t.name && /caption/i.test(t.name)))) {
-              tracks.push(t);
-            }
-          }
+        } catch (captionTrackError) {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: 'Failed while reading native caption track collection: ' + captionTrackError.toString(),
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name
+          });
         }
 
-        var trackCount = tracks ? tracks.length : 0;
+        var trackCount = __collectionCount(tracks);
+        if (!trackSource) {
+          return JSON.stringify({
+            success: true,
+            supported: false,
+            message: 'This Premiere host did not expose readable native caption tracks through ExtendScript. Use exported SRT/VTT sidecars with export_captions/qc_captions/search_captions, or generate captions manually in Premiere and export a sidecar.',
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            trackCount: 0,
+            captionCount: 0,
+            captions: []
+          });
+        }
+        if (trackCount === 0) {
+          return JSON.stringify({
+            success: true,
+            supported: true,
+            message: 'Premiere exposed a native caption track collection, but this sequence has no caption tracks.',
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            trackSource: trackSource,
+            trackCount: 0,
+            captionCount: 0,
+            captions: []
+          });
+        }
         var output = [];
 
         for (var i = 0; i < trackCount; i++) {
-          var trk = tracks[i];
+          var trk = __collectionItem(tracks, i);
           if (!trk) continue;
           var clips = trk.clips || trk.captions || [];
           var clipCount = clips.numItems !== undefined ? clips.numItems : (clips.length || 0);
@@ -2480,8 +7007,8 @@ export class PremiereProTools {
             var text = "";
             try {
               if (typeof clip.text === 'string') text = clip.text;
-              else if (clip.captionText) text = clip.captionText;
-              else if (clip.name) text = clip.name;
+              else if (typeof clip.captionText === 'string') text = clip.captionText;
+              else if (clip.getText && typeof clip.getText === 'function') text = String(clip.getText());
             } catch (_) {}
 
             output.push({
@@ -2506,6 +7033,305 @@ export class PremiereProTools {
       }
     `;
     return await this.bridge.executeScript(script);
+  }
+
+  private async removeCaptionTracks(args: RemoveCaptionTracksArgs): Promise<any> {
+    const payload = JSON.stringify({
+      sequenceId: args.sequenceId ?? null,
+      dryRun: args.dryRun ?? true
+    });
+    const script = `
+      (function __removeCaptionTracks() {
+        try {
+          var payload = ${payload};
+          var sequence = payload.sequenceId ? __findSequence(payload.sequenceId) : app.project.activeSequence;
+          if (payload.sequenceId && !sequence) {
+            return JSON.stringify({
+              success: false,
+              supported: false,
+              dryRun: payload.dryRun,
+              mutationPlanned: false,
+              error: "Sequence not found by id: " + payload.sequenceId,
+              requestedSequenceId: payload.sequenceId,
+              trackCount: 0,
+              removedTrackCount: 0,
+              tracks: []
+            });
+          }
+          if (!sequence) return JSON.stringify({ success: false, supported: false, dryRun: payload.dryRun, mutationPlanned: false, error: "No active sequence found", trackCount: 0, removedTrackCount: 0, tracks: [] });
+
+          function __collectionCount(collection) {
+            if (!collection) return 0;
+            if (collection.numItems !== undefined) return collection.numItems;
+            if (collection.numTracks !== undefined) return collection.numTracks;
+            if (collection.length !== undefined) return collection.length;
+            return 0;
+          }
+          function __collectionItem(collection, index) {
+            try {
+              if (collection && collection[index] !== undefined) return collection[index];
+            } catch (_) { }
+            try {
+              if (collection && typeof collection.get === "function") return collection.get(index);
+            } catch (_) { }
+            return null;
+          }
+          function __locateCaptionTrackCollection(sequence) {
+            var collection = null;
+            var trackSource = null;
+            try {
+              if (typeof sequence.getCaptionTracks === "function") {
+                collection = sequence.getCaptionTracks();
+                trackSource = "sequence.getCaptionTracks";
+              } else if (sequence.captionTracks) {
+                collection = sequence.captionTracks;
+                trackSource = "sequence.captionTracks";
+              }
+            } catch (captionTrackError) {
+              return { error: captionTrackError.toString() };
+            }
+            return { collection: collection, trackSource: trackSource };
+          }
+          function __trackRemovalMethods(collection, track) {
+            var methods = [];
+            if (track && typeof track.remove === "function") methods.push("track.remove");
+            if (track && typeof track.delete === "function") methods.push("track.delete");
+            if (collection && typeof collection.remove === "function") methods.push("collection.remove");
+            if (collection && typeof collection.delete === "function") methods.push("collection.delete");
+            return methods;
+          }
+          function __tryCallRemoval(target, methodName, args, label) {
+            try {
+              target[methodName].apply(target, args);
+              return { success: true, method: label };
+            } catch (removalError) {
+              return { success: false, method: label, error: removalError.toString() };
+            }
+          }
+          function __removeOneCaptionTrack(collection, track, index) {
+            var attempts = [];
+            var result = null;
+            if (track && typeof track.remove === "function") {
+              result = __tryCallRemoval(track, "remove", [], "track.remove()");
+              if (result.success) return result;
+              attempts.push(result);
+            }
+            if (track && typeof track.delete === "function") {
+              result = __tryCallRemoval(track, "delete", [], "track.delete()");
+              if (result.success) return result;
+              attempts.push(result);
+            }
+            if (collection && typeof collection.remove === "function") {
+              if (track) {
+                result = __tryCallRemoval(collection, "remove", [track], "collection.remove(track)");
+                if (result.success) return result;
+                attempts.push(result);
+              }
+              result = __tryCallRemoval(collection, "remove", [index], "collection.remove(index)");
+              if (result.success) return result;
+              attempts.push(result);
+            }
+            if (collection && typeof collection.delete === "function") {
+              if (track) {
+                result = __tryCallRemoval(collection, "delete", [track], "collection.delete(track)");
+                if (result.success) return result;
+                attempts.push(result);
+              }
+              result = __tryCallRemoval(collection, "delete", [index], "collection.delete(index)");
+              if (result.success) return result;
+              attempts.push(result);
+            }
+            return { success: false, error: "No exposed caption track remove/delete method succeeded", attempts: attempts };
+          }
+
+          var located = __locateCaptionTrackCollection(sequence);
+          if (located.error) {
+            return JSON.stringify({
+              success: false,
+              supported: false,
+              dryRun: payload.dryRun,
+              mutationPlanned: false,
+              error: "Failed while locating native caption track collection: " + located.error,
+              sequenceId: sequence.sequenceID,
+              sequenceName: sequence.name
+            });
+          }
+          if (!located.trackSource) {
+            return JSON.stringify({
+              success: true,
+              supported: false,
+              dryRun: payload.dryRun,
+              mutationPlanned: false,
+              message: "This Premiere host did not expose native caption tracks through sequence.getCaptionTracks or sequence.captionTracks.",
+              sequenceId: sequence.sequenceID,
+              sequenceName: sequence.name,
+              trackCount: 0,
+              removedTrackCount: 0,
+              tracks: []
+            });
+          }
+
+          var tracks = located.collection;
+          var trackCount = __collectionCount(tracks);
+          var trackSummaries = [];
+          var publicRemovalApiAvailable = false;
+          for (var i = 0; i < trackCount; i++) {
+            var track = __collectionItem(tracks, i);
+            var methods = __trackRemovalMethods(tracks, track);
+            if (methods.length > 0) publicRemovalApiAvailable = true;
+            trackSummaries.push({ index: i, removalMethods: methods });
+          }
+
+          if (payload.dryRun) {
+            return JSON.stringify({
+              success: true,
+              supported: true,
+              dryRun: true,
+              mutationPlanned: false,
+              sequenceId: sequence.sequenceID,
+              sequenceName: sequence.name,
+              trackSource: located.trackSource,
+              trackCount: trackCount,
+              removedTrackCount: 0,
+              tracks: trackSummaries,
+              publicRemovalApiAvailable: publicRemovalApiAvailable
+            });
+          }
+
+          if (trackCount === 0) {
+            return JSON.stringify({
+              success: true,
+              supported: true,
+              dryRun: false,
+              mutationPlanned: false,
+              sequenceId: sequence.sequenceID,
+              sequenceName: sequence.name,
+              trackSource: located.trackSource,
+              trackCount: 0,
+              removedTrackCount: 0,
+              tracks: []
+            });
+          }
+
+          if (!publicRemovalApiAvailable) {
+            return JSON.stringify({
+              success: false,
+              supported: false,
+              dryRun: false,
+              mutationPlanned: false,
+              error: "Premiere exposed caption tracks, but no public caption track remove/delete API was available on the tracks or collection.",
+              sequenceId: sequence.sequenceID,
+              sequenceName: sequence.name,
+              trackSource: located.trackSource,
+              trackCount: trackCount,
+              removedTrackCount: 0,
+              tracks: trackSummaries
+            });
+          }
+
+          var removedTracks = [];
+          var failedTracks = [];
+          for (var removeIndex = trackCount - 1; removeIndex >= 0; removeIndex--) {
+            var captionTrack = __collectionItem(tracks, removeIndex);
+            var removal = __removeOneCaptionTrack(tracks, captionTrack, removeIndex);
+            if (removal.success) {
+              removedTracks.push({ index: removeIndex, method: removal.method });
+            } else {
+              failedTracks.push({ index: removeIndex, error: removal.error, attempts: removal.attempts || [] });
+            }
+          }
+
+          return JSON.stringify({
+            success: failedTracks.length === 0,
+            supported: true,
+            dryRun: false,
+            mutationPlanned: true,
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            trackSource: located.trackSource,
+            trackCount: trackCount,
+            removedTrackCount: removedTracks.length,
+            removedTracks: removedTracks,
+            failedTracks: failedTracks,
+            afterTrackCount: __collectionCount(tracks)
+          });
+        } catch (e) {
+          return JSON.stringify({ success: false, dryRun: false, mutationPlanned: true, error: e.toString() });
+        }
+      })();
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private captionlessDuplicateName(sequenceId: string, newName?: string): string {
+    return newName ?? `${sequenceId} without captions`;
+  }
+
+  private async duplicateSequenceWithoutCaptions(args: DuplicateSequenceWithoutCaptionsArgs): Promise<any> {
+    const duplicateName = this.captionlessDuplicateName(args.sequenceId, args.newName);
+    const dryRun = args.dryRun ?? true;
+
+    if (dryRun) {
+      return {
+        success: true,
+        dryRun: true,
+        mutationPlanned: false,
+        sequenceId: args.sequenceId,
+        intendedDuplicateName: duplicateName,
+        operations: [
+          { type: 'duplicateSequence', sourceSequenceId: args.sequenceId, newName: duplicateName },
+          { type: 'removeCaptionTracks', dryRun: false },
+          { type: 'readSequenceCaptions' }
+        ]
+      };
+    }
+
+    const duplicateResult = await this.duplicateSequence(args.sequenceId, duplicateName);
+    if (!duplicateResult?.success) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: false,
+        sequenceId: args.sequenceId,
+        intendedDuplicateName: duplicateName,
+        error: duplicateResult?.error ?? 'Failed to duplicate sequence before caption cleanup',
+        duplicateResult
+      };
+    }
+
+    const duplicateSequenceIdValue = duplicateResult.newSequenceId ?? duplicateResult.sequenceId ?? duplicateResult.id;
+    if (duplicateSequenceIdValue === undefined || duplicateSequenceIdValue === null || String(duplicateSequenceIdValue).length === 0) {
+      return {
+        success: false,
+        dryRun: false,
+        mutationPlanned: true,
+        sequenceId: args.sequenceId,
+        intendedDuplicateName: duplicateName,
+        error: 'Sequence duplicated, but no duplicated sequence ID was returned for caption cleanup',
+        duplicateResult
+      };
+    }
+
+    const duplicateSequenceId = String(duplicateSequenceIdValue);
+    const removeCaptionTracksResult = await this.removeCaptionTracks({ sequenceId: duplicateSequenceId, dryRun: false });
+    const readback = await this.readSequenceCaptions(duplicateSequenceId);
+    const cleanupSucceeded = removeCaptionTracksResult?.success === true && removeCaptionTracksResult?.supported !== false;
+    const readbackSucceeded = readback?.success === true;
+
+    return {
+      success: cleanupSucceeded && readbackSucceeded,
+      dryRun: false,
+      mutationPlanned: true,
+      sourceSequenceId: args.sequenceId,
+      newSequenceId: duplicateSequenceId,
+      newName: duplicateName,
+      duplicateResult,
+      removeCaptionTracksResult,
+      readback,
+      ...(cleanupSucceeded && readbackSucceeded ? {} : {
+        error: removeCaptionTracksResult?.error ?? readback?.error ?? 'Caption cleanup duplicate completed with unsupported or failed cleanup/readback'
+      })
+    };
   }
 
   private async deleteSequence(sequenceId: string): Promise<any> {
@@ -2797,6 +7623,1306 @@ export class PremiereProTools {
   //   4. For each entry in `parameters`, attempts to set the matching property by displayName
   //      (exact match first, then case-insensitive whitespace-stripped match)
   //   5. Returns dump + per-param result so debugging is one round-trip
+  private async listClipEffects(clipId: string, sequenceId?: string): Promise<any> {
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)}, ${sequenceId ? JSON.stringify(sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${sequenceId ? JSON.stringify(`Clip not found in sequence: ${sequenceId}`) : '"Clip not found"'} });
+        var clip = info.clip;
+
+        function __serializeEffectValue(value) {
+          if (value === null || value === undefined) return value;
+          var valueType = typeof value;
+          if (valueType === "number" || valueType === "string" || valueType === "boolean") return value;
+          try {
+            if (value.seconds !== undefined || value.ticks !== undefined) {
+              return {
+                seconds: value.seconds !== undefined ? value.seconds : null,
+                ticks: value.ticks !== undefined ? String(value.ticks) : null
+              };
+            }
+          } catch (_) {}
+          try {
+            if (value.length !== undefined && typeof value !== "string") {
+              var arr = [];
+              for (var vi = 0; vi < value.length; vi++) arr.push(__serializeEffectValue(value[vi]));
+              return arr;
+            }
+          } catch (_) {}
+          try { return String(value); } catch (_) { return "<unserializable>"; }
+        }
+
+        function __safeGetPropertyValue(prop) {
+          var result = {
+            available: false,
+            value: null,
+            valueType: null,
+            error: null
+          };
+          try {
+            var raw = prop.getValue();
+            result.available = true;
+            result.valueType = raw === null ? "null" : typeof raw;
+            result.value = __serializeEffectValue(raw);
+          } catch (valueError) {
+            result.error = valueError.toString();
+          }
+          return result;
+        }
+
+        function __safeBool(methodOwner, methodName) {
+          try {
+            if (methodOwner && typeof methodOwner[methodName] === "function") return !!methodOwner[methodName]();
+          } catch (_) {}
+          return null;
+        }
+
+        function __safeKeyframeCount(prop) {
+          try {
+            if (prop && typeof prop.getKeys === "function") {
+              var keys = prop.getKeys();
+              if (!keys) return 0;
+              if (keys.numItems !== undefined) return keys.numItems;
+              if (keys.length !== undefined) return keys.length;
+            }
+          } catch (_) {}
+          return null;
+        }
+
+        var effects = [];
+        var componentCount = clip.components && clip.components.numItems !== undefined ? clip.components.numItems : 0;
+        for (var ci = 0; ci < componentCount; ci++) {
+          var comp = clip.components[ci];
+          if (!comp) continue;
+          var props = [];
+          var propertyCount = 0;
+          try { propertyCount = comp.properties && comp.properties.numItems !== undefined ? comp.properties.numItems : 0; } catch (_) { propertyCount = 0; }
+          for (var pi = 0; pi < propertyCount; pi++) {
+            var prop = comp.properties[pi];
+            var propValue = __safeGetPropertyValue(prop);
+            props.push({
+              propertyIndex: pi,
+              displayName: prop && prop.displayName !== undefined ? String(prop.displayName) : "",
+              matchName: prop && prop.matchName !== undefined ? String(prop.matchName) : null,
+              value: propValue.value,
+              valueType: propValue.valueType,
+              valueAvailable: propValue.available,
+              valueError: propValue.error,
+              supportsKeyframes: __safeBool(prop, "areKeyframesSupported"),
+              isTimeVarying: __safeBool(prop, "isTimeVarying"),
+              keyframeCount: __safeKeyframeCount(prop)
+            });
+          }
+          effects.push({
+            componentIndex: ci,
+            displayName: comp.displayName !== undefined ? String(comp.displayName) : "",
+            matchName: comp.matchName !== undefined ? String(comp.matchName) : null,
+            propertyCount: propertyCount,
+            properties: props
+          });
+        }
+
+        return JSON.stringify({
+          success: true,
+          clipId: ${JSON.stringify(clipId)},
+          clipName: clip.name,
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          trackType: info.trackType,
+          trackIndex: info.trackIndex,
+          clipIndex: info.clipIndex,
+          effects: effects,
+          count: effects.length
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setEffectParameter(args: SetEffectParameterArgs): Promise<any> {
+    const selectorsJson = JSON.stringify({
+      componentName: args.componentName ?? null,
+      componentMatchName: args.componentMatchName ?? null,
+      componentIndex: args.componentIndex ?? null,
+      propertyName: args.propertyName ?? null,
+      propertyMatchName: args.propertyMatchName ?? null,
+      propertyIndex: args.propertyIndex ?? null
+    });
+    const valueJson = JSON.stringify(args.value);
+    if (valueJson === undefined) {
+      return { success: false, error: 'value must be JSON-serializable' };
+    }
+
+    const script = `
+      try {
+        var selectors = ${selectorsJson};
+        var requestedValue = ${valueJson};
+        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var clip = info.clip;
+
+        function __safeString(value) {
+          try {
+            if (value === null || value === undefined) return null;
+            return String(value);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __normalizeName(value) {
+          return String(value).toLowerCase().replace(/[\\s_-]+/g, "");
+        }
+
+        function __namesEqual(actual, expected) {
+          var actualText = __safeString(actual);
+          var expectedText = __safeString(expected);
+          if (actualText === null || expectedText === null) return false;
+          return actualText === expectedText || __normalizeName(actualText) === __normalizeName(expectedText);
+        }
+
+        function __serializeEffectValue(value) {
+          if (value === null || value === undefined) return value;
+          var valueType = typeof value;
+          if (valueType === "number" || valueType === "string" || valueType === "boolean") return value;
+          try {
+            if (value.seconds !== undefined || value.ticks !== undefined) {
+              return {
+                seconds: value.seconds !== undefined ? value.seconds : null,
+                ticks: value.ticks !== undefined ? String(value.ticks) : null
+              };
+            }
+          } catch (_) {}
+          try {
+            if (value.length !== undefined && typeof value !== "string") {
+              var arr = [];
+              for (var vi = 0; vi < value.length; vi++) arr.push(__serializeEffectValue(value[vi]));
+              return arr;
+            }
+          } catch (_) {}
+          try { return String(value); } catch (_) { return "<unserializable>"; }
+        }
+
+        function __safeGetPropertyValue(prop) {
+          var result = { available: false, value: null, valueType: null, error: null };
+          try {
+            var raw = prop.getValue();
+            result.available = true;
+            result.valueType = raw === null ? "null" : typeof raw;
+            result.value = __serializeEffectValue(raw);
+          } catch (valueError) {
+            result.error = valueError.toString();
+          }
+          return result;
+        }
+
+        function __componentSummary(component, componentIndex) {
+          return {
+            componentIndex: componentIndex,
+            displayName: component && component.displayName !== undefined ? String(component.displayName) : "",
+            matchName: component && component.matchName !== undefined ? String(component.matchName) : null,
+            propertyCount: component && component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0
+          };
+        }
+
+        function __propertySummary(prop, propertyIndex) {
+          return {
+            propertyIndex: propertyIndex,
+            displayName: prop && prop.displayName !== undefined ? String(prop.displayName) : "",
+            matchName: prop && prop.matchName !== undefined ? String(prop.matchName) : null
+          };
+        }
+
+        function __availableComponents(clipToInspect) {
+          var components = [];
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          for (var ci = 0; ci < componentCount; ci++) {
+            components.push(__componentSummary(clipToInspect.components[ci], ci));
+          }
+          return components;
+        }
+
+        function __availableProperties(component) {
+          var properties = [];
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          for (var pi = 0; pi < propertyCount; pi++) {
+            properties.push(__propertySummary(component.properties[pi], pi));
+          }
+          return properties;
+        }
+
+        function __findComponent(clipToInspect, componentSelectors) {
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          if (componentSelectors.componentIndex !== null && componentSelectors.componentIndex !== undefined) {
+            var requestedComponentIndex = Number(componentSelectors.componentIndex);
+            if (requestedComponentIndex >= 0 && requestedComponentIndex < componentCount) {
+              return { component: clipToInspect.components[requestedComponentIndex], componentIndex: requestedComponentIndex, strategy: "componentIndex" };
+            }
+            return { error: "componentIndex out of range", availableComponents: __availableComponents(clipToInspect) };
+          }
+          for (var ci = 0; ci < componentCount; ci++) {
+            var component = clipToInspect.components[ci];
+            if (componentSelectors.componentMatchName !== null && componentSelectors.componentMatchName !== undefined) {
+              if (__namesEqual(component.matchName, componentSelectors.componentMatchName)) {
+                return { component: component, componentIndex: ci, strategy: "componentMatchName" };
+              }
+            }
+            if (componentSelectors.componentName !== null && componentSelectors.componentName !== undefined) {
+              if (__namesEqual(component.displayName, componentSelectors.componentName) || __namesEqual(component.matchName, componentSelectors.componentName)) {
+                return { component: component, componentIndex: ci, strategy: "componentName" };
+              }
+            }
+          }
+          return { error: "Component not found", availableComponents: __availableComponents(clipToInspect) };
+        }
+
+        function __findEffectProperty(component, propertySelectors) {
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          if (propertySelectors.propertyIndex !== null && propertySelectors.propertyIndex !== undefined) {
+            var requestedPropertyIndex = Number(propertySelectors.propertyIndex);
+            if (requestedPropertyIndex >= 0 && requestedPropertyIndex < propertyCount) {
+              return { property: component.properties[requestedPropertyIndex], propertyIndex: requestedPropertyIndex, strategy: "propertyIndex" };
+            }
+            return { error: "propertyIndex out of range", availableProperties: __availableProperties(component) };
+          }
+          for (var pi = 0; pi < propertyCount; pi++) {
+            var prop = component.properties[pi];
+            if (propertySelectors.propertyMatchName !== null && propertySelectors.propertyMatchName !== undefined) {
+              if (__namesEqual(prop.matchName, propertySelectors.propertyMatchName)) {
+                return { property: prop, propertyIndex: pi, strategy: "propertyMatchName" };
+              }
+            }
+            if (propertySelectors.propertyName !== null && propertySelectors.propertyName !== undefined) {
+              if (__namesEqual(prop.displayName, propertySelectors.propertyName) || __namesEqual(prop.matchName, propertySelectors.propertyName)) {
+                return { property: prop, propertyIndex: pi, strategy: "propertyName" };
+              }
+            }
+          }
+          return { error: "Property not found", availableProperties: __availableProperties(component) };
+        }
+
+        function __valuesDiffer(valueAfter, requested) {
+          try {
+            if (typeof valueAfter === "number" && typeof requested === "number") {
+              return Math.abs(valueAfter - requested) > 0.0001;
+            }
+            return JSON.stringify(valueAfter) !== JSON.stringify(requested);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        var componentResult = __findComponent(clip, selectors);
+        if (!componentResult.component) {
+          return JSON.stringify({
+            success: false,
+            error: componentResult.error || "Component not found",
+            clipId: ${JSON.stringify(args.clipId)},
+            sequenceId: info.sequenceId,
+            selectors: selectors,
+            availableComponents: componentResult.availableComponents || []
+          });
+        }
+
+        var propertyResult = __findEffectProperty(componentResult.component, selectors);
+        if (!propertyResult.property) {
+          return JSON.stringify({
+            success: false,
+            error: propertyResult.error || "Property not found",
+            clipId: ${JSON.stringify(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            selectors: selectors,
+            availableProperties: propertyResult.availableProperties || []
+          });
+        }
+
+        var valueBeforeResult = __safeGetPropertyValue(propertyResult.property);
+        try {
+          propertyResult.property.setValue(requestedValue, true);
+        } catch (setError) {
+          return JSON.stringify({
+            success: false,
+            error: "setValue threw: " + setError.toString(),
+            clipId: ${JSON.stringify(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            property: __propertySummary(propertyResult.property, propertyResult.propertyIndex),
+            propertyStrategy: propertyResult.strategy,
+            valueBefore: valueBeforeResult.value,
+            valueBeforeAvailable: valueBeforeResult.available,
+            valueRequested: requestedValue
+          });
+        }
+
+        var valueAfterResult = __safeGetPropertyValue(propertyResult.property);
+        return JSON.stringify({
+          success: true,
+          message: "Effect parameter set",
+          clipId: ${JSON.stringify(args.clipId)},
+          clipName: clip.name,
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          trackType: info.trackType,
+          trackIndex: info.trackIndex,
+          clipIndex: info.clipIndex,
+          component: __componentSummary(componentResult.component, componentResult.componentIndex),
+          componentStrategy: componentResult.strategy,
+          property: __propertySummary(propertyResult.property, propertyResult.propertyIndex),
+          propertyStrategy: propertyResult.strategy,
+          valueBefore: valueBeforeResult.value,
+          valueBeforeAvailable: valueBeforeResult.available,
+          valueBeforeError: valueBeforeResult.error,
+          valueRequested: requestedValue,
+          valueAfter: valueAfterResult.value,
+          valueAfterAvailable: valueAfterResult.available,
+          valueAfterError: valueAfterResult.error,
+          clamped: valueAfterResult.available ? __valuesDiffer(valueAfterResult.value, requestedValue) : null
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setClipOpacity(clipId: string, opacity: number, sequenceId?: string): Promise<any> {
+    const args: SetEffectParameterArgs = {
+      clipId,
+      componentName: 'Opacity',
+      propertyName: 'Opacity',
+      value: opacity
+    };
+    if (sequenceId !== undefined) args.sequenceId = sequenceId;
+    return await this.setEffectParameter(args);
+  }
+
+  private async setClipBlendMode(clipId: string, blendMode: number, blendModePropertyIndex = 1, sequenceId?: string): Promise<any> {
+    const args: SetEffectParameterArgs = {
+      clipId,
+      componentName: 'Opacity',
+      propertyIndex: blendModePropertyIndex,
+      value: blendMode
+    };
+    if (sequenceId !== undefined) args.sequenceId = sequenceId;
+    return await this.setEffectParameter(args);
+  }
+
+  private async setClipScale(clipId: string, scale: number, sequenceId?: string): Promise<any> {
+    const args: SetEffectParameterArgs = {
+      clipId,
+      componentName: 'Motion',
+      propertyName: 'Scale',
+      value: scale
+    };
+    if (sequenceId !== undefined) args.sequenceId = sequenceId;
+    return await this.setEffectParameter(args);
+  }
+
+  private async setClipScaleMode(args: SetClipScaleModeArgs): Promise<any> {
+    const dimensionKeys: Array<keyof Pick<SetClipScaleModeArgs, 'sourceWidth' | 'sourceHeight' | 'sequenceWidth' | 'sequenceHeight'>> = [
+      'sourceWidth',
+      'sourceHeight',
+      'sequenceWidth',
+      'sequenceHeight'
+    ];
+    const missingDimensions = dimensionKeys.filter((key) => args[key] === undefined);
+    if (missingDimensions.length > 0) {
+      return {
+        success: false,
+        supported: false,
+        mutationPlanned: false,
+        clipId: args.clipId,
+        sequenceId: args.sequenceId ?? null,
+        mode: args.mode,
+        missingDimensions,
+        error: `set_clip_scale_mode requires explicit sourceWidth, sourceHeight, sequenceWidth, and sequenceHeight. Missing: ${missingDimensions.join(', ')}. Dimensions are not guessed from Premiere metadata.`
+      };
+    }
+
+    const sourceWidth = args.sourceWidth as number;
+    const sourceHeight = args.sourceHeight as number;
+    const sequenceWidth = args.sequenceWidth as number;
+    const sequenceHeight = args.sequenceHeight as number;
+    const widthScale = (sequenceWidth / sourceWidth) * 100;
+    const heightScale = (sequenceHeight / sourceHeight) * 100;
+    const properties: BatchClipPropertiesArgs['properties'] = args.mode === 'stretch'
+      ? {
+          uniformScale: false,
+          scale: heightScale,
+          scaleWidth: widthScale
+        }
+      : {
+          uniformScale: true,
+          scale: args.mode === 'fit' ? Math.min(widthScale, heightScale) : Math.max(widthScale, heightScale)
+        };
+
+    const batchArgs: BatchClipPropertiesArgs = {
+      clipId: args.clipId,
+      properties
+    };
+    if (args.sequenceId !== undefined) batchArgs.sequenceId = args.sequenceId;
+
+    const result = await this.batchSetClipProperties(batchArgs);
+    return {
+      ...result,
+      mode: args.mode,
+      delegatedTool: 'batch_set_clip_properties',
+      computedScaleMode: {
+        sourceWidth,
+        sourceHeight,
+        sequenceWidth,
+        sequenceHeight,
+        widthScale,
+        heightScale,
+        properties
+      }
+    };
+  }
+
+  private async setClipPosition(clipId: string, x: number, y: number, sequenceId?: string): Promise<any> {
+    const args: SetEffectParameterArgs = {
+      clipId,
+      componentName: 'Motion',
+      propertyName: 'Position',
+      value: [x, y]
+    };
+    if (sequenceId !== undefined) args.sequenceId = sequenceId;
+    return await this.setEffectParameter(args);
+  }
+
+  private buildBatchClipPropertyOperations(properties: BatchClipPropertiesArgs['properties']): BatchClipPropertyOperation[] {
+    const operations: BatchClipPropertyOperation[] = [];
+    const addProperty = (label: string, componentName: string, propertyName: string, value: any): void => {
+      operations.push({ label, componentName, propertyName, value });
+    };
+    const addPropertyByIndex = (label: string, componentName: string, propertyIndex: number, value: any): void => {
+      operations.push({ label, componentName, propertyIndex, value });
+    };
+
+    if (properties.opacity !== undefined) addProperty('opacity', 'Opacity', 'Opacity', properties.opacity);
+    if (properties.blendMode !== undefined) addPropertyByIndex('blendMode', 'Opacity', properties.blendModePropertyIndex ?? 1, properties.blendMode);
+    if (properties.scale !== undefined) addProperty('scale', 'Motion', 'Scale', properties.scale);
+    if (properties.scaleWidth !== undefined) addProperty('scaleWidth', 'Motion', 'Scale Width', properties.scaleWidth);
+    if (properties.uniformScale !== undefined) addProperty('uniformScale', 'Motion', 'Uniform Scale', properties.uniformScale);
+    if (properties.position !== undefined) addProperty('position', 'Motion', 'Position', [properties.position.x, properties.position.y]);
+    if (properties.rotation !== undefined) addProperty('rotation', 'Motion', 'Rotation', properties.rotation);
+    if (properties.anchorPoint !== undefined) addProperty('anchorPoint', 'Motion', 'Anchor Point', [properties.anchorPoint.x, properties.anchorPoint.y]);
+    if (properties.antiFlickerFilter !== undefined) addProperty('antiFlickerFilter', 'Motion', 'Anti-flicker Filter', properties.antiFlickerFilter);
+    if (properties.crop?.left !== undefined) addProperty('cropLeft', 'Motion', 'Crop Left', properties.crop.left);
+    if (properties.crop?.top !== undefined) addProperty('cropTop', 'Motion', 'Crop Top', properties.crop.top);
+    if (properties.crop?.right !== undefined) addProperty('cropRight', 'Motion', 'Crop Right', properties.crop.right);
+    if (properties.crop?.bottom !== undefined) addProperty('cropBottom', 'Motion', 'Crop Bottom', properties.crop.bottom);
+
+    return operations;
+  }
+
+  private async batchSetClipProperties(args: BatchClipPropertiesArgs): Promise<any> {
+    const operations = this.buildBatchClipPropertyOperations(args.properties);
+    const speedSettings = args.properties.speed !== undefined
+      ? {
+          percent: args.properties.speed.percent,
+          maintainAudioPitch: args.properties.speed.maintainAudioPitch ?? true
+        }
+      : null;
+    const operationsJson = JSON.stringify(operations);
+    const speedSettingsJson = JSON.stringify(speedSettings);
+    if (operationsJson === undefined || speedSettingsJson === undefined) {
+      return { success: false, error: 'Batch clip properties must be JSON-serializable' };
+    }
+    if (operations.length === 0 && speedSettings === null) {
+      return { success: false, error: 'Provide at least one clip property to set' };
+    }
+
+    const script = `
+      try {
+        var operations = ${operationsJson};
+        var speedSettings = ${speedSettingsJson};
+        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var clip = info.clip;
+
+        function __safeString(value) {
+          try {
+            if (value === null || value === undefined) return null;
+            return String(value);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __normalizeName(value) {
+          return String(value).toLowerCase().replace(/[\\s_-]+/g, "");
+        }
+
+        function __namesEqual(actual, expected) {
+          var actualText = __safeString(actual);
+          var expectedText = __safeString(expected);
+          if (actualText === null || expectedText === null) return false;
+          return actualText === expectedText || __normalizeName(actualText) === __normalizeName(expectedText);
+        }
+
+        function __serializeEffectValue(value) {
+          if (value === null || value === undefined) return value;
+          var valueType = typeof value;
+          if (valueType === "number" || valueType === "string" || valueType === "boolean") return value;
+          try {
+            if (value.seconds !== undefined || value.ticks !== undefined) {
+              return {
+                seconds: value.seconds !== undefined ? value.seconds : null,
+                ticks: value.ticks !== undefined ? String(value.ticks) : null
+              };
+            }
+          } catch (_) {}
+          try {
+            if (value.length !== undefined && typeof value !== "string") {
+              var arr = [];
+              for (var vi = 0; vi < value.length; vi++) arr.push(__serializeEffectValue(value[vi]));
+              return arr;
+            }
+          } catch (_) {}
+          try { return String(value); } catch (_) { return "<unserializable>"; }
+        }
+
+        function __safeGetPropertyValue(prop) {
+          var result = { available: false, value: null, valueType: null, error: null };
+          try {
+            var raw = prop.getValue();
+            result.available = true;
+            result.valueType = raw === null ? "null" : typeof raw;
+            result.value = __serializeEffectValue(raw);
+          } catch (valueError) {
+            result.error = valueError.toString();
+          }
+          return result;
+        }
+
+        function __componentSummary(component, componentIndex) {
+          return {
+            componentIndex: componentIndex,
+            displayName: component && component.displayName !== undefined ? String(component.displayName) : "",
+            matchName: component && component.matchName !== undefined ? String(component.matchName) : null,
+            propertyCount: component && component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0
+          };
+        }
+
+        function __propertySummary(prop, propertyIndex) {
+          return {
+            propertyIndex: propertyIndex,
+            displayName: prop && prop.displayName !== undefined ? String(prop.displayName) : "",
+            matchName: prop && prop.matchName !== undefined ? String(prop.matchName) : null
+          };
+        }
+
+        function __availableComponents(clipToInspect) {
+          var components = [];
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          for (var ci = 0; ci < componentCount; ci++) components.push(__componentSummary(clipToInspect.components[ci], ci));
+          return components;
+        }
+
+        function __availableProperties(component) {
+          var properties = [];
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          for (var pi = 0; pi < propertyCount; pi++) properties.push(__propertySummary(component.properties[pi], pi));
+          return properties;
+        }
+
+        function __findComponent(clipToInspect, componentName) {
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          for (var ci = 0; ci < componentCount; ci++) {
+            var component = clipToInspect.components[ci];
+            if (__namesEqual(component.displayName, componentName) || __namesEqual(component.matchName, componentName)) {
+              return { component: component, componentIndex: ci, strategy: "componentName" };
+            }
+          }
+          return { error: "Component not found", availableComponents: __availableComponents(clipToInspect) };
+        }
+
+        function __findEffectProperty(component, operation) {
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          if (operation.propertyIndex !== null && operation.propertyIndex !== undefined) {
+            var requestedPropertyIndex = Number(operation.propertyIndex);
+            if (requestedPropertyIndex >= 0 && requestedPropertyIndex < propertyCount) {
+              return { property: component.properties[requestedPropertyIndex], propertyIndex: requestedPropertyIndex, strategy: "propertyIndex" };
+            }
+            return { error: "propertyIndex out of range", availableProperties: __availableProperties(component) };
+          }
+          for (var pi = 0; pi < propertyCount; pi++) {
+            var prop = component.properties[pi];
+            if (__namesEqual(prop.displayName, operation.propertyName) || __namesEqual(prop.matchName, operation.propertyName)) {
+              return { property: prop, propertyIndex: pi, strategy: "propertyName" };
+            }
+          }
+          return { error: "Property not found", availableProperties: __availableProperties(component) };
+        }
+
+        function __valuesDiffer(valueAfter, requested) {
+          try {
+            if (typeof valueAfter === "number" && typeof requested === "number") return Math.abs(valueAfter - requested) > 0.0001;
+            return JSON.stringify(valueAfter) !== JSON.stringify(requested);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        var prepared = [];
+        for (var oi = 0; oi < operations.length; oi++) {
+          var operation = operations[oi];
+          var componentResult = __findComponent(clip, operation.componentName);
+          if (!componentResult.component) {
+            return JSON.stringify({
+              success: false,
+              error: componentResult.error || "Component not found",
+              stage: "preflight",
+              failedOperation: operation,
+              clipId: ${JSON.stringify(args.clipId)},
+              sequenceId: info.sequenceId,
+              availableComponents: componentResult.availableComponents || []
+            });
+          }
+          var propertyResult = __findEffectProperty(componentResult.component, operation);
+          if (!propertyResult.property) {
+            return JSON.stringify({
+              success: false,
+              error: propertyResult.error || "Property not found",
+              stage: "preflight",
+              failedOperation: operation,
+              clipId: ${JSON.stringify(args.clipId)},
+              sequenceId: info.sequenceId,
+              component: __componentSummary(componentResult.component, componentResult.componentIndex),
+              availableProperties: propertyResult.availableProperties || []
+            });
+          }
+          prepared.push({
+            operation: operation,
+            component: componentResult.component,
+            componentIndex: componentResult.componentIndex,
+            componentStrategy: componentResult.strategy,
+            property: propertyResult.property,
+            propertyIndex: propertyResult.propertyIndex,
+            propertyStrategy: propertyResult.strategy
+          });
+        }
+
+        var qeClip = null;
+        if (speedSettings !== null) {
+          app.enableQE();
+          var activeSequence = app.project.activeSequence;
+          if (!activeSequence || activeSequence.sequenceID !== info.sequenceId) {
+            return JSON.stringify({
+              success: false,
+              error: "Speed changes require the target sequence to be active for QE DOM operations",
+              stage: "preflight",
+              clipId: ${JSON.stringify(args.clipId)},
+              sequenceId: info.sequenceId,
+              activeSequenceId: activeSequence && activeSequence.sequenceID ? activeSequence.sequenceID : null
+            });
+          }
+          var qeSeq = qe.project.getActiveSequence();
+          var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+          qeClip = qeTrack ? qeTrack.getItemAt(info.clipIndex) : null;
+          if (!qeClip) {
+            return JSON.stringify({
+              success: false,
+              error: "QE clip not found for speed change",
+              stage: "preflight",
+              clipId: ${JSON.stringify(args.clipId)},
+              sequenceId: info.sequenceId,
+              trackType: info.trackType,
+              trackIndex: info.trackIndex,
+              clipIndex: info.clipIndex
+            });
+          }
+        }
+
+        var results = [];
+        for (var si = 0; si < prepared.length; si++) {
+          var preparedOperation = prepared[si];
+          var op = preparedOperation.operation;
+          var valueBeforeResult = __safeGetPropertyValue(preparedOperation.property);
+          var setErrorText = null;
+          try {
+            preparedOperation.property.setValue(op.value, true);
+          } catch (setError) {
+            setErrorText = setError.toString();
+          }
+          var valueAfterResult = __safeGetPropertyValue(preparedOperation.property);
+          results.push({
+            label: op.label,
+            success: setErrorText === null && valueAfterResult.error === null,
+            error: setErrorText,
+            component: __componentSummary(preparedOperation.component, preparedOperation.componentIndex),
+            componentStrategy: preparedOperation.componentStrategy,
+            property: __propertySummary(preparedOperation.property, preparedOperation.propertyIndex),
+            propertyStrategy: preparedOperation.propertyStrategy,
+            valueBefore: valueBeforeResult.value,
+            valueBeforeError: valueBeforeResult.error,
+            valueRequested: op.value,
+            valueAfter: valueAfterResult.value,
+            valueAfterError: valueAfterResult.error,
+            valueAfterDiffersFromRequested: valueAfterResult.error === null ? __valuesDiffer(valueAfterResult.value, op.value) : null
+          });
+        }
+
+        var speedResult = null;
+        if (speedSettings !== null) {
+          var speedBefore = null;
+          var speedAfter = null;
+          var speedError = null;
+          try { speedBefore = clip.getSpeed(); } catch (speedBeforeError) { speedBefore = null; }
+          try {
+            qeClip.setSpeed(Number(speedSettings.percent), speedSettings.maintainAudioPitch !== false);
+          } catch (speedSetError) {
+            speedError = speedSetError.toString();
+          }
+          try { speedAfter = clip.getSpeed(); } catch (speedAfterError) { speedAfter = null; }
+          speedResult = {
+            success: speedError === null,
+            error: speedError,
+            valueBefore: speedBefore,
+            valueRequested: Number(speedSettings.percent),
+            valueAfter: speedAfter,
+            maintainAudioPitch: speedSettings.maintainAudioPitch !== false
+          };
+        }
+
+        var allSucceeded = true;
+        for (var ri = 0; ri < results.length; ri++) {
+          if (!results[ri].success) allSucceeded = false;
+        }
+        if (speedResult !== null && !speedResult.success) allSucceeded = false;
+
+        return JSON.stringify({
+          success: allSucceeded,
+          clipId: ${JSON.stringify(args.clipId)},
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          trackType: info.trackType,
+          trackIndex: info.trackIndex,
+          clipIndex: info.clipIndex,
+          results: results,
+          speed: speedResult
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setClipSpeedSettings(args: SetClipSpeedSettingsArgs): Promise<any> {
+    const settings: Record<string, number | boolean> = {};
+    if (args.sourceInPointSeconds !== undefined) settings.sourceInPointSeconds = args.sourceInPointSeconds;
+    if (args.sourceOutPointSeconds !== undefined) settings.sourceOutPointSeconds = args.sourceOutPointSeconds;
+    if (args.sourceDurationSeconds !== undefined) settings.sourceDurationSeconds = args.sourceDurationSeconds;
+    if (args.speedPercent !== undefined) settings.speedPercent = args.speedPercent;
+    if (args.maintainAudioPitch !== undefined) settings.maintainAudioPitch = args.maintainAudioPitch;
+
+    const settingsJson = JSON.stringify(settings);
+
+    const script = `
+      try {
+        var settings = ${settingsJson};
+        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var clip = info.clip;
+
+        function __makeTime(seconds) {
+          var time = new Time();
+          time.seconds = Number(seconds);
+          return time;
+        }
+
+        function __safeNumber(label, fn) {
+          try {
+            var value = fn();
+            return value === undefined || value === null ? null : Number(value);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __safeBool(label, fn) {
+          try { return !!fn(); } catch (_) { return null; }
+        }
+
+        function __snapshot(label) {
+          return {
+            label: label,
+            start: __safeNumber("start", function () { return clip.start.seconds; }),
+            end: __safeNumber("end", function () { return clip.end.seconds; }),
+            duration: __safeNumber("duration", function () { return clip.duration.seconds; }),
+            sourceInPoint: __safeNumber("inPoint", function () { return clip.inPoint.seconds; }),
+            sourceOutPoint: __safeNumber("outPoint", function () { return clip.outPoint.seconds; }),
+            speed: __safeNumber("speed", function () { return clip.getSpeed(); })
+          };
+        }
+
+        var before = __snapshot("before");
+        var timingAttempted = settings.sourceInPointSeconds !== undefined || settings.sourceOutPointSeconds !== undefined || settings.sourceDurationSeconds !== undefined;
+        var timingError = null;
+        var requestedInPointSeconds = settings.sourceInPointSeconds !== undefined ? Number(settings.sourceInPointSeconds) : before.sourceInPoint;
+        var requestedOutPointSeconds = null;
+        if (timingAttempted) {
+          if (settings.sourceDurationSeconds !== undefined) {
+            requestedOutPointSeconds = requestedInPointSeconds + Number(settings.sourceDurationSeconds);
+          } else if (settings.sourceOutPointSeconds !== undefined) {
+            requestedOutPointSeconds = Number(settings.sourceOutPointSeconds);
+          } else {
+            requestedOutPointSeconds = before.sourceOutPoint;
+          }
+          if (requestedInPointSeconds !== null && requestedOutPointSeconds !== null && requestedInPointSeconds >= requestedOutPointSeconds) {
+            var afterPreflight = __snapshot("afterPreflight");
+            return JSON.stringify({
+              success: false,
+              clipId: ${JSON.stringify(args.clipId)},
+              sequenceId: info.sequenceId,
+              sequenceName: info.sequenceName,
+              trackType: info.trackType,
+              trackIndex: info.trackIndex,
+              clipIndex: info.clipIndex,
+              before: before,
+              after: afterPreflight,
+              timing: {
+                attempted: true,
+                success: false,
+                error: "Requested source in point must be before requested source out point",
+                sourceInPointBefore: before.sourceInPoint,
+                sourceOutPointBefore: before.sourceOutPoint,
+                sourceInPointAfter: afterPreflight.sourceInPoint,
+                sourceOutPointAfter: afterPreflight.sourceOutPoint,
+                requestedSourceInPoint: requestedInPointSeconds,
+                requestedSourceOutPoint: requestedOutPointSeconds,
+                requestedSourceDuration: settings.sourceDurationSeconds !== undefined ? Number(settings.sourceDurationSeconds) : null
+              },
+              speed: null
+            });
+          }
+        }
+        try {
+          if (settings.sourceInPointSeconds !== undefined) {
+            clip.inPoint = __makeTime(Number(settings.sourceInPointSeconds));
+          }
+          if (settings.sourceDurationSeconds !== undefined) {
+            var outPointSeconds = requestedOutPointSeconds;
+            clip.outPoint = __makeTime(outPointSeconds);
+          }
+          if (settings.sourceOutPointSeconds !== undefined) {
+            clip.outPoint = __makeTime(Number(settings.sourceOutPointSeconds));
+          }
+        } catch (timingSetError) {
+          timingError = timingSetError.toString();
+        }
+        var afterTiming = __snapshot("afterTiming");
+
+        var speedResult = null;
+        if (settings.speedPercent !== undefined) {
+          var speedAttempted = true;
+          var speedBefore = afterTiming.speed;
+          var qeSpeedBefore = null;
+          var qeSpeedAfter = null;
+          var qeDurationBefore = null;
+          var qeDurationAfter = null;
+          var reversedBefore = null;
+          var reversedAfter = null;
+          var speedError = null;
+          try {
+            app.enableQE();
+            var activeSequence = app.project.activeSequence;
+            if (!activeSequence || activeSequence.sequenceID !== info.sequenceId) {
+              speedError = "Speed changes require the target sequence to be active for QE DOM operations";
+            } else {
+              var qeSeq = qe.project.getActiveSequence();
+              var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+              var qeClip = qeTrack ? qeTrack.getItemAt(info.clipIndex) : null;
+              if (!qeClip) {
+                speedError = "QE clip not found for speed change";
+              } else {
+                try { qeSpeedBefore = Number(qeClip.speed); } catch (_) { qeSpeedBefore = null; }
+                try { qeDurationBefore = String(qeClip.duration); } catch (_) { qeDurationBefore = null; }
+                try { reversedBefore = __safeBool("reversed", function () { return qeClip.reversed; }); } catch (_) { reversedBefore = null; }
+                try {
+                  qeClip.setSpeed(Number(settings.speedPercent), settings.maintainAudioPitch !== false);
+                } catch (speedSetError) {
+                  speedError = speedSetError.toString();
+                }
+                try { qeSpeedAfter = Number(qeClip.speed); } catch (_) { qeSpeedAfter = null; }
+                try { qeDurationAfter = String(qeClip.duration); } catch (_) { qeDurationAfter = null; }
+                try { reversedAfter = __safeBool("reversed", function () { return qeClip.reversed; }); } catch (_) { reversedAfter = null; }
+              }
+            }
+          } catch (speedOuterError) {
+            speedError = speedOuterError.toString();
+          }
+          var speedAfter = __snapshot("afterSpeed").speed;
+          var requestedMultiplier = Number(settings.speedPercent) / 100;
+          var speedMatchesRequest = speedAfter !== null ? Math.abs(speedAfter - requestedMultiplier) <= 0.0001 : null;
+          var directionMatchesRequest = reversedAfter !== true;
+          speedResult = {
+            speedAttempted: true,
+            attempted: speedAttempted,
+            success: speedError === null && speedMatchesRequest !== false && directionMatchesRequest,
+            error: speedError,
+            valueBefore: speedBefore,
+            valueRequestedPercent: Number(settings.speedPercent),
+            valueRequestedMultiplier: requestedMultiplier,
+            valueAfter: speedAfter,
+            directionMatchesRequest: directionMatchesRequest,
+            qeSpeedBefore: qeSpeedBefore,
+            qeSpeedAfter: qeSpeedAfter,
+            qeDurationBefore: qeDurationBefore,
+            qeDurationAfter: qeDurationAfter,
+            reversedBefore: reversedBefore,
+            reversedAfter: reversedAfter,
+            maintainAudioPitch: settings.maintainAudioPitch !== false,
+            warning: speedError === null ? null : "Premiere Pro QE rejected the speed change; source timing changes, if requested, are reported separately."
+          };
+        }
+
+        var timingResult = {
+          attempted: timingAttempted,
+          success: timingError === null,
+          error: timingError,
+          sourceInPointBefore: before.sourceInPoint,
+          sourceOutPointBefore: before.sourceOutPoint,
+          sourceInPointAfter: afterTiming.sourceInPoint,
+          sourceOutPointAfter: afterTiming.sourceOutPoint,
+          requestedSourceInPoint: settings.sourceInPointSeconds !== undefined ? Number(settings.sourceInPointSeconds) : null,
+          requestedSourceOutPoint: requestedOutPointSeconds,
+          requestedSourceDuration: settings.sourceDurationSeconds !== undefined ? Number(settings.sourceDurationSeconds) : null
+        };
+
+        var after = __snapshot("after");
+        var speedSucceeded = speedResult === null || speedResult.success === true;
+        return JSON.stringify({
+          success: timingResult.success === true && speedSucceeded,
+          clipId: ${JSON.stringify(args.clipId)},
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          trackType: info.trackType,
+          trackIndex: info.trackIndex,
+          clipIndex: info.clipIndex,
+          before: before,
+          after: after,
+          timing: timingResult,
+          speed: speedResult
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setClipTimeRemapSettings(args: SetClipTimeRemapSettingsArgs): Promise<any> {
+    const settings: { staticSpeedPercent?: number; keyframes?: ClipTimeRemapKeyframe[] } = {};
+    if (args.staticSpeedPercent !== undefined) settings.staticSpeedPercent = args.staticSpeedPercent;
+    if (args.keyframes !== undefined) settings.keyframes = args.keyframes.map((keyframe) => ({
+      timeSeconds: keyframe.timeSeconds,
+      speedPercent: keyframe.speedPercent
+    }));
+
+    const settingsJson = JSON.stringify(settings);
+
+    const script = `
+      try {
+        var settings = ${settingsJson};
+        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var clip = info.clip;
+
+        function __safeString(value) {
+          try {
+            if (value === null || value === undefined) return null;
+            return String(value);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __normalizeName(value) {
+          return String(value).toLowerCase().replace(/[\\s_-]+/g, "");
+        }
+
+        function __namesEqual(actual, expected) {
+          var actualText = __safeString(actual);
+          var expectedText = __safeString(expected);
+          if (actualText === null || expectedText === null) return false;
+          return actualText === expectedText || __normalizeName(actualText) === __normalizeName(expectedText);
+        }
+
+        function __nameLooksLikeTimeRemap(value) {
+          var text = __safeString(value);
+          if (text === null) return false;
+          var normalized = __normalizeName(text);
+          return normalized.indexOf("timeremap") !== -1 || normalized.indexOf("timeremapping") !== -1;
+        }
+
+        function __serializeEffectValue(value) {
+          if (value === null || value === undefined) return value;
+          var valueType = typeof value;
+          if (valueType === "number" || valueType === "string" || valueType === "boolean") return value;
+          try {
+            if (value.seconds !== undefined || value.ticks !== undefined) {
+              return {
+                seconds: value.seconds !== undefined ? value.seconds : null,
+                ticks: value.ticks !== undefined ? String(value.ticks) : null
+              };
+            }
+          } catch (_) {}
+          try {
+            if (value.length !== undefined && typeof value !== "string") {
+              var arr = [];
+              for (var vi = 0; vi < value.length; vi++) arr.push(__serializeEffectValue(value[vi]));
+              return arr;
+            }
+          } catch (_) {}
+          try { return String(value); } catch (_) { return "<unserializable>"; }
+        }
+
+        function __safeGetPropertyValue(prop) {
+          var result = { available: false, value: null, valueType: null, error: null };
+          try {
+            var raw = prop.getValue();
+            result.available = true;
+            result.valueType = raw === null ? "null" : typeof raw;
+            result.value = __serializeEffectValue(raw);
+          } catch (valueError) {
+            result.error = valueError.toString();
+          }
+          return result;
+        }
+
+        function __safeGetValueAtKey(prop, timeSeconds) {
+          try { return __serializeEffectValue(prop.getValueAtKey(Number(timeSeconds))); } catch (_) { return null; }
+        }
+
+        function __componentSummary(component, componentIndex) {
+          return {
+            componentIndex: componentIndex,
+            displayName: component && component.displayName !== undefined ? String(component.displayName) : "",
+            matchName: component && component.matchName !== undefined ? String(component.matchName) : null,
+            propertyCount: component && component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0
+          };
+        }
+
+        function __propertySummary(prop, propertyIndex) {
+          return {
+            propertyIndex: propertyIndex,
+            displayName: prop && prop.displayName !== undefined ? String(prop.displayName) : "",
+            matchName: prop && prop.matchName !== undefined ? String(prop.matchName) : null
+          };
+        }
+
+        function __availableProperties(component) {
+          var properties = [];
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          for (var pi = 0; pi < propertyCount; pi++) {
+            properties.push(__propertySummary(component.properties[pi], pi));
+          }
+          return properties;
+        }
+
+        function __availableComponents(clipToInspect) {
+          var components = [];
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          for (var ci = 0; ci < componentCount; ci++) {
+            var component = clipToInspect.components[ci];
+            var summary = __componentSummary(component, ci);
+            summary.properties = __availableProperties(component);
+            components.push(summary);
+          }
+          return components;
+        }
+
+        function __propertyLooksLikeTimeRemapSpeed(prop) {
+          return __namesEqual(prop.displayName, "Speed") ||
+            __namesEqual(prop.matchName, "Speed") ||
+            __nameLooksLikeTimeRemap(prop.displayName) ||
+            __nameLooksLikeTimeRemap(prop.matchName);
+        }
+
+        function __findTimeRemapSpeedProperty(clip) {
+          var componentCount = clip.components && clip.components.numItems !== undefined ? clip.components.numItems : 0;
+          for (var ci = 0; ci < componentCount; ci++) {
+            var component = clip.components[ci];
+            var isTimeRemapComponent = __nameLooksLikeTimeRemap(component.displayName) || __nameLooksLikeTimeRemap(component.matchName);
+            if (!isTimeRemapComponent) continue;
+            var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+            for (var pi = 0; pi < propertyCount; pi++) {
+              var prop = component.properties[pi];
+              if (__propertyLooksLikeTimeRemapSpeed(prop)) {
+                return {
+                  property: prop,
+                  propertyIndex: pi,
+                  component: component,
+                  componentIndex: ci
+                };
+              }
+            }
+          }
+          return { property: null };
+        }
+
+        function __safeType(obj, key) {
+          try { return obj ? typeof obj[key] : null; } catch (e) { return "ERR:" + e.toString(); }
+        }
+
+        function __qeTimeRemapCapabilities() {
+          var result = {
+            available: false,
+            activeSequenceMatches: null,
+            speed: null,
+            setSpeed: null,
+            startPercent: null,
+            endPercent: null,
+            frameBlend: null,
+            timeInterpolationType: null,
+            error: null
+          };
+          try {
+            app.enableQE();
+            var activeSequence = app.project.activeSequence;
+            result.activeSequenceMatches = !!activeSequence && activeSequence.sequenceID === info.sequenceId;
+            if (!result.activeSequenceMatches) {
+              result.error = "Target sequence is not active for QE capability inspection";
+              return result;
+            }
+            var qeSeq = qe.project.getActiveSequence();
+            var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+            var qeClip = qeTrack ? qeTrack.getItemAt(info.clipIndex) : null;
+            if (!qeClip) {
+              result.error = "QE clip not found";
+              return result;
+            }
+            result.available = true;
+            result.speed = __safeType(qeClip, "speed");
+            result.setSpeed = __safeType(qeClip, "setSpeed");
+            result.startPercent = __safeType(qeClip, "startPercent");
+            result.endPercent = __safeType(qeClip, "endPercent");
+            result.frameBlend = __safeType(qeClip, "frameBlend");
+            result.timeInterpolationType = __safeType(qeClip, "timeInterpolationType");
+          } catch (qeError) {
+            result.error = qeError.toString();
+          }
+          return result;
+        }
+
+        var found = __findTimeRemapSpeedProperty(clip);
+        if (!found.property) {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: "Time Remapping speed property is not exposed to ExtendScript on this clip",
+            clipId: ${JSON.stringify(args.clipId)},
+            sequenceId: info.sequenceId,
+            sequenceName: info.sequenceName,
+            trackType: info.trackType,
+            trackIndex: info.trackIndex,
+            clipIndex: info.clipIndex,
+            availableComponents: __availableComponents(clip),
+            qeTimeRemapCapabilities: __qeTimeRemapCapabilities()
+          });
+        }
+
+        var speedProp = found.property;
+        var valueBefore = __safeGetPropertyValue(speedProp);
+        var staticSpeedResult = null;
+        if (settings.staticSpeedPercent !== undefined) {
+          var staticError = null;
+          try {
+            speedProp.setValue(Number(settings.staticSpeedPercent), true);
+          } catch (staticSetError) {
+            staticError = staticSetError.toString();
+          }
+          var staticAfter = __safeGetPropertyValue(speedProp);
+          staticSpeedResult = {
+            attempted: true,
+            success: staticError === null,
+            error: staticError,
+            requested: Number(settings.staticSpeedPercent),
+            valueBefore: valueBefore.value,
+            valueAfter: staticAfter.value,
+            valueAfterAvailable: staticAfter.available,
+            valueAfterError: staticAfter.error
+          };
+        }
+
+        var keyframeResults = [];
+        var keyframeSetupError = null;
+        if (settings.keyframes !== undefined) {
+          try {
+            speedProp.setTimeVarying(true);
+          } catch (varyingError) {
+            keyframeSetupError = varyingError.toString();
+          }
+          if (keyframeSetupError === null) {
+            for (var ki = 0; ki < settings.keyframes.length; ki++) {
+              var keyframe = settings.keyframes[ki];
+              var keyError = null;
+              try {
+                speedProp.addKey(Number(keyframe.timeSeconds));
+                speedProp.setValueAtKey(Number(keyframe.timeSeconds), Number(keyframe.speedPercent), true);
+              } catch (keySetError) {
+                keyError = keySetError.toString();
+              }
+              keyframeResults.push({
+                timeSeconds: Number(keyframe.timeSeconds),
+                speedPercent: Number(keyframe.speedPercent),
+                success: keyError === null,
+                error: keyError,
+                valueAfter: keyError === null ? __safeGetValueAtKey(speedProp, keyframe.timeSeconds) : null
+              });
+            }
+          }
+        }
+
+        var keyframesSucceeded = keyframeSetupError === null;
+        for (var ri = 0; ri < keyframeResults.length; ri++) {
+          if (keyframeResults[ri].success !== true) keyframesSucceeded = false;
+        }
+        var staticSucceeded = staticSpeedResult === null || staticSpeedResult.success === true;
+        var valueAfter = __safeGetPropertyValue(speedProp);
+
+        return JSON.stringify({
+          success: staticSucceeded && keyframesSucceeded,
+          supported: true,
+          clipId: ${JSON.stringify(args.clipId)},
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          trackType: info.trackType,
+          trackIndex: info.trackIndex,
+          clipIndex: info.clipIndex,
+          component: __componentSummary(found.component, found.componentIndex),
+          property: __propertySummary(speedProp, found.propertyIndex),
+          valueBefore: valueBefore.value,
+          valueBeforeAvailable: valueBefore.available,
+          valueBeforeError: valueBefore.error,
+          valueAfter: valueAfter.value,
+          valueAfterAvailable: valueAfter.available,
+          valueAfterError: valueAfter.error,
+          staticSpeed: staticSpeedResult,
+          keyframeSetupError: keyframeSetupError,
+          keyframes: keyframeResults,
+          qeTimeRemapCapabilities: __qeTimeRemapCapabilities()
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
   private async applyEffect(clipId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
     const paramJson = JSON.stringify(parameters || {});
     const script = `
@@ -3737,6 +9863,275 @@ export class PremiereProTools {
     }
   }
 
+  private defaultExportPresetRoots(): string[] {
+    const roots: string[] = [];
+    const home = process.env.HOME;
+
+    if (home) {
+      roots.push(join(home, 'Library', 'Application Support', 'Adobe', 'Common', 'AME'));
+      roots.push(join(home, 'Library', 'Application Support', 'Adobe', 'Adobe Media Encoder'));
+      roots.push(join(home, 'Documents', 'Adobe', 'Adobe Media Encoder'));
+    }
+
+    roots.push('/Library/Application Support/Adobe/Common/AME');
+    return roots;
+  }
+
+  private exportPresetInfoFromStat(filePath: string, source: string, stats: { mtimeMs: number; size: number }): ExportPresetInfo {
+    const fileName = basename(filePath);
+    const extension = extname(fileName);
+    return {
+      name: extension ? fileName.slice(0, -extension.length) : fileName,
+      path: filePath,
+      source,
+      mtimeMs: stats.mtimeMs,
+      sizeBytes: stats.size,
+    };
+  }
+
+  private async scanExportPresetRoot(rootPath: string, source: string, warnings: string[]): Promise<ExportPresetInfo[]> {
+    const presets: ExportPresetInfo[] = [];
+    const maxDepth = 8;
+
+    try {
+      const rootStat = await fs.stat(rootPath);
+      if (rootStat.isFile()) {
+        if (extname(rootPath).toLowerCase() === '.epr') {
+          return [this.exportPresetInfoFromStat(rootPath, source, rootStat)];
+        }
+        warnings.push(`Preset search path is not an .epr file: ${rootPath}`);
+        return [];
+      }
+      if (!rootStat.isDirectory()) {
+        warnings.push(`Preset search path is not a file or directory: ${rootPath}`);
+        return [];
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`Preset search root unavailable: ${rootPath} (${message})`);
+      return [];
+    }
+
+    const walk = async (currentPath: string, depth: number): Promise<void> => {
+      if (depth > maxDepth) {
+        return;
+      }
+
+      let entries: Dirent[];
+      try {
+        entries = await fs.readdir(currentPath, { withFileTypes: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(`Unable to read preset directory: ${currentPath} (${message})`);
+        return;
+      }
+
+      for (const entry of entries) {
+        const entryPath = join(currentPath, entry.name);
+        if (entry.isDirectory()) {
+          await walk(entryPath, depth + 1);
+          continue;
+        }
+
+        if (!entry.isFile() || extname(entry.name).toLowerCase() !== '.epr') {
+          continue;
+        }
+
+        try {
+          const presetStat = await fs.stat(entryPath);
+          presets.push(this.exportPresetInfoFromStat(entryPath, source, presetStat));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          warnings.push(`Unable to stat export preset: ${entryPath} (${message})`);
+        }
+      }
+    };
+
+    await walk(rootPath, 0);
+    return presets;
+  }
+
+  private async listExportPresets(args: ListExportPresetsArgs): Promise<any> {
+    const warnings: string[] = [];
+    const rootSpecs: Array<{ path: string; source: string }> = [];
+
+    if (args.includeAdobeDefaults ?? true) {
+      for (const root of this.defaultExportPresetRoots()) {
+        rootSpecs.push({ path: root, source: 'adobe_default' });
+      }
+    }
+
+    for (const root of args.searchRoots ?? []) {
+      rootSpecs.push({ path: root, source: 'search_root' });
+    }
+
+    const uniqueRoots: Array<{ path: string; source: string }> = [];
+    const seenRoots = new Set<string>();
+    for (const rootSpec of rootSpecs) {
+      const normalizedPath = isAbsolute(rootSpec.path) ? rootSpec.path : resolve(rootSpec.path);
+      if (seenRoots.has(normalizedPath)) {
+        continue;
+      }
+      seenRoots.add(normalizedPath);
+      uniqueRoots.push({ path: normalizedPath, source: rootSpec.source });
+    }
+
+    const presets: ExportPresetInfo[] = [];
+    const seenPresetPaths = new Set<string>();
+    for (const rootSpec of uniqueRoots) {
+      const discoveredPresets = await this.scanExportPresetRoot(rootSpec.path, rootSpec.source, warnings);
+      for (const preset of discoveredPresets) {
+        if (seenPresetPaths.has(preset.path)) {
+          continue;
+        }
+        seenPresetPaths.add(preset.path);
+        presets.push(preset);
+      }
+    }
+
+    const query = args.query?.trim().toLowerCase();
+    const filteredPresets = query
+      ? presets.filter((preset) => preset.name.toLowerCase().includes(query) || preset.path.toLowerCase().includes(query))
+      : presets;
+
+    filteredPresets.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+
+    return {
+      success: true,
+      presetCount: filteredPresets.length,
+      presets: filteredPresets,
+      warnings,
+    };
+  }
+
+  private async qcRenderedMedia(args: QcRenderedMediaArgs): Promise<any> {
+    const warnings: string[] = [];
+    const minSizeBytes = args.minSizeBytes ?? 1;
+    const durationToleranceSeconds = args.durationToleranceSeconds ?? 0.5;
+
+    let mediaStat: Stats;
+    try {
+      mediaStat = await fs.stat(args.filePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        exists: false,
+        filePath: args.filePath,
+        minSizeBytes,
+        durationToleranceSeconds,
+        expectedDurationSeconds: args.expectedDurationSeconds,
+        error: `Rendered media file not found or unreadable: ${message}`,
+        warnings,
+      };
+    }
+
+    const isFile = mediaStat.isFile();
+    const sizeBytes = mediaStat.size;
+    const sizeOk = sizeBytes >= minSizeBytes;
+
+    if (!isFile) {
+      warnings.push(`Rendered media path exists but is not a regular file: ${args.filePath}`);
+    }
+    if (!sizeOk) {
+      warnings.push(`Rendered media file is smaller than minSizeBytes (${sizeBytes} < ${minSizeBytes}).`);
+    }
+
+    const ffprobe: { available: boolean; command: string; durationSeconds?: number; sizeBytes?: number; error?: string } = {
+      available: true,
+      command: 'ffprobe',
+    };
+    let durationSeconds: number | undefined;
+
+    try {
+      const { stdout } = await execFileAsync('ffprobe', [
+        '-v', 'error',
+        '-of', 'json',
+        '-show_entries', 'format=duration,size',
+        args.filePath,
+      ], { timeout: 10_000, maxBuffer: 1024 * 1024 });
+      const stdoutText = stdout;
+      const parsed = JSON.parse(stdoutText) as { format?: { duration?: string; size?: string } };
+      const parsedDuration = Number(parsed.format?.duration);
+      if (Number.isFinite(parsedDuration)) {
+        durationSeconds = parsedDuration;
+        ffprobe.durationSeconds = parsedDuration;
+      } else {
+        warnings.push('ffprobe did not return a numeric duration; duration QC skipped.');
+      }
+
+      const parsedSize = Number(parsed.format?.size);
+      if (Number.isFinite(parsedSize)) {
+        ffprobe.sizeBytes = parsedSize;
+      }
+    } catch (error) {
+      const childError = error as NodeJS.ErrnoException & { stderr?: unknown };
+      const stderrValue = childError.stderr;
+      const stderrText = typeof stderrValue === 'string'
+        ? stderrValue.trim()
+        : Buffer.isBuffer(stderrValue)
+          ? stderrValue.toString('utf8').trim()
+          : undefined;
+      const errorMessage = stderrText || childError.message || String(error);
+      ffprobe.error = errorMessage;
+
+      if (childError.code === 'ENOENT') {
+        ffprobe.available = false;
+        warnings.push('ffprobe is not available on PATH; duration QC skipped.');
+      } else {
+        warnings.push(`ffprobe failed; duration QC skipped: ${errorMessage}`);
+      }
+    }
+
+    let durationDeltaSeconds: number | undefined;
+    let durationWithinTolerance: boolean | undefined;
+    if (args.expectedDurationSeconds !== undefined) {
+      if (durationSeconds !== undefined) {
+        durationDeltaSeconds = Math.abs(durationSeconds - args.expectedDurationSeconds);
+        durationWithinTolerance = durationDeltaSeconds <= durationToleranceSeconds;
+        if (!durationWithinTolerance) {
+          warnings.push(`Duration is outside tolerance (${durationDeltaSeconds}s > ${durationToleranceSeconds}s).`);
+        }
+      } else {
+        durationWithinTolerance = false;
+        warnings.push('Expected duration was provided, but ffprobe duration was unavailable; duration tolerance check failed. Install ffprobe or provide readable media with probeable duration.');
+      }
+    }
+
+    const success = isFile && sizeOk && durationWithinTolerance !== false;
+    const result: Record<string, any> = {
+      success,
+      exists: true,
+      filePath: args.filePath,
+      isFile,
+      sizeBytes,
+      minSizeBytes,
+      sizeOk,
+      mtimeMs: mediaStat.mtimeMs,
+      durationToleranceSeconds,
+      ffprobe,
+      warnings,
+    };
+
+    if (args.expectedDurationSeconds !== undefined) {
+      result.expectedDurationSeconds = args.expectedDurationSeconds;
+    }
+    if (durationSeconds !== undefined) {
+      result.durationSeconds = durationSeconds;
+    }
+    if (durationDeltaSeconds !== undefined) {
+      result.durationDeltaSeconds = durationDeltaSeconds;
+    }
+    if (durationWithinTolerance !== undefined) {
+      result.durationWithinTolerance = durationWithinTolerance;
+    }
+    if (!success) {
+      result.error = 'Rendered media QC failed';
+    }
+
+    return result;
+  }
+
   private async exportFrame(sequenceId: string, time: number, outputPath: string, format = 'png'): Promise<any> {
     const script = `
       try {
@@ -3761,35 +10156,41 @@ export class PremiereProTools {
           });
         }
 
+        function __extensionForFormat(format) { return format === "jpg" ? ".jpg" : (format === "tiff" ? ".tiff" : ".png"); }
+        function __stripFormatExtension(outputPath, format) {
+          var ext = __extensionForFormat(format);
+          var lowerPath = String(outputPath).toLowerCase();
+          if (lowerPath.lastIndexOf(ext) === lowerPath.length - ext.length) return String(outputPath).substring(0, String(outputPath).length - ext.length);
+          return String(outputPath);
+        }
+        var requestedOutputPath = "${outputPath}";
+        var exportBasePath = __stripFormatExtension(requestedOutputPath, "${format}");
+        var actualOutputPath = exportBasePath + __extensionForFormat("${format}");
         var timeNumber = ${time};
         var timeString = String(timeNumber);
         var timeTicks = timeString;
         try {
           var exportTime = new Time();
           exportTime.seconds = timeNumber;
-          timeTicks = exportTime.ticks;
+          timeTicks = String(exportTime.ticks);
         } catch (e1) {}
 
         var exportError = null;
-        function tryExport(arg1, arg2) {
+        function tryExport(timeValue, signatureName) {
           try {
-            qeSequence[methodName](arg1, arg2);
-            return true;
+            qeSequence[methodName](String(timeValue), exportBasePath);
+            if (File(actualOutputPath).exists) return signatureName;
+            exportError = signatureName + " returned without creating " + actualOutputPath;
+            return null;
           } catch (e2) {
-            exportError = e2.toString();
-            return false;
+            exportError = signatureName + ": " + e2.toString();
+            return null;
           }
         }
 
-        var exported =
-          tryExport(timeNumber, "${outputPath}") ||
-          tryExport("${outputPath}", timeNumber) ||
-          tryExport(timeString, "${outputPath}") ||
-          tryExport("${outputPath}", timeString) ||
-          tryExport(timeTicks, "${outputPath}") ||
-          tryExport("${outputPath}", timeTicks);
+        var exportSignature = tryExport(timeString, "secondsString_outputBase") || tryExport(timeTicks, "ticksString_outputBase");
 
-        if (!exported) {
+        if (!exportSignature) {
           return JSON.stringify({
             success: false,
             error: exportError || "Frame export failed"
@@ -3801,7 +10202,10 @@ export class PremiereProTools {
           message: "Frame exported successfully",
           sequenceId: "${sequenceId}",
           time: ${time},
-          outputPath: "${outputPath}",
+          outputPath: actualOutputPath,
+          requestedOutputPath: requestedOutputPath,
+          exportBasePath: exportBasePath,
+          exportSignature: exportSignature,
           format: "${format}"
         });
       } catch (e) {
@@ -4997,23 +11401,78 @@ export class PremiereProTools {
   }
 
   // Caption Track Implementation
-  private async createCaptionTrack(sequenceId: string, projectItemId: string, startTime?: number, captionFormat?: string): Promise<any> {
-    const startTimeVal = startTime || 0;
-    const formatVal = captionFormat || 'Subtitle Default';
+  private async createCaptionTrack(sequenceId: string, projectItemId: string, startTime?: number, captionFormat?: PremiereCaptionFormat): Promise<any> {
+    const startTimeVal = startTime ?? 0;
+    const formatDescriptor = this.getPremiereCaptionFormatDescriptor(captionFormat);
+    const fallbackLiteral = formatDescriptor.numericFallback === undefined ? 'null' : String(formatDescriptor.numericFallback);
+    const sequenceNotFoundError = `Sequence not found by id: ${sequenceId}`;
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: ${JSON.stringify(sequenceNotFoundError)} });
         var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
-        var startAtTime = ${startTimeVal};
-        sequence.createCaptionTrack(projectItem, startAtTime, ${JSON.stringify(formatVal)});
-        return JSON.stringify({
-          success: true,
-          message: "Caption track created",
-          captionFormat: ${JSON.stringify(formatVal)},
-          startTime: ${startTimeVal}
-        });
+        var startTimeVal = ${startTimeVal};
+        var captionFormatConstantName = ${JSON.stringify(formatDescriptor.constantName)};
+        var captionFormatValue = null;
+        if (typeof Sequence !== 'undefined' && typeof Sequence.${formatDescriptor.constantName} !== 'undefined') {
+          captionFormatValue = Sequence.${formatDescriptor.constantName};
+        } else {
+          captionFormatValue = ${fallbackLiteral};
+        }
+        if (captionFormatValue === null || typeof captionFormatValue === 'undefined') {
+          return JSON.stringify({ success: false, supported: false, error: "Premiere host does not expose caption format constant: " + captionFormatConstantName });
+        }
+
+        var timeObjectError = null;
+        var timeObjectCallError = null;
+        try {
+          var startAtTime = new Time();
+          startAtTime.seconds = startTimeVal;
+          sequence.createCaptionTrack(projectItem, startAtTime, captionFormatValue);
+          return JSON.stringify({
+            success: true,
+            message: "Caption track created",
+            captionFormat: ${JSON.stringify(formatDescriptor.key)},
+            captionFormatConstant: captionFormatConstantName,
+            startTime: startTimeVal,
+            createCaptionTrackMethod: "sequence.createCaptionTrack",
+            createCaptionTrackSignature: "createCaptionTrack(projectItem, Time, captionFormat)",
+            startTimeArgumentType: "Time",
+            fallbackUsed: false
+          });
+        } catch (timeError) {
+          timeObjectCallError = timeError.toString();
+          timeObjectError = timeObjectCallError;
+        }
+
+        try {
+          sequence.createCaptionTrack(projectItem, startTimeVal, captionFormatValue);
+          return JSON.stringify({
+            success: true,
+            message: "Caption track created",
+            captionFormat: ${JSON.stringify(formatDescriptor.key)},
+            captionFormatConstant: captionFormatConstantName,
+            startTime: startTimeVal,
+            createCaptionTrackMethod: "sequence.createCaptionTrack",
+            createCaptionTrackSignature: "createCaptionTrack(projectItem, seconds, captionFormat)",
+            startTimeArgumentType: "number",
+            fallbackUsed: true,
+            timeObjectError: timeObjectError
+          });
+        } catch (numericError) {
+          return JSON.stringify({
+            success: false,
+            error: "createCaptionTrack failed with Time object and numeric fallback: " + numericError.toString(),
+            createCaptionTrackMethod: "sequence.createCaptionTrack",
+            attemptedSignatures: [
+              "createCaptionTrack(projectItem, Time, captionFormat)",
+              "createCaptionTrack(projectItem, seconds, captionFormat)"
+            ],
+            timeObjectError: timeObjectCallError,
+            numericFallbackError: numericError.toString()
+          });
+        }
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }

@@ -8,6 +8,13 @@ import { PremiereProResources } from '../../resources/index.js';
 import { PremiereProPrompts } from '../../prompts/index.js';
 
 jest.mock('../../bridge/index.js');
+jest.mock('../../utils/demoAssets.js', () => ({
+  createMotionDemoAssets: jest.fn(async (assetDir: string) => [
+    { name: '01_focus.png', path: `${assetDir}/01_focus.png` },
+    { name: '02_precision.png', path: `${assetDir}/02_precision.png` },
+    { name: '03_finish.png', path: `${assetDir}/03_finish.png` }
+  ])
+}));
 
 describe('MCP Adobe Premiere Pro Integration', () => {
   let mockBridge: jest.Mocked<PremiereProBridge>;
