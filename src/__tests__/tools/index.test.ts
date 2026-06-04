@@ -83,6 +83,17 @@ describe('PremiereProTools', () => {
       expect(toolNames).not.toContain('unnest_sequence');
     });
 
+    it('does not expose raw ExtendScript or DOM execution tools in the public catalog', () => {
+      const toolNames = tools.getAvailableTools().map((tool) => tool.name);
+
+      expect(toolNames).not.toEqual(expect.arrayContaining([
+        'execute_extendscript',
+        'evaluate_expression',
+        'inspect_dom_object',
+        'sendRawCommand'
+      ]));
+    });
+
     it('returns valid tool metadata', () => {
       for (const tool of tools.getAvailableTools()) {
         expect(typeof tool.name).toBe('string');
