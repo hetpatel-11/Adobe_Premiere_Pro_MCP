@@ -4,8 +4,8 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current summary
 
-- Runtime MCP tools exposed: **158**
-- Source catalog tools: **158**
+- Runtime MCP tools exposed: **162**
+- Source catalog tools: **162**
 - Runtime/source mismatch: **none**
 - Current implementation path: **Node MCP server → `/tmp/premiere-mcp-bridge` → CEP panel → Premiere ExtendScript/QE DOM**
 - Validation note: this document inventories implemented/exposed tools. A full live sweep should be run in a scratch Premiere project because `scripts/live-tool-sweep.mjs` mutates the active project.
@@ -20,12 +20,16 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current exposed tools by category
 
-### Discovery Tools (NEW) (10)
+### Discovery Tools (NEW) (14)
 
 - `test_connection` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Fast bridge smoke test that checks Premiere app, active project, CEP panel, temp dir, and round-trip latency. Implementation: `testConnection`; API hints: app.version, app.project.
 - `bridge_health_report` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge and local filesystem checks. Description: Single JSON health report covering MCP server, CEP panel status, temp bridge files, Premiere version, active project, and last command errors. Implementation: `bridgeHealthReport`; API hints: app.version, app.project.
 - `live_tool_sweep_safe` — **BUILT / exposed**. Implemented as an MCP tool that creates/opens a disposable scratch project and runs a smoke-only validation path. Description: Scratch-project-only validation command for safe bridge/tool smoke testing; requires explicit scratchProjectDir and rejects report path escapes/symlinks. Implementation: `liveToolSweepSafe`; API hints: bridge/helper-specific.
 - `list_project_items` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all media items, bins, and assets in the current Premiere Pro project. Use this to discover available media before performing operations. Implementation: `listProjectItems`; API hints: app.project.
+- `get_full_project_overview` — **BUILT / exposed**. Read-only recursive overview of the open project, including bin tree, sequence summaries, media extension counts, offline item count, and active sequence. Implementation: `getFullProjectOverview`; API hints: app.project, ProjectItem, Sequence.
+- `get_bin_contents` — **BUILT / exposed**. Read-only project bin inspection by node ID, exact name, or slash-delimited path, with optional recursive child summaries. Implementation: `getBinContents`; API hints: app.project, ProjectItem.children, ProjectItem.getMediaPath, ProjectItem.getFootageInterpretation.
+- `get_project_item_info` — **BUILT / exposed**. Read-only detailed project-item inspection for media path, offline state, footage interpretation, project/XMP metadata diagnostics, proxy support, markers, and bin child counts. Implementation: `getProjectItemInfo`; API hints: app.project, ProjectItem metadata/proxy/marker APIs.
+- `search_project_items` — **BUILT / exposed**. Read-only recursive project item search by name substring, media extension, offline state, color label, and item type with max-result limiting. Implementation: `searchProjectItems`; API hints: app.project, ProjectItem.getMediaPath, ProjectItem.isOffline, ProjectItem.getColorLabel.
 - `list_sequences` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all sequences in the current Premiere Pro project with their IDs, names, and basic properties. Implementation: `listSequences`; API hints: app.project, videoTracks, audioTracks.
 - `list_sequence_tracks` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all video and audio tracks in a specific sequence with their properties and clips. Implementation: `listSequenceTracks`; API hints: app.project, videoTracks, audioTracks.
 - `get_project_info` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Gets comprehensive information about the current project including name, path, settings, and status. Implementation: `getProjectInfo`; API hints: app.project.
@@ -189,7 +193,7 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 - `batch_add_transitions` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Adds a transition to all clip boundaries on a track. Useful for quickly adding cross dissolves or other transitions between every clip. Implementation: `batchAddTransitions`; API hints: app.enableQE, qe.project, videoTracks.
 
-### Project Item Discovery & Management (2)
+### Project Item Discovery & Management (3)
 
 - `find_project_item_by_name` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Searches for project items by name. Useful for finding media files, sequences, or bins. Implementation: `findProjectItemByName`; API hints: app.project.
 - `move_item_to_bin` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Moves a project item into a different bin (folder). Implementation: `moveItemToBin`; API hints: bridge/helper-specific.

@@ -922,6 +922,24 @@ const renameTrackSchema = trackTargetScopeSchema.extend({
   name: z.string().min(1).describe('New track name. The operation verifies the name by reading it back.')
 });
 
+const getBinContentsSchema = z.object({
+  binId: z.string().min(1).describe('Bin name, node ID, or slash-delimited path, for example Footage/Raw.'),
+  recursive: z.boolean().optional().describe('When true, includes nested sub-bin items recursively. Defaults to true.')
+});
+
+const getProjectItemInfoSchema = z.object({
+  projectItemId: z.string().min(1).describe('Project item node ID or exact name to inspect.')
+});
+
+const searchProjectItemsSchema = z.object({
+  query: z.string().min(1).optional().describe('Optional case-insensitive item-name substring to match.'),
+  extension: z.string().min(1).optional().transform((value) => value ? value.replace(/^\./, '').toLowerCase() : value).describe('Optional media file extension filter, with or without a leading dot.'),
+  offlineOnly: z.boolean().optional().describe('When true, only returns offline/missing media items.'),
+  colorLabel: z.number().int().min(0).max(15).optional().describe('Optional Premiere project-item color label index, 0 through 15.'),
+  itemType: z.enum(['clip', 'bin', 'all']).optional().describe('Optional item type filter. Defaults to all.'),
+  maxResults: z.number().int().min(1).max(1000).optional().describe('Maximum results to return. Defaults to 100.')
+});
+
 type CaptionSidecarFormat = z.infer<typeof captionSidecarFormatSchema>;
 type PremiereCaptionFormat = z.infer<typeof premiereCaptionFormatSchema>;
 
@@ -961,6 +979,9 @@ type SetTargetTrackArgs = z.infer<typeof setTargetTrackSchema>;
 type GetTargetTracksArgs = z.infer<typeof getTargetTracksSchema>;
 type SetAllTracksTargetedArgs = z.infer<typeof setAllTracksTargetedSchema>;
 type RenameTrackArgs = z.infer<typeof renameTrackSchema>;
+type GetBinContentsArgs = z.infer<typeof getBinContentsSchema>;
+type GetProjectItemInfoArgs = z.infer<typeof getProjectItemInfoSchema>;
+type SearchProjectItemsArgs = z.infer<typeof searchProjectItemsSchema>;
 
 export class PremiereProTools {
   private bridge: PremiereProTransport;
@@ -1003,6 +1024,26 @@ export class PremiereProTools {
           includeBins: z.boolean().optional().describe('Whether to include bin information in the results'),
           includeMetadata: z.boolean().optional().describe('Whether to include detailed metadata for each item')
         })
+      },
+      {
+        name: 'get_full_project_overview',
+        description: 'Read-only project overview: recursive bin tree, sequence summaries, media file type counts, offline count, and active sequence.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'get_bin_contents',
+        description: 'Read-only recursive inspection of one project bin by node ID, name, or slash-delimited bin path.',
+        inputSchema: getBinContentsSchema
+      },
+      {
+        name: 'get_project_item_info',
+        description: 'Read-only detailed inspection of one project item, including media path, offline state, footage interpretation, metadata, proxy, markers, and bin child counts.',
+        inputSchema: getProjectItemInfoSchema
+      },
+      {
+        name: 'search_project_items',
+        description: 'Read-only project item search by name substring, extension, offline state, color label, and item type.',
+        inputSchema: searchProjectItemsSchema
       },
       {
         name: 'list_sequences',
@@ -2297,6 +2338,14 @@ export class PremiereProTools {
           return await this.liveToolSweepSafe(args as LiveToolSweepSafeArgs);
         case 'list_project_items':
           return await this.listProjectItems(args.includeBins, args.includeMetadata);
+        case 'get_full_project_overview':
+          return await this.getFullProjectOverview();
+        case 'get_bin_contents':
+          return await this.getBinContents(args as GetBinContentsArgs);
+        case 'get_project_item_info':
+          return await this.getProjectItemInfo(args as GetProjectItemInfoArgs);
+        case 'search_project_items':
+          return await this.searchProjectItems(args as SearchProjectItemsArgs);
         case 'list_sequences':
           return await this.listSequences();
         case 'list_sequence_tracks':
@@ -3929,6 +3978,366 @@ export class PremiereProTools {
       }
     `;
 
+    return await this.bridge.executeScript(script);
+  }
+
+  private buildProjectInspectionHelpersScript(): string {
+    return `
+      function __projectItemType(item) {
+        try {
+          if (item.type === 2) return 'bin';
+          if (item.type === 3) return 'root';
+          if (item.type === 4) return 'file';
+          if (item.isSequence && item.isSequence()) return 'sequence';
+        } catch (_) {}
+        return item && item.type === 1 ? 'clip' : 'unknown';
+      }
+
+      function __safeProjectItemString(value) {
+        try {
+          if (value === null || value === undefined) return null;
+          return String(value);
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function __safeProjectItemSeconds(timeObj) {
+        try {
+          if (!timeObj) return null;
+          if (typeof timeObj.seconds === 'number') return timeObj.seconds;
+          if (timeObj.seconds !== undefined && timeObj.seconds !== null) {
+            var numericSeconds = Number(timeObj.seconds);
+            return isFinite(numericSeconds) ? numericSeconds : null;
+          }
+          if (timeObj.ticks !== undefined && timeObj.ticks !== null) return __ticksToSeconds(timeObj.ticks);
+        } catch (_) {}
+        return null;
+      }
+
+      function __findProjectItem(identifier) {
+        if (!identifier && identifier !== 0) return null;
+        var wanted = String(identifier);
+        function walk(parent) {
+          if (!parent || !parent.children) return null;
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            try {
+              if (String(item.nodeId) === wanted || item.name === wanted || item.treePath === wanted) return item;
+            } catch (_) {}
+            if (item.type === 2) {
+              var found = walk(item);
+              if (found) return found;
+            }
+          }
+          return null;
+        }
+        return walk(app.project.rootItem);
+      }
+
+      function __findProjectBin(binId) {
+        if (!binId && binId !== 0) return null;
+        var wanted = String(binId);
+        function byIdOrName(parent) {
+          if (!parent || !parent.children) return null;
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            if (item.type !== 2) continue;
+            try {
+              if (String(item.nodeId) === wanted || item.name === wanted || item.treePath === wanted) return item;
+            } catch (_) {}
+            var nested = byIdOrName(item);
+            if (nested) return nested;
+          }
+          return null;
+        }
+
+        var direct = byIdOrName(app.project.rootItem);
+        if (direct) return direct;
+
+        var parts = wanted.split('/');
+        var current = app.project.rootItem;
+        for (var p = 0; p < parts.length; p++) {
+          var part = parts[p];
+          if (!part) continue;
+          var matched = null;
+          for (var c = 0; c < current.children.numItems; c++) {
+            var child = current.children[c];
+            if (child.type === 2 && child.name === part) {
+              matched = child;
+              break;
+            }
+          }
+          if (!matched) return null;
+          current = matched;
+        }
+        return current !== app.project.rootItem ? current : null;
+      }
+
+      function __itemInspectionSummary(item) {
+        var info = {
+          nodeId: __safeProjectItemString(item.nodeId),
+          id: __safeProjectItemString(item.nodeId),
+          name: __safeProjectItemString(item.name),
+          type: __projectItemType(item),
+          treePath: __safeProjectItemString(item.treePath)
+        };
+        try { info.mediaPath = item.getMediaPath(); } catch (_) {}
+        try { info.offline = item.isOffline(); } catch (_) {}
+        try { info.colorLabel = item.getColorLabel(); } catch (_) {}
+        try { info.canChangeMediaPath = item.canChangeMediaPath(); } catch (_) {}
+        try {
+          var interp = item.getFootageInterpretation();
+          if (interp) {
+            info.footageInterpretation = {
+              frameRate: interp.frameRate,
+              pixelAspectRatio: interp.pixelAspectRatio,
+              fieldType: interp.fieldType,
+              alphaUsage: interp.alphaUsage,
+              ignoreAlpha: interp.ignoreAlpha,
+              invertAlpha: interp.invertAlpha
+            };
+            info.frameRate = interp.frameRate;
+            info.pixelAspectRatio = interp.pixelAspectRatio;
+          }
+        } catch (_) {}
+        try { info.inPoint = __safeProjectItemSeconds(item.getInPoint()); } catch (_) {}
+        try { info.outPoint = __safeProjectItemSeconds(item.getOutPoint()); } catch (_) {}
+        return info;
+      }
+
+      function __readProjectItemMetadata(item, info) {
+        try {
+          var projectMetadata = item.getProjectMetadata();
+          if (projectMetadata && projectMetadata.length > 10000) {
+            info.projectMetadataLength = projectMetadata.length;
+            info.metadataTruncated = true;
+          } else if (projectMetadata) {
+            info.projectMetadata = projectMetadata;
+          }
+        } catch (projectMetadataError) {
+          info.projectMetadataError = projectMetadataError.toString();
+        }
+        try {
+          var xmpMetadata = item.getXMPMetadata();
+          if (xmpMetadata && xmpMetadata.length > 10000) {
+            info.xmpMetadataLength = xmpMetadata.length;
+            info.metadataTruncated = true;
+          } else if (xmpMetadata) {
+            info.xmpMetadata = xmpMetadata;
+          }
+        } catch (xmpMetadataError) {
+          info.xmpMetadataError = xmpMetadataError.toString();
+        }
+      }
+
+      function __readProjectItemMarkers(item) {
+        var markers = [];
+        try {
+          var markerCollection = item.getMarkers();
+          if (markerCollection) {
+            var marker = markerCollection.getFirstMarker();
+            while (marker) {
+              markers.push({
+                name: __safeProjectItemString(marker.name),
+                comments: __safeProjectItemString(marker.comments),
+                startSeconds: __safeProjectItemSeconds(marker.start),
+                endSeconds: __safeProjectItemSeconds(marker.end)
+              });
+              marker = markerCollection.getNextMarker(marker);
+            }
+          }
+        } catch (_) {}
+        return markers;
+      }
+
+      function __walkProjectBin(bin, recursive) {
+        var items = [];
+        if (!bin || !bin.children) return items;
+        for (var i = 0; i < bin.children.numItems; i++) {
+          var item = bin.children[i];
+          var info = __itemInspectionSummary(item);
+          if (item.type === 2 && recursive) {
+            info.children = __walkProjectBin(item, true);
+            info.childCount = info.children.length;
+          } else if (item.type === 2) {
+            try { info.childCount = item.children.numItems; } catch (_) {}
+          }
+          items.push(info);
+        }
+        return items;
+      }
+
+      function __countProjectItems(bin, stats) {
+        if (!bin || !bin.children) return stats;
+        for (var i = 0; i < bin.children.numItems; i++) {
+          var item = bin.children[i];
+          stats.totalItems++;
+          if (item.type === 2) stats.totalBins++;
+          try { if (item.isOffline()) stats.offlineItems++; } catch (_) {}
+          try {
+            var mediaPath = item.getMediaPath();
+            if (mediaPath) {
+              var extension = mediaPath.split('.').pop().toLowerCase();
+              if (extension) stats.mediaFileTypes[extension] = (stats.mediaFileTypes[extension] || 0) + 1;
+            }
+          } catch (_) {}
+          if (item.type === 2) __countProjectItems(item, stats);
+        }
+        return stats;
+      }
+    `;
+  }
+
+  private async getFullProjectOverview(): Promise<any> {
+    const script = buildPremiereScript(`
+      ${this.buildProjectInspectionHelpersScript()}
+      return (function __getFullProjectOverview() {
+        var project = app.project;
+        if (!project) return { success: false, error: 'No project is open' };
+        var stats = __countProjectItems(project.rootItem, { totalItems: 0, totalBins: 0, offlineItems: 0, mediaFileTypes: {} });
+        var sequences = [];
+        for (var i = 0; i < project.sequences.numSequences; i++) {
+          var seq = project.sequences[i];
+          var clipCount = 0;
+          try {
+            for (var vt = 0; vt < seq.videoTracks.numTracks; vt++) clipCount += seq.videoTracks[vt].clips.numItems;
+            for (var at = 0; at < seq.audioTracks.numTracks; at++) clipCount += seq.audioTracks[at].clips.numItems;
+          } catch (_) {}
+          sequences.push({
+            id: __safeProjectItemString(seq.sequenceID),
+            name: __safeProjectItemString(seq.name),
+            width: seq.frameSizeHorizontal,
+            height: seq.frameSizeVertical,
+            durationSeconds: __safeProjectItemSeconds(seq.end),
+            videoTracks: seq.videoTracks.numTracks,
+            audioTracks: seq.audioTracks.numTracks,
+            totalClips: clipCount
+          });
+        }
+        var activeSequence = null;
+        if (project.activeSequence) {
+          activeSequence = {
+            id: __safeProjectItemString(project.activeSequence.sequenceID),
+            name: __safeProjectItemString(project.activeSequence.name)
+          };
+        }
+        return {
+          success: true,
+          projectName: project.name,
+          projectPath: project.path,
+          totalItems: stats.totalItems,
+          totalBins: stats.totalBins,
+          offlineItems: stats.offlineItems,
+          sequenceCount: sequences.length,
+          mediaFileTypes: stats.mediaFileTypes,
+          activeSequence: activeSequence,
+          sequences: sequences,
+          binTree: __walkProjectBin(project.rootItem, true)
+        };
+      })();
+    `);
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getBinContents(args: GetBinContentsArgs): Promise<any> {
+    const payload = literalForExtendScript({ binId: args.binId, recursive: args.recursive !== false });
+    const script = buildPremiereScript(`
+      ${this.buildProjectInspectionHelpersScript()}
+      var payload = ${payload};
+      return (function __getBinContents() {
+        if (!app.project) return { success: false, error: 'No project is open' };
+        var bin = __findProjectBin(payload.binId);
+        if (!bin) return { success: false, error: 'Bin not found: ' + payload.binId, binId: payload.binId };
+        var items = __walkProjectBin(bin, payload.recursive);
+        return {
+          success: true,
+          binName: bin.name,
+          binNodeId: __safeProjectItemString(bin.nodeId),
+          binPath: __safeProjectItemString(bin.treePath),
+          recursive: payload.recursive,
+          itemCount: items.length,
+          items: items
+        };
+      })();
+    `);
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getProjectItemInfo(args: GetProjectItemInfoArgs): Promise<any> {
+    const payload = literalForExtendScript({ projectItemId: args.projectItemId });
+    const script = buildPremiereScript(`
+      ${this.buildProjectInspectionHelpersScript()}
+      var payload = ${payload};
+      return (function __getProjectItemInfo() {
+        if (!app.project) return { success: false, error: 'No project is open' };
+        var item = __findProjectItem(payload.projectItemId);
+        if (!item) return { success: false, error: 'Project item not found: ' + payload.projectItemId, projectItemId: payload.projectItemId };
+        var info = __itemInspectionSummary(item);
+        try { info.hasProxy = item.hasProxy(); } catch (_) {}
+        __readProjectItemMetadata(item, info);
+        info.markers = __readProjectItemMarkers(item);
+        if (item.type === 2) {
+          try { info.childCount = item.children.numItems; } catch (_) {}
+        }
+        return { success: true, item: info, nodeId: info.nodeId, name: info.name, type: info.type };
+      })();
+    `);
+    return await this.bridge.executeScript(script);
+  }
+
+  private async searchProjectItems(args: SearchProjectItemsArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      query: args.query ?? null,
+      extension: args.extension ? args.extension.replace(/^\./, '').toLowerCase() : null,
+      offlineOnly: args.offlineOnly === true,
+      colorLabel: args.colorLabel ?? null,
+      itemType: args.itemType ?? 'all',
+      maxResults: args.maxResults ?? 100
+    });
+    const script = buildPremiereScript(`
+      ${this.buildProjectInspectionHelpersScript()}
+      var payload = ${payload};
+      return (function __searchProjectItems() {
+        if (!app.project) return { success: false, error: 'No project is open' };
+        var results = [];
+        var query = payload.query ? String(payload.query).toLowerCase() : null;
+        function searchBin(bin) {
+          if (results.length >= payload.maxResults) return;
+          for (var i = 0; i < bin.children.numItems; i++) {
+            if (results.length >= payload.maxResults) return;
+            var item = bin.children[i];
+            if (payload.itemType === 'clip' && item.type === 2) {
+              searchBin(item);
+              continue;
+            }
+            if (payload.itemType === 'bin' && item.type !== 2) {
+              continue;
+            }
+            var match = true;
+            if (query && item.name.toLowerCase().indexOf(query) === -1) match = false;
+            if (match && payload.extension) {
+              try {
+                var mediaPath = item.getMediaPath();
+                if (!mediaPath || mediaPath.split('.').pop().toLowerCase() !== payload.extension) match = false;
+              } catch (_) {
+                match = false;
+              }
+            }
+            if (match && payload.offlineOnly) {
+              try { if (!item.isOffline()) match = false; } catch (_) { match = false; }
+            }
+            if (match && payload.colorLabel !== null) {
+              try { if (item.getColorLabel() !== payload.colorLabel) match = false; } catch (_) { match = false; }
+            }
+            if (match) results.push(__itemInspectionSummary(item));
+            if (item.type === 2) searchBin(item);
+          }
+        }
+        searchBin(app.project.rootItem);
+        return { success: true, resultCount: results.length, maxResults: payload.maxResults, items: results };
+      })();
+    `);
     return await this.bridge.executeScript(script);
   }
 
