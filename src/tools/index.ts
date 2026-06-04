@@ -869,6 +869,34 @@ const sourceMonitorEditSchema = z.object({
   time: z.number().finite().min(0).optional().describe('Timeline time in seconds. Defaults to the current playhead position.')
 });
 
+const selectionTrackTypeSchema = z.enum(['video', 'audio', 'both']);
+
+const selectionScopeSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID. Defaults to the active sequence.'),
+  trackType: selectionTrackTypeSchema.optional().describe('Track type to select. Defaults to both.'),
+  trackIndex: z.number().int().min(0).optional().describe('Optional zero-based track index to scope the selection operation.')
+});
+
+const selectClipsByNameSchema = selectionScopeSchema.extend({
+  name: z.string().min(1).describe('Clip name substring to match.'),
+  addToSelection: z.boolean().optional().describe('When true, matching clips are added to the existing selection. Defaults to false.'),
+  caseSensitive: z.boolean().optional().describe('When true, performs case-sensitive substring matching. Defaults to false.')
+});
+
+const selectClipsInRangeSchema = selectionScopeSchema.extend({
+  startTime: z.number().finite().min(0).describe('Start of selection range in seconds.'),
+  endTime: z.number().finite().min(0).describe('End of selection range in seconds.'),
+  addToSelection: z.boolean().optional().describe('When true, matching clips are added to the existing selection. Defaults to false.')
+}).refine(
+  (settings) => settings.endTime > settings.startTime,
+  { message: 'endTime must be greater than startTime' }
+);
+
+const selectClipsByColorSchema = selectionScopeSchema.extend({
+  colorIndex: z.number().int().min(0).max(15).describe('Premiere color label index, 0 through 15.'),
+  addToSelection: z.boolean().optional().describe('When true, matching clips are added to the existing selection. Defaults to false.')
+});
+
 type CaptionSidecarFormat = z.infer<typeof captionSidecarFormatSchema>;
 type PremiereCaptionFormat = z.infer<typeof premiereCaptionFormatSchema>;
 
@@ -898,6 +926,11 @@ interface SourceMonitorEditArgs {
   audioTrackIndex?: number;
   time?: number;
 }
+
+type SelectionScopeArgs = z.infer<typeof selectionScopeSchema>;
+type SelectClipsByNameArgs = z.infer<typeof selectClipsByNameSchema>;
+type SelectClipsInRangeArgs = z.infer<typeof selectClipsInRangeSchema>;
+type SelectClipsByColorArgs = z.infer<typeof selectClipsByColorSchema>;
 
 export class PremiereProTools {
   private bridge: PremiereProTransport;
@@ -1734,6 +1767,36 @@ export class PremiereProTools {
           sequenceId: z.string().describe('The ID of the sequence')
         })
       },
+      {
+        name: 'select_clips_by_name',
+        description: 'Selects timeline clips whose names contain a substring, optionally scoped by sequence, track type, and track index.',
+        inputSchema: selectClipsByNameSchema
+      },
+      {
+        name: 'select_all_clips',
+        description: 'Selects all clips in the active or specified sequence, optionally scoped by track type and track index.',
+        inputSchema: selectionScopeSchema
+      },
+      {
+        name: 'deselect_all_clips',
+        description: 'Deselects clips in the active or specified sequence, optionally scoped by track type and track index.',
+        inputSchema: selectionScopeSchema
+      },
+      {
+        name: 'select_clips_in_range',
+        description: 'Selects clips that overlap a timeline time range using clip.start < end && clip.end > start semantics.',
+        inputSchema: selectClipsInRangeSchema
+      },
+      {
+        name: 'select_clips_by_color',
+        description: 'Selects timeline clips whose source project item has a specific Premiere color label index.',
+        inputSchema: selectClipsByColorSchema
+      },
+      {
+        name: 'invert_selection',
+        description: 'Inverts clip selection in the active or specified sequence, optionally scoped by track type and track index.',
+        inputSchema: selectionScopeSchema
+      },
 
       // Effect & Transition Discovery
       {
@@ -2435,6 +2498,18 @@ export class PremiereProTools {
           return await this.setPlayheadPosition(args.sequenceId, args.time);
         case 'get_selected_clips':
           return await this.getSelectedClips(args.sequenceId);
+        case 'select_clips_by_name':
+          return await this.selectClipsByName(args as SelectClipsByNameArgs);
+        case 'select_all_clips':
+          return await this.setSelectionForAllClips('select_all_clips', args as SelectionScopeArgs);
+        case 'deselect_all_clips':
+          return await this.setSelectionForAllClips('deselect_all_clips', args as SelectionScopeArgs);
+        case 'select_clips_in_range':
+          return await this.selectClipsInRange(args as SelectClipsInRangeArgs);
+        case 'select_clips_by_color':
+          return await this.selectClipsByColor(args as SelectClipsByColorArgs);
+        case 'invert_selection':
+          return await this.invertSelection(args as SelectionScopeArgs);
 
         // Effect & Transition Discovery
         case 'list_available_effects':
@@ -11165,6 +11240,303 @@ export class PremiereProTools {
         return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private buildSelectionHelpersScript(): string {
+    return `
+      function __resolveSelectionSequence(sequenceId) {
+        if (sequenceId) return __findSequence(sequenceId);
+        if (!app.project || !app.project.activeSequence) return null;
+        return app.project.activeSequence;
+      }
+
+      function __selectionStats() {
+        return {
+          inspected: 0,
+          selected: 0,
+          deselected: 0,
+          selectedVideo: 0,
+          selectedAudio: 0,
+          deselectedVideo: 0,
+          deselectedAudio: 0,
+          errors: []
+        };
+      }
+
+      function __clipSeconds(timeLike) {
+        if (!timeLike) return 0;
+        if (typeof timeLike.seconds === 'number') return timeLike.seconds;
+        if (timeLike.seconds !== undefined) return Number(timeLike.seconds);
+        if (timeLike.ticks !== undefined) return __ticksToSeconds(timeLike.ticks);
+        return Number(timeLike) || 0;
+      }
+
+      function __visitSelectionClips(seq, payload, visitor, stats) {
+        function scanTracks(tracks, type) {
+          if (!tracks) return;
+          for (var t = 0; t < tracks.numTracks; t++) {
+            if (typeof payload.trackIndex === 'number' && t !== payload.trackIndex) continue;
+            var track = tracks[t];
+            if (!track || !track.clips) continue;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var clip = track.clips[c];
+              if (!clip) continue;
+              stats.inspected++;
+              visitor(clip, type, t, c, stats);
+            }
+          }
+        }
+
+        if (payload.trackType !== "audio") scanTracks(seq.videoTracks, "video");
+        if (payload.trackType !== "video") scanTracks(seq.audioTracks, "audio");
+        return stats;
+      }
+    `;
+  }
+
+  private async selectClipsByName(args: SelectClipsByNameArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType ?? 'both',
+      trackIndex: args.trackIndex ?? null,
+      name: args.name,
+      addToSelection: args.addToSelection ?? false,
+      caseSensitive: args.caseSensitive ?? false
+    });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      ${this.buildSelectionHelpersScript()}
+      var seq = __resolveSelectionSequence(payload.sequenceId);
+      if (!seq) return { success: false, error: payload.sequenceId ? 'Sequence not found: ' + payload.sequenceId : 'No active sequence' };
+      var stats = __selectionStats();
+      var needle = payload.caseSensitive ? String(payload.name) : String(payload.name).toLowerCase();
+      __visitSelectionClips(seq, payload, function(clip, type, trackIndex, clipIndex, localStats) {
+        var haystack = payload.caseSensitive ? String(clip.name || '') : String(clip.name || '').toLowerCase();
+        if (haystack.indexOf(needle) !== -1) {
+          clip.setSelected(true, true);
+          localStats.selected++;
+          if (type === 'video') localStats.selectedVideo++;
+          if (type === 'audio') localStats.selectedAudio++;
+        } else if (!payload.addToSelection) {
+          clip.setSelected(false, true);
+          localStats.deselected++;
+          if (type === 'video') localStats.deselectedVideo++;
+          if (type === 'audio') localStats.deselectedAudio++;
+        }
+      }, stats);
+      return {
+        success: true,
+        query: payload.name,
+        caseSensitive: payload.caseSensitive,
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        selected: stats.selected,
+        deselected: stats.deselected,
+        selectedVideo: stats.selectedVideo,
+        selectedAudio: stats.selectedAudio,
+        deselectedVideo: stats.deselectedVideo,
+        deselectedAudio: stats.deselectedAudio,
+        inspected: stats.inspected,
+        errors: stats.errors
+      };
+    `, '__selectClipsByName');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setSelectionForAllClips(operation: 'select_all_clips' | 'deselect_all_clips', args: SelectionScopeArgs): Promise<any> {
+    const shouldSelect = operation === 'select_all_clips';
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType ?? 'both',
+      trackIndex: args.trackIndex ?? null
+    });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      ${this.buildSelectionHelpersScript()}
+      var seq = __resolveSelectionSequence(payload.sequenceId);
+      if (!seq) return { success: false, error: payload.sequenceId ? 'Sequence not found: ' + payload.sequenceId : 'No active sequence' };
+      var stats = __selectionStats();
+      __visitSelectionClips(seq, payload, function(clip, type, trackIndex, clipIndex, localStats) {
+        clip.setSelected(${shouldSelect ? 'true' : 'false'}, true);
+        if (${shouldSelect ? 'true' : 'false'}) {
+          localStats.selected++;
+          if (type === 'video') localStats.selectedVideo++;
+          if (type === 'audio') localStats.selectedAudio++;
+        } else {
+          localStats.deselected++;
+          if (type === 'video') localStats.deselectedVideo++;
+          if (type === 'audio') localStats.deselectedAudio++;
+        }
+      }, stats);
+      return {
+        success: true,
+        operation: ${literalForExtendScript(operation)},
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        selected: stats.selected,
+        deselected: stats.deselected,
+        selectedVideo: stats.selectedVideo,
+        selectedAudio: stats.selectedAudio,
+        deselectedVideo: stats.deselectedVideo,
+        deselectedAudio: stats.deselectedAudio,
+        inspected: stats.inspected,
+        errors: stats.errors
+      };
+    `, shouldSelect ? '__selectAllClips' : '__deselectAllClips');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async selectClipsInRange(args: SelectClipsInRangeArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType ?? 'both',
+      trackIndex: args.trackIndex ?? null,
+      startTime: args.startTime,
+      endTime: args.endTime,
+      addToSelection: args.addToSelection ?? false
+    });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      ${this.buildSelectionHelpersScript()}
+      var seq = __resolveSelectionSequence(payload.sequenceId);
+      if (!seq) return { success: false, error: payload.sequenceId ? 'Sequence not found: ' + payload.sequenceId : 'No active sequence' };
+      var stats = __selectionStats();
+      __visitSelectionClips(seq, payload, function(clip, type, trackIndex, clipIndex, localStats) {
+        var clipStartSeconds = __clipSeconds(clip.start);
+        var clipEndSeconds = __clipSeconds(clip.end);
+        if (clipStartSeconds < payload.endTime && clipEndSeconds > payload.startTime) {
+          clip.setSelected(true, true);
+          localStats.selected++;
+          if (type === 'video') localStats.selectedVideo++;
+          if (type === 'audio') localStats.selectedAudio++;
+        } else if (!payload.addToSelection) {
+          clip.setSelected(false, true);
+          localStats.deselected++;
+          if (type === 'video') localStats.deselectedVideo++;
+          if (type === 'audio') localStats.deselectedAudio++;
+        }
+      }, stats);
+      return {
+        success: true,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        selected: stats.selected,
+        deselected: stats.deselected,
+        selectedVideo: stats.selectedVideo,
+        selectedAudio: stats.selectedAudio,
+        deselectedVideo: stats.deselectedVideo,
+        deselectedAudio: stats.deselectedAudio,
+        inspected: stats.inspected,
+        errors: stats.errors
+      };
+    `, '__selectClipsInRange');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async selectClipsByColor(args: SelectClipsByColorArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType ?? 'both',
+      trackIndex: args.trackIndex ?? null,
+      colorIndex: args.colorIndex,
+      addToSelection: args.addToSelection ?? false
+    });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      ${this.buildSelectionHelpersScript()}
+      var seq = __resolveSelectionSequence(payload.sequenceId);
+      if (!seq) return { success: false, error: payload.sequenceId ? 'Sequence not found: ' + payload.sequenceId : 'No active sequence' };
+      var stats = __selectionStats();
+      __visitSelectionClips(seq, payload, function(clip, type, trackIndex, clipIndex, localStats) {
+        var colorLabel = null;
+        try {
+          if (clip.projectItem && typeof clip.projectItem.getColorLabel === 'function') {
+            colorLabel = clip.projectItem.getColorLabel();
+          }
+        } catch (colorError) {
+          localStats.errors.push(String(colorError));
+        }
+        if (colorLabel === payload.colorIndex) {
+          clip.setSelected(true, true);
+          localStats.selected++;
+          if (type === 'video') localStats.selectedVideo++;
+          if (type === 'audio') localStats.selectedAudio++;
+        } else if (!payload.addToSelection) {
+          clip.setSelected(false, true);
+          localStats.deselected++;
+          if (type === 'video') localStats.deselectedVideo++;
+          if (type === 'audio') localStats.deselectedAudio++;
+        }
+      }, stats);
+      return {
+        success: true,
+        colorIndex: payload.colorIndex,
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        selected: stats.selected,
+        deselected: stats.deselected,
+        selectedVideo: stats.selectedVideo,
+        selectedAudio: stats.selectedAudio,
+        deselectedVideo: stats.deselectedVideo,
+        deselectedAudio: stats.deselectedAudio,
+        inspected: stats.inspected,
+        errors: stats.errors
+      };
+    `, '__selectClipsByColor');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async invertSelection(args: SelectionScopeArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType ?? 'both',
+      trackIndex: args.trackIndex ?? null
+    });
+    const script = buildPremiereScript(`
+      var payload = ${payload};
+      ${this.buildSelectionHelpersScript()}
+      var seq = __resolveSelectionSequence(payload.sequenceId);
+      if (!seq) return { success: false, error: payload.sequenceId ? 'Sequence not found: ' + payload.sequenceId : 'No active sequence' };
+      var stats = __selectionStats();
+      __visitSelectionClips(seq, payload, function(clip, type, trackIndex, clipIndex, localStats) {
+        if (typeof clip.isSelected !== 'function') {
+          localStats.errors.push('clip.isSelected is not available for ' + (clip.name || 'unnamed clip'));
+          return;
+        }
+        var selected = clip.isSelected();
+        clip.setSelected(!selected, true);
+        if (selected) {
+          localStats.deselected++;
+          if (type === 'video') localStats.deselectedVideo++;
+          if (type === 'audio') localStats.deselectedAudio++;
+        } else {
+          localStats.selected++;
+          if (type === 'video') localStats.selectedVideo++;
+          if (type === 'audio') localStats.selectedAudio++;
+        }
+      }, stats);
+      return {
+        success: true,
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        nowSelected: stats.selected,
+        nowDeselected: stats.deselected,
+        selectedVideo: stats.selectedVideo,
+        selectedAudio: stats.selectedAudio,
+        deselectedVideo: stats.deselectedVideo,
+        deselectedAudio: stats.deselectedAudio,
+        inspected: stats.inspected,
+        errors: stats.errors
+      };
+    `, '__invertSelection');
+
     return await this.bridge.executeScript(script);
   }
 

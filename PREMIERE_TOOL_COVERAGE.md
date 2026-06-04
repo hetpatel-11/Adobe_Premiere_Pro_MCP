@@ -4,8 +4,8 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current summary
 
-- Runtime MCP tools exposed: **147**
-- Source catalog tools: **147**
+- Runtime MCP tools exposed: **153**
+- Source catalog tools: **153**
 - Runtime/source mismatch: **none**
 - Current implementation path: **Node MCP server → `/tmp/premiere-mcp-bridge` → CEP panel → Premiere ExtendScript/QE DOM**
 - Validation note: this document inventories implemented/exposed tools. A full live sweep should be run in a scratch Premiere project because `scripts/live-tool-sweep.mjs` mutates the active project.
@@ -64,7 +64,7 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `duplicate_sequence` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Creates a copy of an existing sequence with a new name. Implementation: `duplicateSequence`; API hints: app.project.
 - `delete_sequence` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Deletes a sequence from the project. Implementation: `deleteSequence`; API hints: app.project.
 
-### Timeline Operations (6)
+### Timeline Operations (12)
 
 - `add_to_timeline` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Adds a media clip from the project panel to a sequence timeline at a specific track and time. Implementation: `addToTimeline`; API hints: bridge/helper-specific.
 - `remove_from_timeline` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Removes a clip from the timeline. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence. Implementation: `removeFromTimeline`; API hints: bridge/helper-specific.
@@ -72,6 +72,12 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `trim_clip` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Adjusts the in and out points of a clip on the timeline, effectively shortening it. Implementation: `trimClip`; API hints: bridge/helper-specific.
 - `split_clip` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Splits a clip at a specific time point, creating two separate clips. Implementation: `splitClip`; API hints: app.project, app.enableQE, qe.project.
 - `razor_timeline_at_time` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Cuts across multiple tracks in a sequence at an absolute timeline time. If no track arrays are provided, all video and audio tracks are cut. Implementation: `razorTimelineAtTime`; API hints: app.project, app.enableQE, qe.project, videoTracks, audioTracks.
+- `select_clips_by_name` — **BUILT / exposed**. Selects timeline clips whose names contain a required substring, optionally scoped by explicit sequence, track type, and track index; returns total and per-track-type selected/deselected counts. Implementation: `selectClipsByName`; API hints: app.project, Sequence, TrackItem.setSelected.
+- `select_all_clips` — **BUILT / exposed**. Selects all clips in the active or specified sequence, optionally scoped by track type and track index; returns per-track-type counts. Implementation: `setSelectionForAllClips('select_all_clips')`; API hints: app.project, Sequence, TrackItem.setSelected.
+- `deselect_all_clips` — **BUILT / exposed**. Deselects clips in the active or specified sequence, optionally scoped by track type and track index; returns per-track-type counts. Implementation: `setSelectionForAllClips('deselect_all_clips')`; API hints: app.project, Sequence, TrackItem.setSelected.
+- `select_clips_in_range` — **BUILT / exposed**. Selects clips that overlap a timeline range using `clip.start < end && clip.end > start`; supports explicit sequence/track scope and optional add-to-selection mode. Implementation: `selectClipsInRange`; API hints: app.project, Sequence, TrackItem.setSelected.
+- `select_clips_by_color` — **BUILT / exposed**. Selects timeline clips whose source project item has a requested Premiere color label index 0–15; supports explicit sequence/track scope and optional add-to-selection mode. Implementation: `selectClipsByColor`; API hints: ProjectItem.getColorLabel, TrackItem.setSelected.
+- `invert_selection` — **BUILT / exposed**. Inverts clip selection in the active or specified sequence/track scope using `clip.isSelected()` and `clip.setSelected(!selected, true)`. Implementation: `invertSelection`; API hints: TrackItem.isSelected, TrackItem.setSelected.
 
 ### Effects and Transitions (12)
 
@@ -254,10 +260,8 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `list_track_clips` — **FUTURE**. Dedicated per-track clip listing; friendlier than parsing list_sequence_tracks for a single track.
 - `get_clip_info` — **FUTURE**. Alias/expanded version of get_clip_properties with project item, media path, effects, labels, markers, and linked audio details.
 - `remove_clip` — **FUTURE**. Alias for remove_from_timeline for compatibility with UXP/PR33 naming.
-
 - `ripple_delete_gap` — **FUTURE**. Remove a gap and ripple later timeline content.
 - `close_gap_between_clips` — **FUTURE**. Find and close gaps on a track or all tracks.
-- `select_clips_by_range` — **FUTURE**. Select clips by time range/track/type so manual and automated operations can combine.
 
 ### Nested sequence and multicam
 
