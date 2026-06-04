@@ -4,8 +4,8 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current summary
 
-- Runtime MCP tools exposed: **153**
-- Source catalog tools: **153**
+- Runtime MCP tools exposed: **158**
+- Source catalog tools: **158**
 - Runtime/source mismatch: **none**
 - Current implementation path: **Node MCP server → `/tmp/premiere-mcp-bridge` → CEP panel → Premiere ExtendScript/QE DOM**
 - Validation note: this document inventories implemented/exposed tools. A full live sweep should be run in a scratch Premiere project because `scripts/live-tool-sweep.mjs` mutates the active project.
@@ -122,7 +122,7 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `update_marker` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Updates an existing marker's properties. Implementation: `updateMarker`; API hints: app.project, markers.
 - `list_markers` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all markers in a sequence. Implementation: `listMarkers`; API hints: app.project, markers.
 
-### Track Management (7)
+### Track Management (12)
 
 - `add_track` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Adds a new video or audio track to the sequence. Implementation: `addTrack`; API hints: app.project, app.enableQE, qe.project, videoTracks, audioTracks.
 - `delete_track` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Deletes a track from the sequence. Implementation: `deleteTrack`; API hints: app.project, videoTracks, audioTracks.
@@ -131,6 +131,11 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `link_audio_video` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Links or unlinks audio and video components of a clip. Implementation: `linkAudioVideo`; API hints: app.project.
 - `apply_audio_effect` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Applies an audio effect to a clip. Implementation: `applyAudioEffect`; API hints: bridge/helper-specific.
 - `apply_audio_effect_to_all_clips` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Bulk: applies a single audio effect to ALL audio clips of a sequence in one ExtendScript call. Returns per-clip results. Saves N MCP roundtrips when calibrating or applying same chain. Implementation: `applyAudioEffectToAllClips`; API hints: app.project, app.enableQE, qe.project, audioTracks, components.
+- `set_target_track` — **BUILT / exposed**. Targets or untargets one video/audio track for Source Monitor insert/overwrite edits and returns readback diagnostics where `Track.isTargeted` is available. Implementation: `setTargetTrack`; API hints: app.project, Sequence.videoTracks/audioTracks, Track.setTargeted, Track.isTargeted.
+- `get_target_tracks` — **BUILT / exposed**. Lists targeted video/audio tracks plus per-track targeting-support diagnostics. Implementation: `getTargetTracks`; API hints: app.project, Sequence.videoTracks/audioTracks, Track.isTargeted.
+- `set_all_tracks_targeted` — **BUILT / exposed**. Targets or untargets all sequence tracks, optionally scoped to video/audio, without adding duplicate QE razor helpers. Implementation: `setAllTracksTargeted`; API hints: app.project, Sequence.videoTracks/audioTracks, Track.setTargeted.
+- `rename_track` — **CONDITIONAL / host API**. Renames a single video/audio track and verifies the postcondition by reading `track.name`; returns honest unsupported errors if the host rejects name assignment. Implementation: `renameTrack`; API hints: app.project, Sequence.videoTracks/audioTracks, Track.name.
+- `get_track_info` — **BUILT / exposed**. Returns one track's name, clips, transitions, lock/mute state, targeting diagnostics, and timing in seconds. Implementation: `getTrackInfo`; API hints: app.project, Sequence.videoTracks/audioTracks, TrackItem, transitions, Track.isLocked/isMuted/isTargeted.
 
 ### Additional Clip Operations (4)
 

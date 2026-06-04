@@ -897,6 +897,31 @@ const selectClipsByColorSchema = selectionScopeSchema.extend({
   addToSelection: z.boolean().optional().describe('When true, matching clips are added to the existing selection. Defaults to false.')
 });
 
+const trackTargetTypeSchema = z.enum(['video', 'audio']);
+const trackTargetScopeSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID. Defaults to the active sequence.'),
+  trackType: trackTargetTypeSchema.describe('Track type to inspect or target.'),
+  trackIndex: z.number().int().min(0).describe('Zero-based track index.')
+});
+
+const setTargetTrackSchema = trackTargetScopeSchema.extend({
+  targeted: z.boolean().describe('Whether the track should be targeted for editing.')
+});
+
+const getTargetTracksSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID. Defaults to the active sequence.')
+});
+
+const setAllTracksTargetedSchema = z.object({
+  sequenceId: z.string().min(1).optional().describe('Optional sequence ID. Defaults to the active sequence.'),
+  trackType: selectionTrackTypeSchema.optional().describe('Track type to target or untarget. Defaults to both.'),
+  targeted: z.boolean().describe('Whether all matching tracks should be targeted for editing.')
+});
+
+const renameTrackSchema = trackTargetScopeSchema.extend({
+  name: z.string().min(1).describe('New track name. The operation verifies the name by reading it back.')
+});
+
 type CaptionSidecarFormat = z.infer<typeof captionSidecarFormatSchema>;
 type PremiereCaptionFormat = z.infer<typeof premiereCaptionFormatSchema>;
 
@@ -931,6 +956,11 @@ type SelectionScopeArgs = z.infer<typeof selectionScopeSchema>;
 type SelectClipsByNameArgs = z.infer<typeof selectClipsByNameSchema>;
 type SelectClipsInRangeArgs = z.infer<typeof selectClipsInRangeSchema>;
 type SelectClipsByColorArgs = z.infer<typeof selectClipsByColorSchema>;
+type TrackTargetScopeArgs = z.infer<typeof trackTargetScopeSchema>;
+type SetTargetTrackArgs = z.infer<typeof setTargetTrackSchema>;
+type GetTargetTracksArgs = z.infer<typeof getTargetTracksSchema>;
+type SetAllTracksTargetedArgs = z.infer<typeof setAllTracksTargetedSchema>;
+type RenameTrackArgs = z.infer<typeof renameTrackSchema>;
 
 export class PremiereProTools {
   private bridge: PremiereProTransport;
@@ -1235,6 +1265,31 @@ export class PremiereProTools {
           videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Optional video track indices to cut. Defaults to all video tracks.'),
           audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Optional audio track indices to cut. Defaults to all audio tracks.')
         })
+      },
+      {
+        name: 'set_target_track',
+        description: 'Sets a single video or audio track targeted/untargeted for Source Monitor insert/overwrite edits, with readback diagnostics.',
+        inputSchema: setTargetTrackSchema
+      },
+      {
+        name: 'get_target_tracks',
+        description: 'Reads currently targeted video and audio tracks for the active or specified sequence.',
+        inputSchema: getTargetTracksSchema
+      },
+      {
+        name: 'set_all_tracks_targeted',
+        description: 'Targets or untargets all tracks, optionally scoped to video or audio tracks.',
+        inputSchema: setAllTracksTargetedSchema
+      },
+      {
+        name: 'rename_track',
+        description: 'Renames a video or audio sequence track and verifies the renamed value by reading it back.',
+        inputSchema: renameTrackSchema
+      },
+      {
+        name: 'get_track_info',
+        description: 'Gets detailed information for a single sequence track, including clip ranges, transitions, lock/mute state, and targeting diagnostics.',
+        inputSchema: trackTargetScopeSchema
       },
 
       // Effects and Transitions
@@ -2358,6 +2413,16 @@ export class PremiereProTools {
           return await this.splitClip(args.clipId, args.splitTime);
         case 'razor_timeline_at_time':
           return await this.razorTimelineAtTime(args.sequenceId, args.time, args.videoTrackIndices, args.audioTrackIndices);
+        case 'set_target_track':
+          return await this.setTargetTrack(args as SetTargetTrackArgs);
+        case 'get_target_tracks':
+          return await this.getTargetTracks(args as GetTargetTracksArgs);
+        case 'set_all_tracks_targeted':
+          return await this.setAllTracksTargeted(args as SetAllTracksTargetedArgs);
+        case 'rename_track':
+          return await this.renameTrack(args as RenameTrackArgs);
+        case 'get_track_info':
+          return await this.getTrackInfo(args as TrackTargetScopeArgs);
 
         // Effects and Transitions
         case 'apply_effect':
@@ -11240,6 +11305,284 @@ export class PremiereProTools {
         return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
+    return await this.bridge.executeScript(script);
+  }
+
+  private buildTrackTargetingHelpersScript(): string {
+    return `
+      function __resolveTrackSequence(sequenceId) {
+        if (sequenceId) return __findSequence(sequenceId);
+        if (!app.project || !app.project.activeSequence) return null;
+        return app.project.activeSequence;
+      }
+
+      function __trackCollection(sequence, trackType) {
+        return trackType === 'video' ? sequence.videoTracks : sequence.audioTracks;
+      }
+
+      function __trackCollectionName(trackType) {
+        return trackType === 'video' ? 'videoTracks' : 'audioTracks';
+      }
+
+      function __resolveTrack(sequence, trackType, trackIndex) {
+        var tracks = __trackCollection(sequence, trackType);
+        if (!tracks) return { success: false, supported: true, error: 'Sequence has no ' + __trackCollectionName(trackType) + ' collection' };
+        if (trackIndex >= tracks.numTracks) return { success: false, supported: true, error: 'Track index out of range: ' + trackIndex, trackType: trackType, trackIndex: trackIndex, trackCount: tracks.numTracks };
+        return { success: true, supported: true, track: tracks[trackIndex], trackCount: tracks.numTracks };
+      }
+
+      function __readTrackTargeted(track) {
+        if (!track || typeof track.isTargeted !== 'function') {
+          return { supported: false, targeted: null, error: 'Track.isTargeted is not available on this Premiere host' };
+        }
+        try {
+          var isTargeted = track.isTargeted();
+          return { supported: true, targeted: isTargeted };
+        } catch (targetError) {
+          return { supported: false, targeted: null, error: targetError.toString() };
+        }
+      }
+
+      function __readTrackName(track, trackType, trackIndex) {
+        try { return track.name || (trackType === 'video' ? 'Video ' : 'Audio ') + (trackIndex + 1); } catch (_) { return (trackType === 'video' ? 'Video ' : 'Audio ') + (trackIndex + 1); }
+      }
+
+      function __readTrackDetails(track, trackType, trackIndex) {
+        var info = {
+          success: true,
+          supported: true,
+          trackType: trackType,
+          trackIndex: trackIndex,
+          name: __readTrackName(track, trackType, trackIndex),
+          clipCount: 0,
+          clips: [],
+          transitions: [],
+          warnings: []
+        };
+        try { info.clipCount = track.clips.numItems; } catch (clipCountError) { info.warnings.push('clipCountUnavailable: ' + clipCountError.toString()); }
+        try { info.isLocked = track.isLocked(); } catch (lockError) { info.lockedUnavailable = lockError.toString(); }
+        try { info.isMuted = track.isMuted(); } catch (muteError) { info.mutedUnavailable = muteError.toString(); }
+        var targeted = __readTrackTargeted(track);
+        info.isTargeted = targeted.supported ? targeted.targeted : null;
+        info.targetingSupported = targeted.supported;
+        if (targeted.error) info.targetingError = targeted.error;
+
+        try {
+          for (var c = 0; c < track.clips.numItems; c++) {
+            var clip = track.clips[c];
+            var clipInfo = {
+              index: c,
+              nodeId: clip.nodeId || null,
+              name: clip.name || null,
+              startSeconds: __ticksToSeconds(clip.start.ticks),
+              endSeconds: __ticksToSeconds(clip.end.ticks),
+              durationSeconds: __ticksToSeconds(clip.duration.ticks)
+            };
+            try { clipInfo.enabled = !clip.isDisabled(); } catch (_) { clipInfo.enabled = true; }
+            try { clipInfo.speed = clip.getSpeed(); } catch (_) {}
+            try { clipInfo.projectItemId = clip.projectItem ? clip.projectItem.nodeId : null; } catch (_) {}
+            info.clips.push(clipInfo);
+          }
+        } catch (clipsError) {
+          info.warnings.push('clipsUnavailable: ' + clipsError.toString());
+        }
+
+        try {
+          for (var t = 0; t < track.transitions.numItems; t++) {
+            var transition = track.transitions[t];
+            info.transitions.push({
+              index: t,
+              name: transition.name || null,
+              startSeconds: __ticksToSeconds(transition.start.ticks),
+              endSeconds: __ticksToSeconds(transition.end.ticks)
+            });
+          }
+        } catch (transitionError) {
+          info.transitionsUnavailable = transitionError.toString();
+        }
+        return info;
+      }
+    `;
+  }
+
+  private async setTargetTrack(args: SetTargetTrackArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType,
+      trackIndex: args.trackIndex,
+      targeted: args.targeted
+    });
+    const script = buildPremiereScript(`
+      ${this.buildTrackTargetingHelpersScript()}
+      var payload = ${payload};
+      var seq = __resolveTrackSequence(payload.sequenceId);
+      if (!seq) return { success: false, supported: true, error: payload.sequenceId ? 'Sequence not found by id: ' + payload.sequenceId : 'No active sequence' };
+      var resolved = __resolveTrack(seq, payload.trackType, payload.trackIndex);
+      if (!resolved.success) return resolved;
+      var track = resolved.track;
+      if (!track || typeof track.setTargeted !== 'function') {
+        return { success: false, supported: false, error: 'Track.setTargeted is not available on this Premiere host', trackType: payload.trackType, trackIndex: payload.trackIndex };
+      }
+      var before = __readTrackTargeted(track);
+      try {
+        track.setTargeted(payload.targeted, payload.trackType === "video");
+      } catch (setError) {
+        return { success: false, supported: true, error: setError.toString(), trackType: payload.trackType, trackIndex: payload.trackIndex };
+      }
+      var after = __readTrackTargeted(track);
+      return {
+        success: true,
+        supported: true,
+        sequenceId: seq.sequenceID || payload.sequenceId || null,
+        sequenceName: seq.name || null,
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        trackName: __readTrackName(track, payload.trackType, payload.trackIndex),
+        requestedTargeted: payload.targeted,
+        targeted: after.supported ? after.targeted : null,
+        targetingReadbackSupported: after.supported,
+        previousTargeted: before.supported ? before.targeted : null,
+        readbackError: after.error || null
+      };
+    `, '__setTargetTrack');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getTargetTracks(args: GetTargetTracksArgs): Promise<any> {
+    const payload = literalForExtendScript({ sequenceId: args.sequenceId ?? null });
+    const script = buildPremiereScript(`
+      ${this.buildTrackTargetingHelpersScript()}
+      var payload = ${payload};
+      var seq = __resolveTrackSequence(payload.sequenceId);
+      if (!seq) return { success: false, supported: true, error: payload.sequenceId ? 'Sequence not found by id: ' + payload.sequenceId : 'No active sequence' };
+      var targets = { success: true, supported: false, sequenceId: seq.sequenceID || payload.sequenceId || null, sequenceName: seq.name || null, video: [], audio: [], tracks: { video: [], audio: [] }, errors: [] };
+      function __recordTargetTrack(track, index, trackType) {
+        var targeted = __readTrackTargeted(track);
+        var record = { index: index, name: __readTrackName(track, trackType, index), targeted: targeted.supported ? targeted.targeted : null, targetingSupported: targeted.supported };
+        if (targeted.error) record.error = targeted.error;
+        targets.tracks[trackType].push(record);
+        if (targeted.supported) targets.supported = true;
+        if (targeted.supported && targeted.targeted) {
+          if (trackType === 'video') targets.video.push({ index: index, name: record.name });
+          if (trackType === 'audio') targets.audio.push({ index: index, name: record.name });
+        }
+      }
+      try {
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) __recordTargetTrack(seq.videoTracks[v], v, 'video');
+      } catch (videoError) { targets.errors.push('videoTargetsUnavailable: ' + videoError.toString()); }
+      try {
+        for (var a = 0; a < seq.audioTracks.numTracks; a++) __recordTargetTrack(seq.audioTracks[a], a, 'audio');
+      } catch (audioError) { targets.errors.push('audioTargetsUnavailable: ' + audioError.toString()); }
+      if (!targets.supported) targets.error = 'Track.isTargeted is not available on this Premiere host';
+      return targets;
+    `, '__getTargetTracks');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setAllTracksTargeted(args: SetAllTracksTargetedArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType ?? 'both',
+      targeted: args.targeted
+    });
+    const script = buildPremiereScript(`
+      ${this.buildTrackTargetingHelpersScript()}
+      var payload = ${payload};
+      var seq = __resolveTrackSequence(payload.sequenceId);
+      if (!seq) return { success: false, supported: true, error: payload.sequenceId ? 'Sequence not found by id: ' + payload.sequenceId : 'No active sequence' };
+      var result = { success: true, supported: true, sequenceId: seq.sequenceID || payload.sequenceId || null, sequenceName: seq.name || null, trackType: payload.trackType, targeted: payload.targeted, affected: 0, videoAffected: 0, audioAffected: 0, errors: [] };
+      function __applyTrackTarget(track, index, trackType, isVideo) {
+        if (!track || typeof track.setTargeted !== 'function') {
+          result.errors.push({ trackType: trackType, trackIndex: index, supported: false, error: 'Track.setTargeted is not available on this Premiere host' });
+          return;
+        }
+        try {
+          track.setTargeted(payload.targeted, isVideo);
+          result.affected++;
+          if (trackType === 'video') result.videoAffected++;
+          if (trackType === 'audio') result.audioAffected++;
+        } catch (setError) {
+          result.errors.push({ trackType: trackType, trackIndex: index, supported: true, error: setError.toString() });
+        }
+      }
+      if (payload.trackType !== "audio") {
+        try {
+          for (var v = 0; v < seq.videoTracks.numTracks; v++) __applyTrackTarget(seq.videoTracks[v], v, 'video', true);
+        } catch (videoError) { result.errors.push({ trackType: 'video', error: videoError.toString() }); }
+      }
+      if (payload.trackType !== "video") {
+        try {
+          for (var a = 0; a < seq.audioTracks.numTracks; a++) __applyTrackTarget(seq.audioTracks[a], a, 'audio', false);
+        } catch (audioError) { result.errors.push({ trackType: 'audio', error: audioError.toString() }); }
+      }
+      if (result.affected === 0 && result.errors.length > 0) result.supported = false;
+      return result;
+    `, '__setAllTracksTargeted');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async renameTrack(args: RenameTrackArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType,
+      trackIndex: args.trackIndex,
+      name: args.name
+    });
+    const script = buildPremiereScript(`
+      ${this.buildTrackTargetingHelpersScript()}
+      var payload = ${payload};
+      var seq = __resolveTrackSequence(payload.sequenceId);
+      if (!seq) return { success: false, supported: true, error: payload.sequenceId ? 'Sequence not found by id: ' + payload.sequenceId : 'No active sequence' };
+      var resolved = __resolveTrack(seq, payload.trackType, payload.trackIndex);
+      if (!resolved.success) return resolved;
+      var track = resolved.track;
+      var oldName = __readTrackName(track, payload.trackType, payload.trackIndex);
+      try {
+        track.name = payload.name;
+      } catch (renameError) {
+        return { success: false, supported: false, error: 'Track renaming is not available on this Premiere host: ' + renameError.toString(), trackType: payload.trackType, trackIndex: payload.trackIndex, oldName: oldName };
+      }
+      var verifiedName = __readTrackName(track, payload.trackType, payload.trackIndex);
+      return {
+        success: verifiedName === payload.name,
+        supported: true,
+        sequenceId: seq.sequenceID || payload.sequenceId || null,
+        sequenceName: seq.name || null,
+        trackType: payload.trackType,
+        trackIndex: payload.trackIndex,
+        oldName: oldName,
+        newName: verifiedName,
+        requestedName: payload.name,
+        postconditionVerified: verifiedName === payload.name
+      };
+    `, '__renameTrack');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getTrackInfo(args: TrackTargetScopeArgs): Promise<any> {
+    const payload = literalForExtendScript({
+      sequenceId: args.sequenceId ?? null,
+      trackType: args.trackType,
+      trackIndex: args.trackIndex
+    });
+    const script = buildPremiereScript(`
+      ${this.buildTrackTargetingHelpersScript()}
+      var payload = ${payload};
+      var seq = __resolveTrackSequence(payload.sequenceId);
+      if (!seq) return { success: false, supported: true, error: payload.sequenceId ? 'Sequence not found by id: ' + payload.sequenceId : 'No active sequence' };
+      var resolved = __resolveTrack(seq, payload.trackType, payload.trackIndex);
+      if (!resolved.success) return resolved;
+      var info = __readTrackDetails(resolved.track, payload.trackType, payload.trackIndex);
+      info.sequenceId = seq.sequenceID || payload.sequenceId || null;
+      info.sequenceName = seq.name || null;
+      info.trackCount = resolved.trackCount;
+      return info;
+    `, '__getTrackInfo');
+
     return await this.bridge.executeScript(script);
   }
 
