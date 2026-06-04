@@ -32,12 +32,12 @@
           <Menu>MCP Bridge (CEP)</Menu>
           <Geometry>
             <Size>
-              <Height>400</Height>
-              <Width>320</Width>
+              <Height>420</Height>
+              <Width>420</Width>
             </Size>
             <MinSize>
               <Height>300</Height>
-              <Width>280</Width>
+              <Width>385</Width>
             </MinSize>
             <MaxSize>
               <Height>2000</Height>

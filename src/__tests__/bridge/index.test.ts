@@ -86,6 +86,22 @@ describe('PremiereProBridge', () => {
     );
   });
 
+  it('preserves named self-invoking scripts so their return values reach CEP', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ ok: true }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.executeScript('(function __probeNativeTranscriptionCapabilities(){ return JSON.stringify({ ok: true }); })();');
+
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+    expect(commandPayload.script).toContain('(function __probeNativeTranscriptionCapabilities(){ return JSON.stringify({ ok: true }); })();');
+    expect(commandPayload.script).not.toContain('(function(){\n(function __probeNativeTranscriptionCapabilities()');
+  });
+
   it('passes through importMedia responses', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
@@ -160,13 +176,14 @@ describe('PremiereProBridge', () => {
     );
   });
 
-  it('creates sequences with guarded ExtendScript and safe arguments', async () => {
+  it('creates sequences by importing a generated FCP7 XML instead of using modal-prone createNewSequence', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
     mockFs.access.mockRejectedValue(new Error('Not found'));
     mockFs.writeFile.mockResolvedValue(undefined);
     mockFs.readFile.mockResolvedValue(JSON.stringify({
       success: true,
+      method: 'importFiles(FCP7 XML)',
       id: 'seq-123',
       name: 'Safe Sequence'
     }));
@@ -174,13 +191,23 @@ describe('PremiereProBridge', () => {
 
     await bridge.initialize();
     const result: any = await bridge.createSequence('Safe Sequence');
-    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+    const xmlWrite = mockFs.writeFile.mock.calls.find(call => String(call[0]).endsWith('.xml'));
+    const commandWrite = mockFs.writeFile.mock.calls.find(call => String(call[0]).includes('/command-'));
+    const commandPayload = JSON.parse(commandWrite?.[1] as string);
 
     expect(result.success).toBe(true);
     expect(result.id).toBe('seq-123');
+    expect(result.method).toBe('importFiles(FCP7 XML)');
+    expect(xmlWrite?.[0]).toEqual(expect.stringContaining('/tmp/premiere-mcp-bridge-test/mcp-sequence-'));
+    expect(xmlWrite?.[1]).toEqual(expect.stringContaining('<xmeml version="4">'));
+    expect(xmlWrite?.[1]).toEqual(expect.stringContaining('<name>Safe Sequence</name>'));
     expect(commandPayload.script).toContain('try {');
-    expect(commandPayload.script).toContain('app.project.createNewSequence(sequenceName, presetPath || "")');
-    expect(commandPayload.script).toContain('Sequence creation completed but the new sequence could not be located');
+    expect(commandPayload.script).toContain('var requestedSequenceId = "mcp-sequence-');
+    expect(commandPayload.script).toContain('app.project.importFiles([xmlFile.fsName], true, app.project.rootItem, false)');
+    expect(commandPayload.script).toContain('importFiles(FCP7 XML)');
+    expect(commandPayload.script).not.toContain('app.project.createNewSequence');
+    expect(commandPayload.script).not.toContain('presetPath || ""');
+    expect(mockFs.unlink).toHaveBeenCalledWith(xmlWrite?.[0]);
   });
 
   it('does not delete externally managed temp directories during cleanup', async () => {
