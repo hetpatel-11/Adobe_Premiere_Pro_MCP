@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { execFile } from 'child_process';
 import { constants, promises as fs } from 'fs';
 import type { Dirent, Stats } from 'fs';
+import { tmpdir } from 'os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { promisify } from 'util';
 import type { PremiereProBridgeDiagnostics, PremiereProTransport } from '../bridge/types.js';
@@ -152,6 +153,28 @@ interface QcRenderedMediaArgs {
   expectedDurationSeconds?: number;
   durationToleranceSeconds?: number;
   minSizeBytes?: number;
+}
+
+interface CaptureFrameArgs {
+  sequenceId: string;
+  time: number;
+  outputPath?: string;
+  format?: 'png' | 'jpg' | 'tiff';
+  deleteAfterRead?: boolean;
+}
+
+interface ExportOmfArgs {
+  sequenceId: string;
+  outputPath: string;
+  title?: string;
+  sampleRate?: number;
+  bitsPerSample?: number;
+  audioEncapsulated?: boolean;
+  audioFileFormat?: 'wav' | 'aiff';
+  trimAudioFiles?: boolean;
+  handleFrames?: number;
+  dryRun?: boolean;
+  overwrite?: boolean;
 }
 
 interface ScanConformMediaMetadataArgs {
@@ -561,7 +584,7 @@ const qcTimelineCleanupSchema = z.object({
   dryRun: z.boolean().default(true).describe('When true, returns a frame-export plan without touching Premiere. Defaults to true.')
 });
 
-interface SetEffectParameterArgs {
+interface EffectPropertySelectorArgs {
   clipId: string;
   sequenceId?: string;
   componentName?: string;
@@ -570,7 +593,30 @@ interface SetEffectParameterArgs {
   propertyName?: string;
   propertyMatchName?: string;
   propertyIndex?: number;
+}
+
+interface SetEffectParameterArgs extends EffectPropertySelectorArgs {
   value: any;
+}
+
+type KeyframeInterpolation = 'linear' | 'hold' | 'bezier';
+
+interface EffectKeyframe {
+  time: number;
+  value: number;
+}
+
+interface SetEffectKeyframesArgs extends EffectPropertySelectorArgs {
+  keyframes: EffectKeyframe[];
+}
+
+interface SetKeyframeInterpolationArgs extends EffectPropertySelectorArgs {
+  time: number;
+  interpolation: KeyframeInterpolation;
+}
+
+interface GetEffectValueAtTimeArgs extends EffectPropertySelectorArgs {
+  time: number;
 }
 
 interface BatchClipPropertyOperation {
@@ -640,23 +686,62 @@ interface SetClipTimeRemapSettingsArgs {
   keyframes?: ClipTimeRemapKeyframe[];
 }
 
-const setEffectParameterSchema = z.object({
-  clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
+const effectPropertySelectorBaseSchema = z.object({
+  clipId: z.string().min(1).describe('The ID of the timeline clip to inspect or modify'),
   sequenceId: z.string().min(1).optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
   componentName: z.string().min(1).optional().describe('Component/effect display name, e.g. "Motion" or "Opacity"'),
   componentMatchName: z.string().min(1).optional().describe('Component/effect matchName, e.g. "AE.ADBE Motion"'),
   componentIndex: z.number().int().min(0).optional().describe('Component/effect index from list_clip_effects'),
   propertyName: z.string().min(1).optional().describe('Property display name, e.g. "Scale" or "Opacity"'),
   propertyMatchName: z.string().min(1).optional().describe('Property matchName from list_clip_effects'),
-  propertyIndex: z.number().int().min(0).optional().describe('Property index within the selected component'),
+  propertyIndex: z.number().int().min(0).optional().describe('Property index within the selected component')
+});
+
+const hasComponentSelector = (args: Record<string, unknown>): boolean =>
+  args.componentName !== undefined || args.componentMatchName !== undefined || args.componentIndex !== undefined;
+
+const hasPropertySelector = (args: Record<string, unknown>): boolean =>
+  args.propertyName !== undefined || args.propertyMatchName !== undefined || args.propertyIndex !== undefined;
+
+const setEffectParameterSchema = effectPropertySelectorBaseSchema.extend({
   value: z.any().refine((value) => value !== undefined, { message: 'value is required' }).describe('Value to write with Premiere property.setValue')
-}).refine((args) =>
-  args.componentName !== undefined || args.componentMatchName !== undefined || args.componentIndex !== undefined,
-  { message: 'Provide componentName, componentMatchName, or componentIndex' }
-).refine((args) =>
-  args.propertyName !== undefined || args.propertyMatchName !== undefined || args.propertyIndex !== undefined,
-  { message: 'Provide propertyName, propertyMatchName, or propertyIndex' }
-);
+})
+  .refine(hasComponentSelector, { message: 'Provide componentName, componentMatchName, or componentIndex' })
+  .refine(hasPropertySelector, { message: 'Provide propertyName, propertyMatchName, or propertyIndex' });
+
+const effectKeyframeSchema = z.object({
+  time: z.number().finite().min(0).describe('Keyframe time in seconds.'),
+  value: z.number().finite().describe('Numeric value at the keyframe.')
+});
+
+const setEffectKeyframesSchema = effectPropertySelectorBaseSchema.extend({
+  keyframes: z.array(effectKeyframeSchema).min(1).describe('Strictly increasing numeric keyframes to add or update in one bridge roundtrip.')
+})
+  .refine(hasComponentSelector, { message: 'Provide componentName, componentMatchName, or componentIndex' })
+  .refine(hasPropertySelector, { message: 'Provide propertyName, propertyMatchName, or propertyIndex' })
+  .refine((args) => {
+    for (let i = 1; i < args.keyframes.length; i++) {
+      const current = args.keyframes[i];
+      const previous = args.keyframes[i - 1];
+      if (current === undefined || previous === undefined || current.time <= previous.time) return false;
+    }
+    return true;
+  }, { message: 'keyframes must be in strictly increasing time order' });
+
+const keyframeInterpolationSchema = z.enum(['linear', 'hold', 'bezier']);
+
+const setKeyframeInterpolationSchema = effectPropertySelectorBaseSchema.extend({
+  time: z.number().finite().min(0).describe('Time in seconds of the keyframe.'),
+  interpolation: keyframeInterpolationSchema.describe('Interpolation type to apply to the keyframe.')
+})
+  .refine(hasComponentSelector, { message: 'Provide componentName, componentMatchName, or componentIndex' })
+  .refine(hasPropertySelector, { message: 'Provide propertyName, propertyMatchName, or propertyIndex' });
+
+const getEffectValueAtTimeSchema = effectPropertySelectorBaseSchema.extend({
+  time: z.number().finite().min(0).describe('Time in seconds to query the property value at.')
+})
+  .refine(hasComponentSelector, { message: 'Provide componentName, componentMatchName, or componentIndex' })
+  .refine(hasPropertySelector, { message: 'Provide propertyName, propertyMatchName, or propertyIndex' });
 
 const setClipOpacitySchema = z.object({
   clipId: z.string().min(1).describe('The ID of the timeline clip to modify'),
@@ -851,6 +936,10 @@ const assembleFromEditPlanSchema = z.object({
   includePostcondition: z.boolean().optional().describe('When true, attaches a list_sequence_tracks postcondition after assembly. Defaults to true.')
 });
 
+const workspaceNameSchema = z.object({
+  name: z.string().min(1).describe('Name of the workspace to activate. Use get_workspaces first to discover available workspaces.')
+});
+
 const sourceMonitorInOutSchema = z.object({
   inSeconds: z.number().finite().min(0).optional().describe('Source Monitor in point in seconds.'),
   outSeconds: z.number().finite().min(0).optional().describe('Source Monitor out point in seconds.')
@@ -1006,6 +1095,16 @@ export class PremiereProTools {
         inputSchema: z.object({
           staleAfterSeconds: z.number().int().min(1).optional().describe('Age in seconds after which command/response files are considered stale. Defaults to 300.')
         })
+      },
+      {
+        name: 'get_workspaces',
+        description: 'Lists available Premiere workspace layouts when the host exposes app.getWorkspaces; returns supported:false diagnostics otherwise.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'set_workspace',
+        description: 'Switches to a named Premiere workspace layout through the host workspace API with readback diagnostics. Use get_workspaces first; note that changing workspaces may hide extension panels including the MCP Bridge until reopened.',
+        inputSchema: workspaceNameSchema
       },
       {
         name: 'live_tool_sweep_safe',
@@ -1565,6 +1664,38 @@ export class PremiereProTools {
           format: z.enum(['png', 'jpg', 'tiff']).optional().describe('The image format')
         })
       },
+      {
+        name: 'capture_frame',
+        description: 'Exports a frame from a sequence, reads it back as base64 image data, and optionally deletes the temporary frame file for visual QC.',
+        inputSchema: z.object({
+          sequenceId: z.string().min(1).describe('The ID of the sequence to capture from'),
+          time: z.number().finite().min(0).describe('Timeline time in seconds to capture'),
+          outputPath: z.string().min(1).refine((value) => isAbsolute(value), 'outputPath must be absolute when provided').optional().describe('Optional absolute frame path. Defaults to a temporary file; explicit paths are preserved unless deleteAfterRead is true.'),
+          format: z.enum(['png', 'jpg', 'tiff']).optional().default('png').describe('Frame image format'),
+          deleteAfterRead: z.boolean().optional().describe('Delete the frame file after reading it into base64. Defaults to true only for internally generated temporary paths, false for explicit outputPath values.')
+        })
+      },
+      {
+        name: 'export_omf',
+        description: 'Exports a sequence as OMF for audio post when Premiere exposes app.project.exportOMF. Defaults to dry-run capability diagnostics before live export.',
+        inputSchema: z.object({
+          sequenceId: z.string().min(1).describe('The ID of the sequence to export'),
+          outputPath: z.string()
+            .min(1)
+            .refine((value) => isAbsolute(value), 'outputPath must be absolute')
+            .refine((value) => extname(value).toLowerCase() === '.omf', 'outputPath must end with .omf')
+            .describe('Absolute .omf output path'),
+          title: z.string().min(1).optional().describe('OMF title metadata. Defaults to the sequence name.'),
+          sampleRate: z.number().int().min(1).optional().describe('Audio sample rate. Defaults to 48000.'),
+          bitsPerSample: z.number().int().min(1).optional().describe('Audio bit depth. Defaults to 16.'),
+          audioEncapsulated: z.boolean().optional().describe('Embed audio in OMF. Defaults to true.'),
+          audioFileFormat: z.enum(['wav', 'aiff']).optional().describe('Audio file format for OMF media. Defaults to wav.'),
+          trimAudioFiles: z.boolean().optional().describe('Trim audio files to used ranges. Defaults to true.'),
+          handleFrames: z.number().int().min(0).optional().describe('Audio handle length in frames when trimming. Defaults to 1000.'),
+          dryRun: z.boolean().optional().default(true).describe('When true, report host capability and planned settings without exporting. Defaults to true.'),
+          overwrite: z.boolean().optional().default(false).describe('Allow Premiere to overwrite an existing .omf path during live export. Defaults to false; the tool never pre-deletes existing files.')
+        })
+      },
 
       // Markers
       {
@@ -1946,6 +2077,21 @@ export class PremiereProTools {
           componentName: z.string().describe('The display name of the component'),
           paramName: z.string().describe('The display name of the parameter')
         })
+      },
+      {
+        name: 'set_effect_keyframes',
+        description: 'Bulk-add/update numeric keyframes on an existing effect/component property using list_clip_effects-style selectors. Requires strictly increasing times.',
+        inputSchema: setEffectKeyframesSchema
+      },
+      {
+        name: 'set_keyframe_interpolation',
+        description: 'Sets keyframe interpolation on an existing effect/component property when Premiere exposes interpolation APIs; otherwise returns supported:false.',
+        inputSchema: setKeyframeInterpolationSchema
+      },
+      {
+        name: 'get_effect_value_at_time',
+        description: 'Reads an effect/component property value at a specific time using list_clip_effects-style selectors and capability-honest diagnostics.',
+        inputSchema: getEffectValueAtTimeSchema
       },
 
       // Work Area
@@ -2334,6 +2480,10 @@ export class PremiereProTools {
           return await this.testConnection();
         case 'bridge_health_report':
           return await this.bridgeHealthReport(args.staleAfterSeconds);
+        case 'get_workspaces':
+          return await this.getWorkspaces();
+        case 'set_workspace':
+          return await this.setWorkspace(args.name);
         case 'live_tool_sweep_safe':
           return await this.liveToolSweepSafe(args as LiveToolSweepSafeArgs);
         case 'list_project_items':
@@ -2539,6 +2689,10 @@ export class PremiereProTools {
           return await this.qcRenderedMedia(args as QcRenderedMediaArgs);
         case 'export_frame':
           return await this.exportFrame(args.sequenceId, args.time, args.outputPath, args.format);
+        case 'capture_frame':
+          return await this.captureFrame(args as CaptureFrameArgs);
+        case 'export_omf':
+          return await this.exportOmf(args as ExportOmfArgs);
 
         // Markers
         case 'add_marker':
@@ -2642,6 +2796,12 @@ export class PremiereProTools {
           return await this.removeKeyframe(args.clipId, args.componentName, args.paramName, args.time);
         case 'get_keyframes':
           return await this.getKeyframes(args.clipId, args.componentName, args.paramName);
+        case 'set_effect_keyframes':
+          return await this.setEffectKeyframes(args as SetEffectKeyframesArgs);
+        case 'set_keyframe_interpolation':
+          return await this.setKeyframeInterpolation(args as SetKeyframeInterpolationArgs);
+        case 'get_effect_value_at_time':
+          return await this.getEffectValueAtTime(args as GetEffectValueAtTimeArgs);
 
         // Work Area
         case 'set_work_area':
@@ -3556,6 +3716,144 @@ export class PremiereProTools {
         });
       }
     `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getWorkspaces(): Promise<any> {
+    const script = buildPremiereScript(`
+      if (typeof app.getWorkspaces !== "function") {
+        return {
+          success: true,
+          supported: false,
+          workspaces: [],
+          count: 0,
+          reason: 'Premiere host does not expose app.getWorkspaces'
+        };
+      }
+
+      var rawWorkspaces = app.getWorkspaces();
+      var workspaces = [];
+      if (rawWorkspaces) {
+        for (var i = 0; i < rawWorkspaces.length; i++) {
+          workspaces.push(String(rawWorkspaces[i]));
+        }
+      }
+
+      return {
+        success: true,
+        supported: true,
+        workspaces: workspaces,
+        count: workspaces.length
+      };
+    `);
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setWorkspace(name: string): Promise<any> {
+    const workspaceName = literalForExtendScript(name);
+    const script = buildPremiereScript(`
+      var availableWorkspaces = [];
+      if (typeof app.getWorkspaces === "function") {
+        var rawWorkspaces = app.getWorkspaces();
+        if (rawWorkspaces) {
+          for (var i = 0; i < rawWorkspaces.length; i++) {
+            availableWorkspaces.push(String(rawWorkspaces[i]));
+          }
+        }
+      }
+
+      var requestedWorkspaceAvailable = availableWorkspaces.length === 0;
+      for (var wi = 0; wi < availableWorkspaces.length; wi++) {
+        if (availableWorkspaces[wi] === ${workspaceName}) {
+          requestedWorkspaceAvailable = true;
+          break;
+        }
+      }
+
+      if (typeof app.setWorkspace !== "function") {
+        return {
+          success: false,
+          supported: false,
+          workspace: ${workspaceName},
+          availableWorkspaces: availableWorkspaces,
+          requestedWorkspaceAvailable: requestedWorkspaceAvailable,
+          mutationAttempted: false,
+          postconditionVerified: false,
+          error: "Premiere host does not expose app.setWorkspace"
+        };
+      }
+
+      if (!requestedWorkspaceAvailable) {
+        return {
+          success: false,
+          supported: true,
+          workspace: ${workspaceName},
+          availableWorkspaces: availableWorkspaces,
+          mutationAttempted: false,
+          readbackSupported: false,
+          postconditionVerified: false,
+          error: 'Requested workspace is not present in app.getWorkspaces()'
+        };
+      }
+
+      var setResult = app.setWorkspace(${workspaceName});
+      if (setResult === false) {
+        return {
+          success: false,
+          supported: true,
+          workspace: ${workspaceName},
+          availableWorkspaces: availableWorkspaces,
+          mutationAttempted: true,
+          readbackSupported: false,
+          postconditionVerified: false,
+          error: 'Premiere rejected the requested workspace'
+        };
+      }
+
+      var readbackSupported = false;
+      var activeWorkspace = null;
+      var postconditionVerified = false;
+      try {
+        if (typeof app.getCurrentWorkspace === "function") {
+          activeWorkspace = String(app.getCurrentWorkspace());
+          readbackSupported = true;
+        } else if (typeof app.getWorkspace === "function") {
+          activeWorkspace = String(app.getWorkspace());
+          readbackSupported = true;
+        }
+      } catch (readbackError) {
+        activeWorkspace = null;
+      }
+      if (readbackSupported) {
+        postconditionVerified = activeWorkspace === ${workspaceName};
+        if (!postconditionVerified) {
+          return {
+            success: false,
+            supported: true,
+            workspace: ${workspaceName},
+            activeWorkspace: activeWorkspace,
+            availableWorkspaces: availableWorkspaces,
+            mutationAttempted: true,
+            readbackSupported: true,
+            postconditionVerified: false,
+            error: 'Workspace set call returned but readback did not match requested workspace'
+          };
+        }
+      }
+
+      return {
+        success: true,
+        supported: true,
+        workspace: ${workspaceName},
+        activeWorkspace: activeWorkspace,
+        availableWorkspaces: availableWorkspaces,
+        mutationAttempted: true,
+        readbackSupported: readbackSupported,
+        postconditionVerified: postconditionVerified
+      };
+    `);
 
     return await this.bridge.executeScript(script);
   }
@@ -4556,7 +4854,7 @@ export class PremiereProTools {
   }
 
   private async scanConformMediaMetadata(args: ScanConformMediaMetadataArgs): Promise<any> {
-    const payload = JSON.stringify({
+    const payload = literalForExtendScript({
       projectItemIds: args.projectItemIds || [],
       mediaPaths: args.mediaPaths || [],
       binId: args.binId || null,
@@ -4634,6 +4932,25 @@ export class PremiereProTools {
           function __safeNumber(value) {
             var numberValue = Number(value);
             return isFinite(numberValue) ? numberValue : null;
+          }
+
+          function __isoTimestamp() {
+            var now = new Date();
+            try {
+              if (typeof now.toISOString === 'function') return now.toISOString();
+            } catch (isoError) {}
+            function pad(value, width) {
+              var text = String(value);
+              while (text.length < width) text = '0' + text;
+              return text;
+            }
+            return String(now.getUTCFullYear()) + '-' +
+              pad(now.getUTCMonth() + 1, 2) + '-' +
+              pad(now.getUTCDate(), 2) + 'T' +
+              pad(now.getUTCHours(), 2) + ':' +
+              pad(now.getUTCMinutes(), 2) + ':' +
+              pad(now.getUTCSeconds(), 2) + '.' +
+              pad(now.getUTCMilliseconds(), 3) + 'Z';
           }
 
           function __readFootageInterpretation(item, warnings) {
@@ -4769,7 +5086,7 @@ export class PremiereProTools {
           return JSON.stringify({
             success: true,
             mutationPlanned: false,
-            scannedAt: new Date().toISOString(),
+            scannedAt: __isoTimestamp(),
             criteria: payload,
             items: items,
             totalItems: items.length,
@@ -6240,7 +6557,7 @@ export class PremiereProTools {
           var targetClip = targetInfo.clip;
 
           function __normalizedName(value) {
-            return String(value || "").toLowerCase().replace(/\s+/g, "");
+            return String(value || "").toLowerCase().replace(/\\s+/g, "");
           }
           function __findComponent(clip, componentName) {
             var wanted = __normalizedName(componentName);
@@ -8553,7 +8870,7 @@ export class PremiereProTools {
   }
 
   private async setEffectParameter(args: SetEffectParameterArgs): Promise<any> {
-    const selectorsJson = JSON.stringify({
+    const selectorsJson = literalForExtendScript({
       componentName: args.componentName ?? null,
       componentMatchName: args.componentMatchName ?? null,
       componentIndex: args.componentIndex ?? null,
@@ -8561,17 +8878,20 @@ export class PremiereProTools {
       propertyMatchName: args.propertyMatchName ?? null,
       propertyIndex: args.propertyIndex ?? null
     });
-    const valueJson = JSON.stringify(args.value);
-    if (valueJson === undefined) {
+    const valueJson = literalForExtendScript(args.value);
+    if (valueJson === 'undefined') {
       return { success: false, error: 'value must be JSON-serializable' };
     }
+    const clipIdLiteral = literalForExtendScript(args.clipId);
+    const sequenceIdLiteral = args.sequenceId ? literalForExtendScript(args.sequenceId) : 'null';
+    const notFoundErrorLiteral = literalForExtendScript(args.sequenceId ? `Clip not found in sequence: ${args.sequenceId}` : 'Clip not found');
 
     const script = `
       try {
         var selectors = ${selectorsJson};
         var requestedValue = ${valueJson};
-        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
-        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var info = __findClip(${clipIdLiteral}, ${sequenceIdLiteral});
+        if (!info) return JSON.stringify({ success: false, error: ${notFoundErrorLiteral} });
         var clip = info.clip;
 
         function __safeString(value) {
@@ -8730,7 +9050,7 @@ export class PremiereProTools {
           return JSON.stringify({
             success: false,
             error: componentResult.error || "Component not found",
-            clipId: ${JSON.stringify(args.clipId)},
+            clipId: ${literalForExtendScript(args.clipId)},
             sequenceId: info.sequenceId,
             selectors: selectors,
             availableComponents: componentResult.availableComponents || []
@@ -8742,7 +9062,7 @@ export class PremiereProTools {
           return JSON.stringify({
             success: false,
             error: propertyResult.error || "Property not found",
-            clipId: ${JSON.stringify(args.clipId)},
+            clipId: ${literalForExtendScript(args.clipId)},
             sequenceId: info.sequenceId,
             component: __componentSummary(componentResult.component, componentResult.componentIndex),
             componentStrategy: componentResult.strategy,
@@ -8758,7 +9078,7 @@ export class PremiereProTools {
           return JSON.stringify({
             success: false,
             error: "setValue threw: " + setError.toString(),
-            clipId: ${JSON.stringify(args.clipId)},
+            clipId: ${literalForExtendScript(args.clipId)},
             sequenceId: info.sequenceId,
             component: __componentSummary(componentResult.component, componentResult.componentIndex),
             componentStrategy: componentResult.strategy,
@@ -8774,7 +9094,7 @@ export class PremiereProTools {
         return JSON.stringify({
           success: true,
           message: "Effect parameter set",
-          clipId: ${JSON.stringify(args.clipId)},
+          clipId: ${literalForExtendScript(args.clipId)},
           clipName: clip.name,
           sequenceId: info.sequenceId,
           sequenceName: info.sequenceName,
@@ -8941,9 +9261,9 @@ export class PremiereProTools {
           maintainAudioPitch: args.properties.speed.maintainAudioPitch ?? true
         }
       : null;
-    const operationsJson = JSON.stringify(operations);
-    const speedSettingsJson = JSON.stringify(speedSettings);
-    if (operationsJson === undefined || speedSettingsJson === undefined) {
+    const operationsJson = literalForExtendScript(operations);
+    const speedSettingsJson = literalForExtendScript(speedSettings);
+    if (operationsJson === 'undefined' || speedSettingsJson === 'undefined') {
       return { success: false, error: 'Batch clip properties must be JSON-serializable' };
     }
     if (operations.length === 0 && speedSettings === null) {
@@ -8954,8 +9274,8 @@ export class PremiereProTools {
       try {
         var operations = ${operationsJson};
         var speedSettings = ${speedSettingsJson};
-        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
-        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var info = __findClip(${literalForExtendScript(args.clipId)}, ${args.sequenceId ? literalForExtendScript(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? literalForExtendScript(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
         var clip = info.clip;
 
         function __safeString(value) {
@@ -9092,7 +9412,7 @@ export class PremiereProTools {
               error: componentResult.error || "Component not found",
               stage: "preflight",
               failedOperation: operation,
-              clipId: ${JSON.stringify(args.clipId)},
+              clipId: ${literalForExtendScript(args.clipId)},
               sequenceId: info.sequenceId,
               availableComponents: componentResult.availableComponents || []
             });
@@ -9104,7 +9424,7 @@ export class PremiereProTools {
               error: propertyResult.error || "Property not found",
               stage: "preflight",
               failedOperation: operation,
-              clipId: ${JSON.stringify(args.clipId)},
+              clipId: ${literalForExtendScript(args.clipId)},
               sequenceId: info.sequenceId,
               component: __componentSummary(componentResult.component, componentResult.componentIndex),
               availableProperties: propertyResult.availableProperties || []
@@ -9130,7 +9450,7 @@ export class PremiereProTools {
               success: false,
               error: "Speed changes require the target sequence to be active for QE DOM operations",
               stage: "preflight",
-              clipId: ${JSON.stringify(args.clipId)},
+              clipId: ${literalForExtendScript(args.clipId)},
               sequenceId: info.sequenceId,
               activeSequenceId: activeSequence && activeSequence.sequenceID ? activeSequence.sequenceID : null
             });
@@ -9143,7 +9463,7 @@ export class PremiereProTools {
               success: false,
               error: "QE clip not found for speed change",
               stage: "preflight",
-              clipId: ${JSON.stringify(args.clipId)},
+              clipId: ${literalForExtendScript(args.clipId)},
               sequenceId: info.sequenceId,
               trackType: info.trackType,
               trackIndex: info.trackIndex,
@@ -9211,7 +9531,7 @@ export class PremiereProTools {
 
         return JSON.stringify({
           success: allSucceeded,
-          clipId: ${JSON.stringify(args.clipId)},
+          clipId: ${literalForExtendScript(args.clipId)},
           sequenceId: info.sequenceId,
           sequenceName: info.sequenceName,
           trackType: info.trackType,
@@ -9236,13 +9556,13 @@ export class PremiereProTools {
     if (args.speedPercent !== undefined) settings.speedPercent = args.speedPercent;
     if (args.maintainAudioPitch !== undefined) settings.maintainAudioPitch = args.maintainAudioPitch;
 
-    const settingsJson = JSON.stringify(settings);
+    const settingsJson = literalForExtendScript(settings);
 
     const script = `
       try {
         var settings = ${settingsJson};
-        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
-        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var info = __findClip(${literalForExtendScript(args.clipId)}, ${args.sequenceId ? literalForExtendScript(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? literalForExtendScript(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
         var clip = info.clip;
 
         function __makeTime(seconds) {
@@ -9293,7 +9613,7 @@ export class PremiereProTools {
             var afterPreflight = __snapshot("afterPreflight");
             return JSON.stringify({
               success: false,
-              clipId: ${JSON.stringify(args.clipId)},
+              clipId: ${literalForExtendScript(args.clipId)},
               sequenceId: info.sequenceId,
               sequenceName: info.sequenceName,
               trackType: info.trackType,
@@ -9414,7 +9734,7 @@ export class PremiereProTools {
         var speedSucceeded = speedResult === null || speedResult.success === true;
         return JSON.stringify({
           success: timingResult.success === true && speedSucceeded,
-          clipId: ${JSON.stringify(args.clipId)},
+          clipId: ${literalForExtendScript(args.clipId)},
           sequenceId: info.sequenceId,
           sequenceName: info.sequenceName,
           trackType: info.trackType,
@@ -9441,13 +9761,13 @@ export class PremiereProTools {
       speedPercent: keyframe.speedPercent
     }));
 
-    const settingsJson = JSON.stringify(settings);
+    const settingsJson = literalForExtendScript(settings);
 
     const script = `
       try {
         var settings = ${settingsJson};
-        var info = __findClip(${JSON.stringify(args.clipId)}, ${args.sequenceId ? JSON.stringify(args.sequenceId) : 'null'});
-        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? JSON.stringify(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
+        var info = __findClip(${literalForExtendScript(args.clipId)}, ${args.sequenceId ? literalForExtendScript(args.sequenceId) : 'null'});
+        if (!info) return JSON.stringify({ success: false, error: ${args.sequenceId ? literalForExtendScript(`Clip not found in sequence: ${args.sequenceId}`) : '"Clip not found"'} });
         var clip = info.clip;
 
         function __safeString(value) {
@@ -9633,7 +9953,7 @@ export class PremiereProTools {
             success: false,
             supported: false,
             error: "Time Remapping speed property is not exposed to ExtendScript on this clip",
-            clipId: ${JSON.stringify(args.clipId)},
+            clipId: ${literalForExtendScript(args.clipId)},
             sequenceId: info.sequenceId,
             sequenceName: info.sequenceName,
             trackType: info.trackType,
@@ -9706,7 +10026,7 @@ export class PremiereProTools {
         return JSON.stringify({
           success: staticSucceeded && keyframesSucceeded,
           supported: true,
-          clipId: ${JSON.stringify(args.clipId)},
+          clipId: ${literalForExtendScript(args.clipId)},
           sequenceId: info.sequenceId,
           sequenceName: info.sequenceName,
           trackType: info.trackType,
@@ -10943,85 +11263,505 @@ export class PremiereProTools {
   }
 
   private async exportFrame(sequenceId: string, time: number, outputPath: string, format = 'png'): Promise<any> {
-    const script = `
+    const payload = { sequenceId, time, outputPath, format };
+    const script = buildPremiereScript(`
+      var payload = ${literalForExtendScript(payload)};
+      var sequence = __findSequence(payload.sequenceId);
+      if (!sequence) {
+        return {
+          success: false,
+          error: "Sequence not found by id: " + payload.sequenceId,
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath,
+          format: payload.format
+        };
+      }
+
+      if (sequence.openInTimeline) {
+        try { sequence.openInTimeline(); } catch (e0) {}
+      }
+
+      app.enableQE();
+      var qeSequence = qe.project.getActiveSequence();
+      if (!qeSequence) {
+        return { success: false, error: "QE active sequence not available for frame export" };
+      }
+
+      var methodName = payload.format === "jpg" ? "exportFrameJPEG" : (payload.format === "tiff" ? "exportFrameTiff" : "exportFramePNG");
+      if (typeof qeSequence[methodName] !== "function") {
+        return {
+          success: false,
+          error: "Frame export format '" + payload.format + "' is not supported by the available Premiere API",
+          format: payload.format
+        };
+      }
+
+      function __extensionForFormat(format) { return format === "jpg" ? ".jpg" : (format === "tiff" ? ".tiff" : ".png"); }
+      function __stripFormatExtension(outputPath, format) {
+        var ext = __extensionForFormat(format);
+        var lowerPath = String(outputPath).toLowerCase();
+        if (lowerPath.lastIndexOf(ext) === lowerPath.length - ext.length) return String(outputPath).substring(0, String(outputPath).length - ext.length);
+        return String(outputPath);
+      }
+      var requestedOutputPath = String(payload.outputPath);
+      var exportBasePath = __stripFormatExtension(requestedOutputPath, payload.format);
+      var actualOutputPath = exportBasePath + __extensionForFormat(payload.format);
+      var outputFile = File(actualOutputPath);
+      var preExportExists = outputFile.exists;
+      var preExportLength = preExportExists ? outputFile.length : null;
+      var preExportModified = null;
+      if (preExportExists) {
+        try { preExportModified = outputFile.modified ? Number(outputFile.modified.getTime()) : null; } catch (ePre) {}
+      }
+      var staleExistingFile = false;
+      var lastOutputExists = preExportExists;
+      var lastSizeBytes = preExportExists ? preExportLength : 0;
+      var timeNumber = Number(payload.time);
+      var timeString = String(timeNumber);
+      var timeTicks = timeString;
       try {
-        var sequence = __findSequence("${sequenceId}");
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        var exportTime = new Time();
+        exportTime.seconds = timeNumber;
+        timeTicks = String(exportTime.ticks);
+      } catch (e1) {}
 
-        if (sequence.openInTimeline) {
-          try { sequence.openInTimeline(); } catch (e0) {}
-        }
-
-        app.enableQE();
-        var qeSequence = qe.project.getActiveSequence();
-        if (!qeSequence) {
-          return JSON.stringify({ success: false, error: "QE active sequence not available for frame export" });
-        }
-
-        var methodName = "${format}" === "jpg" ? "exportFrameJPEG" : ("${format}" === "tiff" ? "exportFrameTiff" : "exportFramePNG");
-        if (typeof qeSequence[methodName] !== "function") {
-          return JSON.stringify({
-            success: false,
-            error: "Frame export format '" + "${format}" + "' is not supported by the available Premiere API"
-          });
-        }
-
-        function __extensionForFormat(format) { return format === "jpg" ? ".jpg" : (format === "tiff" ? ".tiff" : ".png"); }
-        function __stripFormatExtension(outputPath, format) {
-          var ext = __extensionForFormat(format);
-          var lowerPath = String(outputPath).toLowerCase();
-          if (lowerPath.lastIndexOf(ext) === lowerPath.length - ext.length) return String(outputPath).substring(0, String(outputPath).length - ext.length);
-          return String(outputPath);
-        }
-        var requestedOutputPath = "${outputPath}";
-        var exportBasePath = __stripFormatExtension(requestedOutputPath, "${format}");
-        var actualOutputPath = exportBasePath + __extensionForFormat("${format}");
-        var timeNumber = ${time};
-        var timeString = String(timeNumber);
-        var timeTicks = timeString;
+      var exportError = null;
+      function tryExport(timeValue, signatureName) {
         try {
-          var exportTime = new Time();
-          exportTime.seconds = timeNumber;
-          timeTicks = String(exportTime.ticks);
-        } catch (e1) {}
-
-        var exportError = null;
-        function tryExport(timeValue, signatureName) {
-          try {
-            qeSequence[methodName](String(timeValue), exportBasePath);
-            if (File(actualOutputPath).exists) return signatureName;
-            exportError = signatureName + " returned without creating " + actualOutputPath;
-            return null;
-          } catch (e2) {
-            exportError = signatureName + ": " + e2.toString();
-            return null;
+          qeSequence[methodName](String(timeValue), exportBasePath);
+          var exportedFile = File(actualOutputPath);
+          if (exportedFile.exists) {
+            var postExportLength = exportedFile.length;
+            lastOutputExists = true;
+            lastSizeBytes = postExportLength;
+            if (!(postExportLength > 0)) {
+              exportError = signatureName + " returned but no non-empty frame file was created";
+              return null;
+            }
+            var postExportModified = null;
+            try { postExportModified = exportedFile.modified ? Number(exportedFile.modified.getTime()) : null; } catch (ePost) {}
+            var modifiedAfterExport = !preExportExists || (preExportModified !== null && postExportModified !== null && postExportModified > preExportModified);
+            var sizeChangedAfterExport = !preExportExists || postExportLength !== preExportLength;
+            if (preExportExists && !modifiedAfterExport && !sizeChangedAfterExport) {
+              staleExistingFile = true;
+              exportError = signatureName + " returned but output path was not modified; refusing to treat stale existing frame as success";
+              return null;
+            }
+            staleExistingFile = false;
+            return signatureName;
           }
+          exportError = signatureName + " returned without creating " + actualOutputPath;
+          lastOutputExists = false;
+          lastSizeBytes = 0;
+          return null;
+        } catch (e2) {
+          exportError = signatureName + ": " + e2.toString();
+          return null;
         }
+      }
 
-        var exportSignature = tryExport(timeString, "secondsString_outputBase") || tryExport(timeTicks, "ticksString_outputBase");
+      var exportSignature = tryExport(timeString, "secondsString_outputBase") || tryExport(timeTicks, "ticksString_outputBase");
 
-        if (!exportSignature) {
-          return JSON.stringify({
-            success: false,
-            error: exportError || "Frame export failed"
-          });
-        }
-
-        return JSON.stringify({
-          success: true,
-          message: "Frame exported successfully",
-          sequenceId: "${sequenceId}",
-          time: ${time},
+      if (!exportSignature) {
+        return {
+          success: false,
+          error: exportError || "Frame export failed",
+          sequenceId: payload.sequenceId,
+          time: payload.time,
           outputPath: actualOutputPath,
           requestedOutputPath: requestedOutputPath,
-          exportBasePath: exportBasePath,
-          exportSignature: exportSignature,
-          format: "${format}"
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
+          outputExists: lastOutputExists,
+          sizeBytes: lastSizeBytes,
+          format: payload.format,
+          preExportExists: preExportExists,
+          preExportLength: preExportLength,
+          preExportModified: preExportModified,
+          staleExistingFile: staleExistingFile
+        };
       }
-    `;
+
+      return {
+        success: true,
+        message: "Frame exported successfully",
+        sequenceId: payload.sequenceId,
+        time: payload.time,
+        outputPath: actualOutputPath,
+        requestedOutputPath: requestedOutputPath,
+        outputExists: lastOutputExists,
+        sizeBytes: lastSizeBytes,
+        exportBasePath: exportBasePath,
+        exportSignature: exportSignature,
+        format: payload.format,
+        preExportExists: preExportExists,
+        preExportLength: preExportLength,
+        preExportModified: preExportModified,
+        staleExistingFile: staleExistingFile
+      };
+    `, '__exportFrame');
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private extensionForFrameFormat(format: 'png' | 'jpg' | 'tiff'): string {
+    if (format === 'jpg') return '.jpg';
+    if (format === 'tiff') return '.tiff';
+    return '.png';
+  }
+
+  private expectedFrameOutputPath(outputPath: string, format: 'png' | 'jpg' | 'tiff'): string {
+    const expectedExtension = this.extensionForFrameFormat(format);
+    const currentExtension = extname(outputPath);
+    if (currentExtension.toLowerCase() === expectedExtension) {
+      return `${outputPath.slice(0, outputPath.length - currentExtension.length)}${expectedExtension}`;
+    }
+    return `${outputPath}${expectedExtension}`;
+  }
+
+  private mimeTypeForFrameFormat(format: 'png' | 'jpg' | 'tiff'): string {
+    if (format === 'jpg') return 'image/jpeg';
+    if (format === 'tiff') return 'image/tiff';
+    return 'image/png';
+  }
+
+  private async waitForReadableFile(filePath: string, attempts = 20, delayMs = 100): Promise<Stats | null> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const fileStat = await fs.stat(filePath);
+        if (fileStat.isFile()) {
+          return fileStat;
+        }
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') {
+          throw error;
+        }
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+    }
+    return null;
+  }
+
+  private async captureFrame(args: CaptureFrameArgs): Promise<any> {
+    const format = args.format ?? 'png';
+    const explicitOutputPath = Boolean(args.outputPath);
+    let temporaryCaptureDir: string | null = null;
+    const outputPath = explicitOutputPath
+      ? resolve(args.outputPath as string)
+      : join(
+        temporaryCaptureDir = await fs.mkdtemp(join(tmpdir(), 'premiere-mcp-capture-frame-')),
+        `frame${this.extensionForFrameFormat(format)}`,
+      );
+    const expectedOutputPath = this.expectedFrameOutputPath(outputPath, format);
+    const expectedResolvedOutputPath = resolve(expectedOutputPath);
+
+    if (!isAbsolute(outputPath)) {
+      return {
+        success: false,
+        error: 'outputPath must be absolute when provided',
+        outputPath,
+      };
+    }
+
+    let preExistingFrameStat: Stats | null = null;
+    try {
+      const candidateStat = await fs.stat(expectedResolvedOutputPath);
+      if (candidateStat.isFile()) {
+        preExistingFrameStat = candidateStat;
+      }
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        return {
+          success: false,
+          captured: false,
+          sequenceId: args.sequenceId,
+          time: args.time,
+          outputPath: expectedResolvedOutputPath,
+          expectedOutputPath,
+          error: `Failed to stat existing frame output before export: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+
+    const exportResult = await this.exportFrame(args.sequenceId, args.time, outputPath, format);
+    if (!exportResult?.success) {
+      return {
+        ...exportResult,
+        success: false,
+        captured: false,
+        sequenceId: args.sequenceId,
+        time: args.time,
+        outputPath: exportResult?.outputPath ?? expectedOutputPath,
+        expectedOutputPath,
+      };
+    }
+
+    const actualOutputPath = resolve(String(exportResult.outputPath ?? expectedOutputPath));
+    if (actualOutputPath !== expectedResolvedOutputPath) {
+      return {
+        ...exportResult,
+        success: false,
+        captured: false,
+        sequenceId: args.sequenceId,
+        time: args.time,
+        outputPath: actualOutputPath,
+        expectedOutputPath,
+        error: `Frame export returned an unexpected output path; refusing to read or delete it. Expected ${expectedOutputPath}, got ${actualOutputPath}`,
+      };
+    }
+
+    const fileStat = await this.waitForReadableFile(actualOutputPath);
+    if (!fileStat) {
+      return {
+        ...exportResult,
+        success: false,
+        captured: false,
+        sequenceId: args.sequenceId,
+        time: args.time,
+        outputPath: actualOutputPath,
+        expectedOutputPath,
+        error: `Frame export completed but file was not found: ${actualOutputPath}`,
+      };
+    }
+
+    if (preExistingFrameStat) {
+      const modifiedAfterCapture = fileStat.mtimeMs > preExistingFrameStat.mtimeMs || fileStat.ctimeMs > preExistingFrameStat.ctimeMs;
+      const sizeChangedAfterCapture = fileStat.size !== preExistingFrameStat.size;
+      if (!modifiedAfterCapture && !sizeChangedAfterCapture) {
+        return {
+          ...exportResult,
+          success: false,
+          captured: false,
+          sequenceId: args.sequenceId,
+          time: args.time,
+          outputPath: actualOutputPath,
+          expectedOutputPath,
+          staleExistingFile: true,
+          preCaptureSizeBytes: preExistingFrameStat.size,
+          preCaptureModifiedMs: preExistingFrameStat.mtimeMs,
+          sizeBytes: fileStat.size,
+          modifiedAfterCapture,
+          sizeChangedAfterCapture,
+          error: 'Frame export returned but output path matches a stale pre-existing frame; refusing to read or delete it.',
+        };
+      }
+    }
+
+    if (fileStat.size <= 0) {
+      return {
+        ...exportResult,
+        success: false,
+        captured: false,
+        sequenceId: args.sequenceId,
+        time: args.time,
+        outputPath: actualOutputPath,
+        expectedOutputPath,
+        sizeBytes: fileStat.size,
+        error: 'Frame export created an empty file',
+      };
+    }
+
+    let frameBytes: Buffer;
+    try {
+      frameBytes = await fs.readFile(actualOutputPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ...exportResult,
+        success: false,
+        captured: false,
+        sequenceId: args.sequenceId,
+        time: args.time,
+        outputPath: actualOutputPath,
+        expectedOutputPath,
+        sizeBytes: fileStat.size,
+        error: `Failed to read captured frame: ${message}`,
+      };
+    }
+
+    const deleteAfterRead = args.deleteAfterRead ?? !explicitOutputPath;
+    let deletedAfterRead = false;
+    let cleanupError: string | undefined;
+    if (deleteAfterRead) {
+      try {
+        await fs.unlink(actualOutputPath);
+        deletedAfterRead = true;
+        if (temporaryCaptureDir) {
+          await fs.rmdir(temporaryCaptureDir).catch(() => undefined);
+        }
+      } catch (error) {
+        cleanupError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return {
+      ...exportResult,
+      success: true,
+      captured: true,
+      sequenceId: args.sequenceId,
+      time: args.time,
+      outputPath: actualOutputPath,
+      expectedOutputPath,
+      format,
+      mimeType: this.mimeTypeForFrameFormat(format),
+      base64: frameBytes.toString('base64'),
+      sizeBytes: fileStat.size,
+      deleteAfterRead,
+      deletedAfterRead,
+      cleanupError,
+    };
+  }
+
+  private async exportOmf(args: ExportOmfArgs): Promise<any> {
+    const audioFileFormat = args.audioFileFormat ?? 'wav';
+    const payload = {
+      sequenceId: args.sequenceId,
+      outputPath: args.outputPath,
+      title: args.title ?? null,
+      sampleRate: args.sampleRate ?? 48000,
+      bitsPerSample: args.bitsPerSample ?? 16,
+      audioEncapsulated: args.audioEncapsulated !== false,
+      audioFileFormat,
+      audioFileFormatCode: audioFileFormat === 'aiff' ? 0 : 1,
+      trimAudioFiles: args.trimAudioFiles !== false,
+      handleFrames: args.handleFrames ?? 1000,
+      dryRun: args.dryRun !== false,
+      overwrite: args.overwrite === true,
+    };
+
+    const script = buildPremiereScript(`
+      var payload = ${literalForExtendScript(payload)};
+      var sequence = __findSequence(payload.sequenceId);
+      if (!sequence) {
+        return {
+          success: false,
+          error: "Sequence not found by id: " + payload.sequenceId,
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath,
+          dryRun: payload.dryRun,
+          supported: null
+        };
+      }
+
+      var exportOmfAvailable = app.project && typeof app.project.exportOMF === "function";
+      if (!exportOmfAvailable) {
+        return {
+          success: payload.dryRun !== false,
+          supported: false,
+          dryRun: payload.dryRun,
+          wouldExport: false,
+          sequenceId: payload.sequenceId,
+          sequenceName: sequence.name,
+          outputPath: payload.outputPath,
+          error: "app.project.exportOMF is not available in this Premiere host"
+        };
+      }
+
+      var plannedTitle = payload.title || sequence.name || "OMFTitle";
+      var plannedSettings = {
+        title: plannedTitle,
+        sampleRate: payload.sampleRate,
+        bitsPerSample: payload.bitsPerSample,
+        audioEncapsulated: payload.audioEncapsulated,
+        audioFileFormat: payload.audioFileFormat,
+        audioFileFormatCode: payload.audioFileFormatCode,
+        trimAudioFiles: payload.trimAudioFiles,
+        handleFrames: payload.handleFrames
+      };
+
+      if (payload.dryRun !== false) {
+        return {
+          success: true,
+          supported: true,
+          dryRun: true,
+          wouldExport: true,
+          sequenceId: payload.sequenceId,
+          sequenceName: sequence.name,
+          outputPath: payload.outputPath,
+          settings: plannedSettings
+        };
+      }
+
+      var outputFile = new File(payload.outputPath);
+      var preExportExists = outputFile.exists;
+      var preExportLength = preExportExists ? outputFile.length : 0;
+      var preExportModified = null;
+      try {
+        preExportModified = preExportExists && outputFile.modified ? outputFile.modified.getTime() : null;
+      } catch (preModifiedError) {}
+      if (preExportExists && payload.overwrite !== true) {
+        return {
+          success: false,
+          supported: true,
+          dryRun: false,
+          exported: false,
+          outputExists: true,
+          sequenceId: payload.sequenceId,
+          sequenceName: sequence.name,
+          outputPath: payload.outputPath,
+          settings: plannedSettings,
+          error: "Output OMF already exists; pass overwrite:true to allow Premiere to replace it."
+        };
+      }
+
+      var exportReturnValue = null;
+      try {
+        exportReturnValue = app.project.exportOMF(
+          sequence,
+          payload.outputPath,
+          plannedTitle,
+          payload.sampleRate,
+          payload.bitsPerSample,
+          payload.audioEncapsulated ? 1 : 0,
+          payload.audioFileFormatCode,
+          payload.trimAudioFiles ? 1 : 0,
+          payload.handleFrames
+        );
+      } catch (exportError) {
+        return {
+          success: false,
+          supported: true,
+          dryRun: false,
+          exported: false,
+          sequenceId: payload.sequenceId,
+          sequenceName: sequence.name,
+          outputPath: payload.outputPath,
+          settings: plannedSettings,
+          error: "exportOMF threw: " + exportError.toString()
+        };
+      }
+
+      outputFile = new File(payload.outputPath);
+      var outputExists = outputFile.exists;
+      var sizeBytes = outputExists ? outputFile.length : 0;
+      var postExportModified = null;
+      try {
+        postExportModified = outputExists && outputFile.modified ? outputFile.modified.getTime() : null;
+      } catch (postModifiedError) {}
+      var modifiedAfterExport = !preExportExists || (postExportModified !== null && preExportModified !== null && postExportModified > preExportModified);
+      var sizeChangedAfterExport = !preExportExists || sizeBytes !== preExportLength;
+      var staleExistingFile = outputExists && sizeBytes > 0 && preExportExists && !modifiedAfterExport && !sizeChangedAfterExport;
+      var verified = outputExists && sizeBytes > 0 && !staleExistingFile;
+      return {
+        success: verified,
+        supported: true,
+        dryRun: false,
+        exported: verified,
+        outputExists: outputExists,
+        sizeBytes: sizeBytes,
+        preExportExists: preExportExists,
+        preExportLength: preExportLength,
+        preExportModified: preExportModified,
+        postExportModified: postExportModified,
+        modifiedAfterExport: modifiedAfterExport,
+        sizeChangedAfterExport: sizeChangedAfterExport,
+        staleExistingFile: staleExistingFile,
+        sequenceId: payload.sequenceId,
+        sequenceName: sequence.name,
+        outputPath: payload.outputPath,
+        settings: plannedSettings,
+        exportReturnValue: exportReturnValue,
+        error: verified ? null : (staleExistingFile ? "exportOMF returned but output path was not modified; refusing to treat stale existing OMF as success" : "exportOMF returned but no non-empty OMF file was created")
+      };
+    `, '__exportOmf');
 
     return await this.bridge.executeScript(script);
   }
@@ -11114,28 +11854,57 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async deleteMarker(_sequenceId: string, markerId: string): Promise<any> {
+  private async deleteMarker(sequenceId: string, markerId: string): Promise<any> {
+    const sequenceIdLiteral = literalForExtendScript(sequenceId);
+    const markerIdLiteral = literalForExtendScript(markerId);
+    const sequenceNotFoundLiteral = literalForExtendScript(`Sequence not found by id: ${sequenceId}`);
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = __findSequence(${sequenceIdLiteral});
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: ${sequenceNotFoundLiteral}
           });
         } else {
-          var deleted = false;
+          var marker = null;
+          var markerIndex = -1;
           for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            if (sequence.markers[i].guid === ${JSON.stringify(markerId)}) {
-              sequence.markers.deleteMarker(i);
-              deleted = true;
+            var candidate = sequence.markers[i];
+            if (candidate && String(candidate.guid) === String(${markerIdLiteral})) {
+              marker = candidate;
+              markerIndex = i;
+              break;
+            }
+          }
+
+          if (!marker) {
+            return JSON.stringify({
+              success: false,
+              markerId: ${markerIdLiteral},
+              message: "Marker not found",
+              postconditionVerified: true
+            });
+          }
+
+          sequence.markers.deleteMarker(marker);
+
+          var stillPresent = false;
+          for (var verifyIndex = 0; verifyIndex < sequence.markers.numMarkers; verifyIndex++) {
+            var verifyMarker = sequence.markers[verifyIndex];
+            if (verifyMarker && String(verifyMarker.guid) === String(${markerIdLiteral})) {
+              stillPresent = true;
               break;
             }
           }
 
           return JSON.stringify({
-            success: deleted,
-            message: deleted ? "Marker deleted successfully" : "Marker not found"
+            success: !stillPresent,
+            markerId: ${markerIdLiteral},
+            markerIndex: markerIndex,
+            deletionArgumentType: "Marker",
+            postconditionVerified: !stillPresent,
+            message: !stillPresent ? "Marker deleted successfully" : "Marker delete call returned but marker is still present"
           });
         }
       } catch (e) {
@@ -12391,6 +13160,458 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
+  private buildEffectPropertyLookupScript(args: EffectPropertySelectorArgs, operationBody: string): string {
+    const selectorsJson = literalForExtendScript({
+      componentName: args.componentName ?? null,
+      componentMatchName: args.componentMatchName ?? null,
+      componentIndex: args.componentIndex ?? null,
+      propertyName: args.propertyName ?? null,
+      propertyMatchName: args.propertyMatchName ?? null,
+      propertyIndex: args.propertyIndex ?? null
+    });
+    const clipIdLiteral = literalForExtendScript(args.clipId);
+    const sequenceIdLiteral = args.sequenceId ? literalForExtendScript(args.sequenceId) : 'null';
+    const notFoundErrorLiteral = literalForExtendScript(args.sequenceId ? `Clip not found in sequence: ${args.sequenceId}` : 'Clip not found');
+
+    return `
+      try {
+        var selectors = ${selectorsJson};
+        var info = __findClip(${clipIdLiteral}, ${sequenceIdLiteral});
+        if (!info) return JSON.stringify({ success: false, error: ${notFoundErrorLiteral} });
+        var clip = info.clip;
+
+        function __safeString(value) {
+          try {
+            if (value === null || value === undefined) return null;
+            return String(value);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __normalizeName(value) {
+          return String(value).toLowerCase().replace(/[\\s_-]+/g, "");
+        }
+
+        function __namesEqual(actual, expected) {
+          var actualText = __safeString(actual);
+          var expectedText = __safeString(expected);
+          if (actualText === null || expectedText === null) return false;
+          return actualText === expectedText || __normalizeName(actualText) === __normalizeName(expectedText);
+        }
+
+        function __serializeEffectValue(value) {
+          if (value === null || value === undefined) return value;
+          var valueType = typeof value;
+          if (valueType === "number" || valueType === "string" || valueType === "boolean") return value;
+          try {
+            if (value.seconds !== undefined || value.ticks !== undefined) {
+              return {
+                seconds: value.seconds !== undefined ? value.seconds : null,
+                ticks: value.ticks !== undefined ? String(value.ticks) : null
+              };
+            }
+          } catch (_) {}
+          try {
+            if (value.length !== undefined && typeof value !== "string") {
+              var arr = [];
+              for (var vi = 0; vi < value.length; vi++) arr.push(__serializeEffectValue(value[vi]));
+              return arr;
+            }
+          } catch (_) {}
+          try { return String(value); } catch (_) { return "<unserializable>"; }
+        }
+
+        function __safeGetPropertyValue(prop) {
+          var result = { available: false, value: null, valueType: null, error: null };
+          try {
+            var raw = prop.getValue();
+            result.available = true;
+            result.valueType = raw === null ? "null" : typeof raw;
+            result.value = __serializeEffectValue(raw);
+          } catch (valueError) {
+            result.error = valueError.toString();
+          }
+          return result;
+        }
+
+        function __componentSummary(component, componentIndex) {
+          return {
+            componentIndex: componentIndex,
+            displayName: component && component.displayName !== undefined ? String(component.displayName) : "",
+            matchName: component && component.matchName !== undefined ? String(component.matchName) : null,
+            propertyCount: component && component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0
+          };
+        }
+
+        function __propertySummary(prop, propertyIndex) {
+          return {
+            propertyIndex: propertyIndex,
+            displayName: prop && prop.displayName !== undefined ? String(prop.displayName) : "",
+            matchName: prop && prop.matchName !== undefined ? String(prop.matchName) : null
+          };
+        }
+
+        function __availableComponents(clipToInspect) {
+          var components = [];
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          for (var ci = 0; ci < componentCount; ci++) {
+            components.push(__componentSummary(clipToInspect.components[ci], ci));
+          }
+          return components;
+        }
+
+        function __availableProperties(component) {
+          var properties = [];
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          for (var pi = 0; pi < propertyCount; pi++) {
+            properties.push(__propertySummary(component.properties[pi], pi));
+          }
+          return properties;
+        }
+
+        function __findComponent(clipToInspect, componentSelectors) {
+          var componentCount = clipToInspect.components && clipToInspect.components.numItems !== undefined ? clipToInspect.components.numItems : 0;
+          if (componentSelectors.componentIndex !== null && componentSelectors.componentIndex !== undefined) {
+            var requestedComponentIndex = Number(componentSelectors.componentIndex);
+            if (requestedComponentIndex >= 0 && requestedComponentIndex < componentCount) {
+              return { component: clipToInspect.components[requestedComponentIndex], componentIndex: requestedComponentIndex, strategy: "componentIndex" };
+            }
+            return { error: "componentIndex out of range", availableComponents: __availableComponents(clipToInspect) };
+          }
+          for (var ci = 0; ci < componentCount; ci++) {
+            var component = clipToInspect.components[ci];
+            if (componentSelectors.componentMatchName !== null && componentSelectors.componentMatchName !== undefined) {
+              if (__namesEqual(component.matchName, componentSelectors.componentMatchName)) {
+                return { component: component, componentIndex: ci, strategy: "componentMatchName" };
+              }
+            }
+            if (componentSelectors.componentName !== null && componentSelectors.componentName !== undefined) {
+              if (__namesEqual(component.displayName, componentSelectors.componentName) || __namesEqual(component.matchName, componentSelectors.componentName)) {
+                return { component: component, componentIndex: ci, strategy: "componentName" };
+              }
+            }
+          }
+          return { error: "Component not found", availableComponents: __availableComponents(clipToInspect) };
+        }
+
+        function __findEffectProperty(component, propertySelectors) {
+          var propertyCount = component.properties && component.properties.numItems !== undefined ? component.properties.numItems : 0;
+          if (propertySelectors.propertyIndex !== null && propertySelectors.propertyIndex !== undefined) {
+            var requestedPropertyIndex = Number(propertySelectors.propertyIndex);
+            if (requestedPropertyIndex >= 0 && requestedPropertyIndex < propertyCount) {
+              return { property: component.properties[requestedPropertyIndex], propertyIndex: requestedPropertyIndex, strategy: "propertyIndex" };
+            }
+            return { error: "propertyIndex out of range", availableProperties: __availableProperties(component) };
+          }
+          for (var pi = 0; pi < propertyCount; pi++) {
+            var prop = component.properties[pi];
+            if (propertySelectors.propertyMatchName !== null && propertySelectors.propertyMatchName !== undefined) {
+              if (__namesEqual(prop.matchName, propertySelectors.propertyMatchName)) {
+                return { property: prop, propertyIndex: pi, strategy: "propertyMatchName" };
+              }
+            }
+            if (propertySelectors.propertyName !== null && propertySelectors.propertyName !== undefined) {
+              if (__namesEqual(prop.displayName, propertySelectors.propertyName) || __namesEqual(prop.matchName, propertySelectors.propertyName)) {
+                return { property: prop, propertyIndex: pi, strategy: "propertyName" };
+              }
+            }
+          }
+          return { error: "Property not found", availableProperties: __availableProperties(component) };
+        }
+
+        function __timeToSeconds(timeValue) {
+          try {
+            if (typeof timeValue === "number") return timeValue;
+            if (timeValue && typeof timeValue.seconds === "number") return timeValue.seconds;
+            if (timeValue && timeValue.seconds !== undefined && timeValue.seconds !== null) {
+              var parsedSeconds = Number(timeValue.seconds);
+              return isFinite(parsedSeconds) ? parsedSeconds : null;
+            }
+            var parsed = Number(timeValue);
+            return isFinite(parsed) ? parsed : null;
+          } catch (_) {
+            return null;
+          }
+        }
+
+        function __readKeyframes(prop) {
+          var readback = { isTimeVarying: null, keyframes: [], count: 0, error: null };
+          try {
+            readback.isTimeVarying = typeof prop.isTimeVarying === "function" ? prop.isTimeVarying() : null;
+            if (readback.isTimeVarying === false) return readback;
+            if (typeof prop.getKeys !== "function") {
+              readback.error = "getKeys is not available for this property";
+              return readback;
+            }
+            var keys = prop.getKeys();
+            var keyCount = keys && keys.numItems !== undefined ? keys.numItems : (keys && keys.length !== undefined ? keys.length : 0);
+            for (var ki = 0; ki < keyCount; ki++) {
+              var keyTime = keys[ki];
+              var keyValueResult = { available: false, value: null, error: null };
+              try {
+                keyValueResult.value = __serializeEffectValue(prop.getValueAtKey(keyTime));
+                keyValueResult.available = true;
+              } catch (valueAtKeyError) {
+                keyValueResult.error = valueAtKeyError.toString();
+              }
+              readback.keyframes.push({
+                time: __timeToSeconds(keyTime),
+                value: keyValueResult.value,
+                valueAvailable: keyValueResult.available,
+                valueError: keyValueResult.error
+              });
+            }
+            readback.count = readback.keyframes.length;
+          } catch (readError) {
+            readback.error = readError.toString();
+          }
+          return readback;
+        }
+
+        var componentResult = __findComponent(clip, selectors);
+        if (!componentResult.component) {
+          return JSON.stringify({
+            success: false,
+            error: componentResult.error || "Component not found",
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            selectors: selectors,
+            availableComponents: componentResult.availableComponents || []
+          });
+        }
+
+        var propertyResult = __findEffectProperty(componentResult.component, selectors);
+        if (!propertyResult.property) {
+          return JSON.stringify({
+            success: false,
+            error: propertyResult.error || "Property not found",
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            selectors: selectors,
+            availableProperties: propertyResult.availableProperties || []
+          });
+        }
+
+${operationBody}
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+  }
+
+  private async setEffectKeyframes(args: SetEffectKeyframesArgs): Promise<any> {
+    const keyframesJson = literalForExtendScript(args.keyframes);
+    const script = this.buildEffectPropertyLookupScript(args, `
+        var keyframes = ${keyframesJson};
+        var prop = propertyResult.property;
+        if (typeof prop.areKeyframesSupported === "function" && !prop.areKeyframesSupported()) {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: "Property does not support keyframes",
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            property: __propertySummary(prop, propertyResult.propertyIndex),
+            propertyStrategy: propertyResult.strategy
+          });
+        }
+        if (typeof prop.setTimeVarying !== "function" || typeof prop.addKey !== "function" || typeof prop.setValueAtKey !== "function") {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: "Property keyframe write APIs are not available",
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            property: __propertySummary(prop, propertyResult.propertyIndex),
+            propertyStrategy: propertyResult.strategy,
+            areKeyframesSupported: typeof prop.areKeyframesSupported === "function" ? prop.areKeyframesSupported() : null,
+            hasSetTimeVarying: typeof prop.setTimeVarying === "function",
+            hasAddKey: typeof prop.addKey === "function",
+            hasSetValueAtKey: typeof prop.setValueAtKey === "function"
+          });
+        }
+
+        try { prop.setTimeVarying(true); } catch (timeVaryingError) {
+          return JSON.stringify({
+            success: false,
+            supported: true,
+            error: "setTimeVarying threw: " + timeVaryingError.toString(),
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            property: __propertySummary(prop, propertyResult.propertyIndex)
+          });
+        }
+
+        var applied = [];
+        for (var ki = 0; ki < keyframes.length; ki++) {
+          var keyframe = keyframes[ki];
+          var time = keyframe.time;
+          try { prop.addKey(time); } catch (addKeyError) {
+            return JSON.stringify({
+              success: false,
+              supported: true,
+              error: "addKey threw at index " + ki + ": " + addKeyError.toString(),
+              clipId: ${literalForExtendScript(args.clipId)},
+              sequenceId: info.sequenceId,
+              keyframe: keyframe,
+              appliedKeyframes: applied
+            });
+          }
+          try { prop.setValueAtKey(time, keyframe.value, true); } catch (setValueAtKeyError) {
+            return JSON.stringify({
+              success: false,
+              supported: true,
+              error: "setValueAtKey threw at index " + ki + ": " + setValueAtKeyError.toString(),
+              clipId: ${literalForExtendScript(args.clipId)},
+              sequenceId: info.sequenceId,
+              keyframe: keyframe,
+              appliedKeyframes: applied
+            });
+          }
+          applied.push({ time: time, value: keyframe.value });
+        }
+
+        var readback = __readKeyframes(prop);
+        return JSON.stringify({
+          success: true,
+          supported: true,
+          message: "Effect keyframes set",
+          clipId: ${literalForExtendScript(args.clipId)},
+          clipName: clip.name,
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          trackType: info.trackType,
+          trackIndex: info.trackIndex,
+          clipIndex: info.clipIndex,
+          component: __componentSummary(componentResult.component, componentResult.componentIndex),
+          componentStrategy: componentResult.strategy,
+          property: __propertySummary(prop, propertyResult.propertyIndex),
+          propertyStrategy: propertyResult.strategy,
+          keyframeCount: applied.length,
+          keyframes: readback.keyframes.length > 0 ? readback.keyframes : applied,
+          readbackError: readback.error,
+          requestedKeyframes: keyframes
+        });
+    `);
+    return await this.bridge.executeScript(script);
+  }
+
+  private async setKeyframeInterpolation(args: SetKeyframeInterpolationArgs): Promise<any> {
+    const interpolationCode = args.interpolation === 'hold' ? 4 : args.interpolation === 'bezier' ? 1 : 0;
+    const script = this.buildEffectPropertyLookupScript(args, `
+        var time = ${literalForExtendScript(args.time)};
+        var interpolationName = ${literalForExtendScript(args.interpolation)};
+        var interpolationCode = ${interpolationCode};
+        var prop = propertyResult.property;
+        if (typeof prop.setInterpolationTypeAtKey !== "function") {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: "Property does not expose setInterpolationTypeAtKey through ExtendScript",
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            property: __propertySummary(prop, propertyResult.propertyIndex),
+            propertyStrategy: propertyResult.strategy
+          });
+        }
+        try {
+          prop.setInterpolationTypeAtKey(time, interpolationCode);
+        } catch (interpolationError) {
+          return JSON.stringify({
+            success: false,
+            supported: true,
+            error: "setInterpolationTypeAtKey threw: " + interpolationError.toString(),
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            property: __propertySummary(prop, propertyResult.propertyIndex),
+            time: time,
+            interpolation: interpolationName,
+            interpolationCode: interpolationCode
+          });
+        }
+        return JSON.stringify({
+          success: true,
+          supported: true,
+          message: "Keyframe interpolation set",
+          clipId: ${literalForExtendScript(args.clipId)},
+          clipName: clip.name,
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          component: __componentSummary(componentResult.component, componentResult.componentIndex),
+          componentStrategy: componentResult.strategy,
+          property: __propertySummary(prop, propertyResult.propertyIndex),
+          propertyStrategy: propertyResult.strategy,
+          time: time,
+          interpolation: interpolationName,
+          interpolationCode: interpolationCode
+        });
+    `);
+    return await this.bridge.executeScript(script);
+  }
+
+  private async getEffectValueAtTime(args: GetEffectValueAtTimeArgs): Promise<any> {
+    const script = this.buildEffectPropertyLookupScript(args, `
+        var time = ${literalForExtendScript(args.time)};
+        var prop = propertyResult.property;
+        if (typeof prop.getValueAtTime !== "function") {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            error: "Property does not expose getValueAtTime through ExtendScript",
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            componentStrategy: componentResult.strategy,
+            property: __propertySummary(prop, propertyResult.propertyIndex),
+            propertyStrategy: propertyResult.strategy
+          });
+        }
+        var rawValue;
+        try {
+          rawValue = prop.getValueAtTime(time);
+        } catch (valueAtTimeError) {
+          return JSON.stringify({
+            success: false,
+            supported: true,
+            error: "getValueAtTime threw: " + valueAtTimeError.toString(),
+            clipId: ${literalForExtendScript(args.clipId)},
+            sequenceId: info.sequenceId,
+            component: __componentSummary(componentResult.component, componentResult.componentIndex),
+            property: __propertySummary(prop, propertyResult.propertyIndex),
+            time: time
+          });
+        }
+        return JSON.stringify({
+          success: true,
+          supported: true,
+          clipId: ${literalForExtendScript(args.clipId)},
+          clipName: clip.name,
+          sequenceId: info.sequenceId,
+          sequenceName: info.sequenceName,
+          component: __componentSummary(componentResult.component, componentResult.componentIndex),
+          componentStrategy: componentResult.strategy,
+          property: __propertySummary(prop, propertyResult.propertyIndex),
+          propertyStrategy: propertyResult.strategy,
+          time: time,
+          value: __serializeEffectValue(rawValue),
+          valueType: rawValue === null ? "null" : typeof rawValue,
+          staticValue: __safeGetPropertyValue(prop)
+        });
+    `);
+    return await this.bridge.executeScript(script);
+  }
+
   // Keyframe Implementation
   private async addKeyframe(clipId: string, componentName: string, paramName: string, time: number, value: number): Promise<any> {
     const script = `
@@ -12767,19 +13988,60 @@ export class PremiereProTools {
     const actionVal = action || 'CreateMarkers';
     const audioVal = applyCutsToLinkedAudio !== false;
     const sensitivityVal = sensitivity || 'Medium';
+    const sequenceIdLiteral = literalForExtendScript(sequenceId);
+    const actionLiteral = literalForExtendScript(actionVal);
+    const sensitivityLiteral = literalForExtendScript(sensitivityVal);
+    const sequenceNotFoundLiteral = literalForExtendScript(`Sequence not found by id: ${sequenceId}`);
+    const noSelectionLiteral = literalForExtendScript(`Scene edit detection requires selected clips; no clips are selected in sequence ${sequenceId}`);
     const script = `
+      var mutationAttempted = false;
       try {
-        var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
-        sequence.performSceneEditDetectionOnSelection(${JSON.stringify(actionVal)}, ${audioVal}, ${JSON.stringify(sensitivityVal)});
+        var sequence = __findSequence(${sequenceIdLiteral});
+        if (!sequence) return JSON.stringify({ success: false, supported: true, mutationAttempted: false, error: ${sequenceNotFoundLiteral} });
+        app.project.activeSequence = sequence;
+        if (typeof sequence.getSelection !== "function") {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            mutationAttempted: false,
+            error: "Premiere host does not expose sequence.getSelection; cannot safely preflight scene edit detection"
+          });
+        }
+        if (typeof sequence.performSceneEditDetectionOnSelection !== "function") {
+          return JSON.stringify({
+            success: false,
+            supported: false,
+            mutationAttempted: false,
+            error: "Premiere host does not expose sequence.performSceneEditDetectionOnSelection"
+          });
+        }
+        var selection = sequence.getSelection();
+        var selectedClipCount = selection && selection.length !== undefined ? selection.length : 0;
+        if (selectedClipCount < 1) {
+          return JSON.stringify({
+            success: false,
+            supported: true,
+            blocked: true,
+            mutationAttempted: false,
+            selectedClipCount: selectedClipCount,
+            action: ${actionLiteral},
+            sensitivity: ${sensitivityLiteral},
+            error: ${noSelectionLiteral}
+          });
+        }
+        mutationAttempted = true;
+        sequence.performSceneEditDetectionOnSelection(${actionLiteral}, ${audioVal}, ${sensitivityLiteral});
         return JSON.stringify({
           success: true,
+          supported: true,
+          mutationAttempted: true,
+          selectedClipCount: selectedClipCount,
           message: "Scene edit detection performed",
-          action: ${JSON.stringify(actionVal)},
-          sensitivity: ${JSON.stringify(sensitivityVal)}
+          action: ${actionLiteral},
+          sensitivity: ${sensitivityLiteral}
         });
       } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
+        return JSON.stringify({ success: false, supported: true, mutationAttempted: mutationAttempted, error: e.toString() });
       }
     `;
     return await this.bridge.executeScript(script);
@@ -13083,21 +14345,89 @@ export class PremiereProTools {
 
   // Export as FCP XML Implementation
   private async exportAsFcpXml(sequenceId: string, outputPath: string): Promise<any> {
-    const script = `
-      try {
-        var seq = __findSequence(${JSON.stringify(sequenceId)});
-        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
-        seq.exportAsFinalCutProXML(${JSON.stringify(outputPath)});
-        return JSON.stringify({
-          success: true,
-          message: "Exported as Final Cut Pro XML",
-          sequenceId: ${JSON.stringify(sequenceId)},
-          outputPath: ${JSON.stringify(outputPath)}
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
+    const payload = { sequenceId, outputPath };
+    const script = buildPremiereScript(`
+      var payload = ${literalForExtendScript(payload)};
+      var seq = __findSequence(payload.sequenceId);
+      if (!seq) {
+        return {
+          success: false,
+          exported: false,
+          error: "Sequence not found",
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath
+        };
       }
-    `;
+
+      var outputFile = File(payload.outputPath);
+      var preExportExists = outputFile.exists;
+      var preExportLength = preExportExists ? outputFile.length : null;
+      var preExportModified = null;
+      if (preExportExists) {
+        try { preExportModified = outputFile.modified ? Number(outputFile.modified.getTime()) : null; } catch (ePre) {}
+      }
+
+      try {
+        seq.exportAsFinalCutProXML(payload.outputPath);
+      } catch (exportError) {
+        return {
+          success: false,
+          exported: false,
+          error: "exportAsFinalCutProXML threw: " + exportError.toString(),
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath,
+          preExportExists: preExportExists,
+          preExportLength: preExportLength,
+          preExportModified: preExportModified
+        };
+      }
+
+      outputFile = File(payload.outputPath);
+      var outputExists = outputFile.exists;
+      var sizeBytes = outputExists ? outputFile.length : 0;
+      var postExportModified = null;
+      if (outputExists) {
+        try { postExportModified = outputFile.modified ? Number(outputFile.modified.getTime()) : null; } catch (ePost) {}
+      }
+      var modifiedAfterExport = !preExportExists || (preExportModified !== null && postExportModified !== null && postExportModified > preExportModified);
+      var sizeChangedAfterExport = !preExportExists || sizeBytes !== preExportLength;
+      var verified = outputExists && sizeBytes > 0 && (!preExportExists || modifiedAfterExport || sizeChangedAfterExport);
+      var staleExistingFile = outputExists && preExportExists && !modifiedAfterExport && !sizeChangedAfterExport;
+
+      if (!verified) {
+        return {
+          success: false,
+          exported: false,
+          error: staleExistingFile
+            ? "exportAsFinalCutProXML returned but output path was not modified; refusing to treat stale existing FCP XML as success"
+            : "exportAsFinalCutProXML returned but no non-empty XML file was created",
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath,
+          outputExists: outputExists,
+          sizeBytes: sizeBytes,
+          preExportExists: preExportExists,
+          preExportLength: preExportLength,
+          preExportModified: preExportModified,
+          postExportModified: postExportModified,
+          staleExistingFile: staleExistingFile
+        };
+      }
+
+      return {
+        success: verified,
+        exported: true,
+        message: "Exported as Final Cut Pro XML",
+        sequenceId: payload.sequenceId,
+        outputPath: payload.outputPath,
+        outputExists: outputExists,
+        sizeBytes: sizeBytes,
+        preExportExists: preExportExists,
+        preExportLength: preExportLength,
+        preExportModified: preExportModified,
+        postExportModified: postExportModified,
+        staleExistingFile: staleExistingFile
+      };
+    `, '__exportAsFcpXml');
     return await this.bridge.executeScript(script);
   }
 
@@ -13163,25 +14493,107 @@ export class PremiereProTools {
 
   // Export AAF Implementation
   private async exportAaf(sequenceId: string, outputPath: string, mixDownVideo?: boolean, explodeToMono?: boolean, sampleRate?: number, bitsPerSample?: number): Promise<any> {
-    const mixDown = mixDownVideo !== false ? 1 : 0;
-    const explode = explodeToMono ? 1 : 0;
-    const rate = sampleRate || 48000;
-    const bits = bitsPerSample || 16;
-    const script = `
-      try {
-        var seq = __findSequence(${JSON.stringify(sequenceId)});
-        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
-        app.project.exportAAF(seq, ${JSON.stringify(outputPath)}, ${mixDown}, ${explode}, ${rate}, ${bits}, 0, 0, 1, 0);
-        return JSON.stringify({
-          success: true,
-          message: "Exported as AAF",
-          sequenceId: ${JSON.stringify(sequenceId)},
-          outputPath: ${JSON.stringify(outputPath)}
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
+    const payload = {
+      sequenceId,
+      outputPath,
+      mixDownVideo: mixDownVideo !== false,
+      explodeToMono: Boolean(explodeToMono),
+      sampleRate: sampleRate || 48000,
+      bitsPerSample: bitsPerSample || 16
+    };
+    const script = buildPremiereScript(`
+      var payload = ${literalForExtendScript(payload)};
+      var seq = __findSequence(payload.sequenceId);
+      if (!seq) {
+        return {
+          success: false,
+          exported: false,
+          error: "Sequence not found",
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath
+        };
       }
-    `;
+
+      if (!app.project || typeof app.project.exportAAF !== "function") {
+        return {
+          success: false,
+          supported: false,
+          exported: false,
+          error: "Premiere host does not expose app.project.exportAAF",
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath
+        };
+      }
+
+      var outputFile = File(payload.outputPath);
+      var preExportExists = outputFile.exists;
+      var preExportLength = preExportExists ? outputFile.length : null;
+      var preExportModified = null;
+      if (preExportExists) {
+        try { preExportModified = outputFile.modified ? Number(outputFile.modified.getTime()) : null; } catch (ePre) {}
+      }
+
+      try {
+        app.project.exportAAF(seq, payload.outputPath, payload.mixDownVideo ? 1 : 0, payload.explodeToMono ? 1 : 0, payload.sampleRate, payload.bitsPerSample, 0, 0, 1, 0);
+      } catch (exportError) {
+        return {
+          success: false,
+          exported: false,
+          error: "exportAAF threw: " + exportError.toString(),
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath,
+          preExportExists: preExportExists,
+          preExportLength: preExportLength,
+          preExportModified: preExportModified
+        };
+      }
+
+      outputFile = File(payload.outputPath);
+      var outputExists = outputFile.exists;
+      var sizeBytes = outputExists ? outputFile.length : 0;
+      var postExportModified = null;
+      if (outputExists) {
+        try { postExportModified = outputFile.modified ? Number(outputFile.modified.getTime()) : null; } catch (ePost) {}
+      }
+      var modifiedAfterExport = !preExportExists || (preExportModified !== null && postExportModified !== null && postExportModified > preExportModified);
+      var sizeChangedAfterExport = !preExportExists || sizeBytes !== preExportLength;
+      var verified = outputExists && sizeBytes > 0 && (!preExportExists || modifiedAfterExport || sizeChangedAfterExport);
+      var staleExistingFile = outputExists && preExportExists && !modifiedAfterExport && !sizeChangedAfterExport;
+
+      if (!verified) {
+        return {
+          success: false,
+          exported: false,
+          error: staleExistingFile
+            ? "exportAAF returned but output path was not modified; refusing to treat stale existing AAF as success"
+            : "exportAAF returned but no non-empty AAF file was created",
+          sequenceId: payload.sequenceId,
+          outputPath: payload.outputPath,
+          outputExists: outputExists,
+          sizeBytes: sizeBytes,
+          preExportExists: preExportExists,
+          preExportLength: preExportLength,
+          preExportModified: preExportModified,
+          postExportModified: postExportModified,
+          staleExistingFile: staleExistingFile
+        };
+      }
+
+      return {
+        success: verified,
+        exported: true,
+        message: "Exported as AAF",
+        sequenceId: payload.sequenceId,
+        outputPath: payload.outputPath,
+        outputExists: outputExists,
+        sizeBytes: sizeBytes,
+        preExportExists: preExportExists,
+        preExportLength: preExportLength,
+        preExportModified: preExportModified,
+        postExportModified: postExportModified,
+        staleExistingFile: staleExistingFile
+      };
+    `, '__exportAaf');
     return await this.bridge.executeScript(script);
   }
 

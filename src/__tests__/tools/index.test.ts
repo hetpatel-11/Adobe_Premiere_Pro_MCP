@@ -1345,9 +1345,40 @@ describe('PremiereProTools', () => {
       expect(script).toContain('__findClip("clip-\\"quote", "seq-\\"quote")');
       expect(script).toContain('"Motion\\"; MALICIOUS(); //"');
       expect(script).toContain('"Scale\\"; MALICIOUS(); //"');
-    });
+      });
 
-    it('sets clip opacity through the reviewed effect parameter setter', async () => {
+      it('escapes line-separator characters in effect and batch property script literals', async () => {
+      const hostile = 'clip-\u2028-line-\u2029-end';
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('set_effect_parameter', {
+        clipId: hostile,
+        sequenceId: hostile,
+        componentName: `Motion-${hostile}`,
+        propertyName: `Scale-${hostile}`,
+        value: `value-${hostile}`
+      });
+      let script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).not.toContain('\u2028');
+      expect(script).not.toContain('\u2029');
+      expect(script).toContain('\\u2028');
+      expect(script).toContain('\\u2029');
+
+      jest.clearAllMocks();
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('batch_set_clip_properties', {
+        clipId: hostile,
+        sequenceId: hostile,
+        properties: { position: { x: 0.5, y: 0.5 } }
+      });
+      script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).not.toContain('\u2028');
+      expect(script).not.toContain('\u2029');
+      expect(script).toContain('\\u2028');
+      expect(script).toContain('\\u2029');
+      });
+
+      it('sets clip opacity through the reviewed effect parameter setter', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
         valueBefore: 100,
@@ -3054,7 +3085,7 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
       const script = mockBridge.executeScript.mock.calls[0][0];
       expect(script).toContain('qeSequence[methodName](String(timeValue), exportBasePath)');
-      expect(script).toContain('File(actualOutputPath).exists');
+      expect(script).toContain('exportedFile.exists');
       expect(script).toContain('requestedOutputPath');
       expect(script).toContain('exportSignature');
       expect(script).not.toContain('tryExport(timeNumber,');
@@ -3167,6 +3198,124 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/app.encoder not available/);
+    });
+  });
+
+  describe('live-smoke regression fixes', () => {
+    it('deletes markers by Marker object, not numeric index, and respects sequenceId', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, message: 'Marker deleted successfully' });
+
+      const result = await tools.executeTool('delete_marker', {
+        sequenceId: 'seq-marker',
+        markerId: 'marker-guid',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('var sequence = __findSequence("seq-marker");');
+      expect(script).toContain('sequence.markers.deleteMarker(marker);');
+      expect(script).not.toContain('sequence.markers.deleteMarker(i);');
+      expect(script).toContain('postconditionVerified');
+    });
+
+    it('avoids ExtendScript Date.toISOString when scanning conform media metadata', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, mutationPlanned: false, items: [] });
+
+      const result = await tools.executeTool('scan_conform_media_metadata', {
+        projectItemIds: ['item-1'],
+        includeOffline: false,
+        includeSequences: false,
+        includeXmp: false,
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('function __isoTimestamp');
+      expect(script).toContain('scannedAt: __isoTimestamp()');
+      expect(script).not.toContain('new Date().toISOString()');
+    });
+
+    it('escapes conform scan payload strings before embedding them in ExtendScript', async () => {
+      const hostile = 'field-\u2028-line-\u2029-"quoted"';
+      mockBridge.executeScript.mockResolvedValue({ success: true, mutationPlanned: false, items: [] });
+
+      await tools.executeTool('scan_conform_media_metadata', {
+        projectItemIds: [hostile],
+        mediaPaths: [`/tmp/${hostile}.mov`],
+        binId: hostile,
+        metadataFields: [hostile],
+        includeOffline: false,
+        includeSequences: false,
+        includeXmp: false,
+      });
+
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).not.toContain('\u2028');
+      expect(script).not.toContain('\u2029');
+      expect(script).toContain('\\u2028');
+      expect(script).toContain('\\u2029');
+      expect(script).toContain('var payload = {');
+    });
+
+    it('preflights scene edit detection before invoking the risky host API', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: false,
+        supported: true,
+        blocked: true,
+        mutationAttempted: false,
+        selectedClipCount: 0,
+        error: 'Scene edit detection requires selected clips',
+      });
+
+      const result = await tools.executeTool('detect_scene_edits', {
+        sequenceId: 'seq-scene',
+        action: 'CreateMarkers',
+        applyCutsToLinkedAudio: false,
+        sensitivity: 'Low',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.mutationAttempted).toBe(false);
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('app.project.activeSequence = sequence;');
+      expect(script).toContain('typeof sequence.performSceneEditDetectionOnSelection');
+      expect(script).toContain('sequence.getSelection()');
+      expect(script).toContain('mutationAttempted: false');
+      expect(script.indexOf('typeof sequence.performSceneEditDetectionOnSelection')).toBeLessThan(script.indexOf('sequence.getSelection()'));
+      expect(script.indexOf('sequence.getSelection()')).toBeLessThan(script.indexOf('sequence.performSceneEditDetectionOnSelection('));
+    });
+
+    it('escapes sequence IDs in marker deletion and scene-edit preflight error literals', async () => {
+      const hostileSequenceId = 'seq-\u2028-line-\u2029-"quoted"';
+      mockBridge.executeScript.mockResolvedValue({ success: false, error: 'intentional script inspection stop' });
+
+      await tools.executeTool('delete_marker', {
+        sequenceId: hostileSequenceId,
+        markerId: 'marker-guid',
+      });
+      let script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).not.toContain('\u2028');
+      expect(script).not.toContain('\u2029');
+      expect(script).toContain('\\u2028');
+      expect(script).toContain('\\u2029');
+      expect(script).not.toContain(`Sequence not found by id: ${hostileSequenceId}`);
+
+      jest.clearAllMocks();
+      mockBridge.executeScript.mockResolvedValue({ success: false, error: 'intentional script inspection stop' });
+      await tools.executeTool('detect_scene_edits', {
+        sequenceId: hostileSequenceId,
+        action: 'CreateMarkers',
+      });
+      script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).not.toContain('\u2028');
+      expect(script).not.toContain('\u2029');
+      expect(script).toContain('\\u2028');
+      expect(script).toContain('\\u2029');
+      expect(script).not.toContain(`no clips are selected in sequence ${hostileSequenceId}`);
     });
   });
 });

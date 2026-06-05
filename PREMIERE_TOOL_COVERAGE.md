@@ -4,11 +4,13 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current summary
 
-- Runtime MCP tools exposed: **162**
-- Source catalog tools: **162**
+- Runtime MCP tools exposed: **169**
+- Source catalog tools: **169**
 - Runtime/source mismatch: **none**
 - Current implementation path: **Node MCP server → `/tmp/premiere-mcp-bridge` → CEP panel → Premiere ExtendScript/QE DOM**
-- Validation note: this document inventories implemented/exposed tools. A full live sweep should be run in a scratch Premiere project because `scripts/live-tool-sweep.mjs` mutates the active project.
+- Validation note: a full live sweep was run in a disposable Premiere project on 2026-06-04. Result: **169/169 tools recorded**, **137 PASS**, **6 honest unsupported**, **23 expected fixture/API-gated blockers**, **2 persistent failures**, **1 timeout blocker**. Report artifact: `/tmp/premiere-mcp-live-smoke-20260604/reports/all-tools-live-smoke-final.md`.
+- Targeted post-fix smoke on 2026-06-04 verified the three serious findings from that sweep using the built `dist` tool layer against the live CEP bridge: `delete_marker` now deletes by Marker object with postcondition verification, `scan_conform_media_metadata` no longer calls unavailable ExtendScript `Date.toISOString`, and `detect_scene_edits` now performs a no-selection preflight that returns a no-mutation blocked result instead of entering the risky host API. Report artifact: `/tmp/premiere-mcp-live-smoke-20260604/reports/fixed-issues-live-smoke-20260604.md`.
+- Remaining follow-up candidates are now conditional hardening items rather than verified persistent failures: `export_aaf`, `qc_timeline_cleanup` missing cleanupResult handling, `set_keyframe_interpolation`, track lock/delete QE/API paths, and speed/QE helpers.
 
 ## Status key
 
@@ -20,7 +22,7 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 ## Current exposed tools by category
 
-### Discovery Tools (NEW) (14)
+### Discovery Tools (NEW) (25)
 
 - `test_connection` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Fast bridge smoke test that checks Premiere app, active project, CEP panel, temp dir, and round-trip latency. Implementation: `testConnection`; API hints: app.version, app.project.
 - `bridge_health_report` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge and local filesystem checks. Description: Single JSON health report covering MCP server, CEP panel status, temp bridge files, Premiere version, active project, and last command errors. Implementation: `bridgeHealthReport`; API hints: app.version, app.project.
@@ -32,10 +34,26 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `search_project_items` — **BUILT / exposed**. Read-only recursive project item search by name substring, media extension, offline state, color label, and item type with max-result limiting. Implementation: `searchProjectItems`; API hints: app.project, ProjectItem.getMediaPath, ProjectItem.isOffline, ProjectItem.getColorLabel.
 - `list_sequences` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all sequences in the current Premiere Pro project with their IDs, names, and basic properties. Implementation: `listSequences`; API hints: app.project, videoTracks, audioTracks.
 - `list_sequence_tracks` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all video and audio tracks in a specific sequence with their properties and clips. Implementation: `listSequenceTracks`; API hints: app.project, videoTracks, audioTracks.
+- `scan_conform_media_metadata` — **BUILT / exposed**. Read-only conform diagnostic that normalizes project/bin media metadata into reel/timecode/raster records for offline-to-online matching. Implementation: `scanConformMediaMetadata`; API hints: app.project, ProjectItem metadata/XMP.
+- `snapshot_sequence_for_conform` — **BUILT / exposed**. Read-only sequence snapshot for conform planning with frame-based track/clip/effect summaries and explicit track roles. Implementation: `snapshotSequenceForConform`; API hints: Sequence tracks, TrackItem, components.
+- `analyze_stacked_online_conform` — **BUILT / dry-run analyzer**. Matches offline sequence clips to online media and returns confidence, handle diagnostics, and safe upper-track placement plans without mutating Premiere. Implementation: `analyzeStackedOnlineConformTool`; API hints: local conform analyzer.
+- `create_stacked_online_conform_sequence` — **BUILT / guarded execution**. Duplicates the source sequence, validates safe placement plans, creates upper tracks, and stacks online clips above the offline edit; defaults to dry-run. Implementation: `createStackedOnlineConformSequence`; API hints: duplicate sequence, Sequence.insertClip/overwriteClip.
+- `copy_conform_clip_effects` — **BUILT / guarded effect planning**. Copies supported offline clip Motion/Opacity/Crop settings to stacked online clips with raster-aware conversion and unsupported-component reporting; defaults to dry-run. Implementation: `copyConformClipEffects`; API hints: components, setValue.
+- `qc_stacked_online_conform` — **BUILT / guarded QC planning**. Plans or exports paired offline/online QC frames for stacked conform checks with track visibility restoration and output containment. Implementation: `qcStackedOnlineConform`; API hints: exportFrame, track visibility.
+- `scan_timeline_cleanup_state` — **BUILT / read-only audit**. Scans timeline tracks, clips, components, mattes, masks, titles, adjustment layers, nests, and unsupported visual risks before cleanup. Implementation: `scanTimelineCleanupState`; API hints: Sequence tracks, components.
+- `analyze_timeline_cleanup` — **BUILT / dry-run analyzer**. Classifies cleanup actions into safe-remove/safe-reorganize/preserve/manual-review buckets without mutating Premiere. Implementation: `analyzeTimelineCleanupTool`; API hints: local cleanup analyzer.
+- `create_clean_timeline_sequence` — **BUILT / guarded execution**. Duplicates the source sequence before applying only analyzer-approved safe cleanup actions; live execution re-scans/re-analyzes before mutation. Implementation: `createCleanTimelineSequence`; API hints: duplicate sequence, track/clip removal.
+- `qc_timeline_cleanup` — **BUILT / guarded QC planning**. Plans or executes before/after QC frame exports and structural checks for cleanup results with output containment. Implementation: `qcTimelineCleanup`; API hints: exportFrame, local structural QC.
 - `get_project_info` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Gets comprehensive information about the current project including name, path, settings, and status. Implementation: `getProjectInfo`; API hints: app.project.
 - `build_motion_graphics_demo` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Generates clean demo stills, creates a sequence, lays the shots out on the timeline, adds dissolves, and applies subtle scale animation for a polished minimalist ad-style demo. Implementation: `buildMotionGraphicsDemo`; API hints: bridge/helper-specific.
 - `assemble_product_spot` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Builds a production-oriented promo timeline from real media assets. Supports either template defaults or an explicit clipPlan for LLM-directed pacing, transitions, motion, trims, and per-clip effects. Implementation: `assembleProductSpot`; API hints: bridge/helper-specific.
+- `assemble_from_edit_plan` — **BUILT / exposed**. Generic edit-plan assembly wrapper around `assemble_product_spot` with dry-run plan normalization and optional postcondition listing. Implementation: `assembleFromEditPlan`; API hints: local plan normalization plus assemble product spot.
 - `build_brand_spot_from_mogrt_and_assets` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Builds a branded ad assembly from real media assets, supports optional MOGRT overlay, and allows explicit clipPlan control. Default polish is optional so creative direction can come from LLM planning instead of hardcoded passes. Implementation: `buildBrandSpotFromMogrtAndAssets`; API hints: bridge/helper-specific.
+
+### Workspace Utilities (2)
+
+- `get_workspaces` — **CONDITIONAL / capability-honest**. Lists available Premiere workspace layouts when the host exposes `app.getWorkspaces`; otherwise returns `supported:false` diagnostics without mutation. Implementation: `getWorkspaces`; API hints: app.getWorkspaces.
+- `set_workspace` — **CONDITIONAL / capability-honest**. Switches to a named Premiere workspace through `app.setWorkspace`, includes available workspace readback when exposed, and reports `supported:false` if the host lacks the workspace API. Warning: changing workspaces may hide extension panels including the MCP Bridge until reopened. Implementation: `setWorkspace`; API hints: app.getWorkspaces, app.setWorkspace.
 
 ### Source Monitor (7)
 
@@ -83,7 +101,7 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `select_clips_by_color` — **BUILT / exposed**. Selects timeline clips whose source project item has a requested Premiere color label index 0–15; supports explicit sequence/track scope and optional add-to-selection mode. Implementation: `selectClipsByColor`; API hints: ProjectItem.getColorLabel, TrackItem.setSelected.
 - `invert_selection` — **BUILT / exposed**. Inverts clip selection in the active or specified sequence/track scope using `clip.isSelected()` and `clip.setSelected(!selected, true)`. Implementation: `invertSelection`; API hints: TrackItem.isSelected, TrackItem.setSelected.
 
-### Effects and Transitions (12)
+### Effects and Transitions (13)
 
 - `apply_effect` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Applies a visual or audio effect to a specific clip on the timeline. Implementation: `applyEffect`; API hints: app.enableQE, qe.project, components.
 - `list_clip_effects` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists components/effects applied to a timeline clip, including component match names and best-effort property values. Pass sequenceId when the clip ID came from a non-active sequence. Implementation: `listClipEffects`; API hints: app.project, components.
@@ -92,6 +110,7 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `set_clip_blend_mode` — **BUILT / exposed**. Implemented as a dedicated helper over the same reviewed effect-parameter setter. Description: Sets a timeline clip Opacity > Blend Mode numeric value; use `list_clip_effects` first because Premiere exposes duplicate Blend Mode properties. Defaults to component property index 1, verified live against Premiere Pro 2026. Implementation: `setClipBlendMode`; API hints: app.project, components, setValue.
 - `set_clip_scale` — **BUILT / exposed**. Implemented as a dedicated helper over the same reviewed effect-parameter setter. Description: Sets a timeline clip Motion > Scale percentage. Pass sequenceId for clips outside the active sequence. Implementation: `setClipScale`; API hints: app.project, components, setValue.
 - `set_clip_position` — **BUILT / exposed**. Implemented as a dedicated helper over the same reviewed effect-parameter setter. Description: Sets a timeline clip Motion > Position using X/Y values. Premiere may expose these as normalized coordinates; use `list_clip_effects` first to inspect current values. Pass sequenceId for clips outside the active sequence. Implementation: `setClipPosition`; API hints: app.project, components, setValue.
+- `set_clip_scale_mode` — **BUILT / guarded helper**. Computes Motion scaling for fit/fill/stretch from explicit source and sequence dimensions and returns `supported:false` without mutation when dimensions are missing. Implementation: `setClipScaleMode`; API hints: components, Motion Scale/Scale Width/Uniform Scale.
 - `batch_set_clip_properties` — **BUILT / exposed**. Implements batch clip property updates in one bridge roundtrip. Description: Sets opacity, Opacity > Blend Mode, Motion scale/scale width/uniform scale/position/rotation/anchor point/anti-flicker/crop, and optional positive QE speed percent with preflight checks before component mutation. Use `reverse_clip` for reverse playback until reverse-speed behavior is live-verified. Implementation: `batchSetClipProperties`; API hints: app.project, components, setValue, app.enableQE, qe.project.
 - `set_clip_speed_settings` — **BUILT / exposed with conditional QE speed**. Implements verified source timing controls and explicit speed-attempt reporting. Description: Sets source in/out/duration through real Premiere `Time.seconds` objects and optionally attempts positive QE speed percent while returning a truthful success/error object when Premiere rejects the QE call. Invalid source ranges are rejected before mutation; reverse playback should use `reverse_clip` until reverse-speed behavior is live-verified. Live smoke on Premiere Pro 2026 verified source timing changes/restores and observed QE speed rejection as `Illegal Parameter type` without mutating clip speed. Implementation: `setClipSpeedSettings`; API hints: app.project, Time, app.enableQE, qe.project.
 - `set_clip_time_remap_settings` — **CONDITIONAL / honest unsupported on current host**. Exposed as a guarded Time Remapping > Speed helper. Description: attempts static Time Remapping speed values/keyframes only after discovering a real Time Remapping component/property on the clip; if Premiere does not expose that property, returns `supported:false` with component/QE diagnostics and performs no mutation. Live smoke on Premiere Pro 2026 scratch clip found only Opacity and Motion components, so the tool returned `supported:false` instead of pretending time-remap mutation worked. Implementation: `setClipTimeRemapSettings`; API hints: app.project, components, setValue, setTimeVarying, addKey, setValueAtKey, app.enableQE, qe.project.
@@ -114,10 +133,14 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `color_correct` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Applies basic color correction adjustments to a video clip. Implementation: `colorCorrect`; API hints: app.enableQE, qe.project, components.
 - `apply_lut` — **CONDITIONAL / Lumetri/effect path**. Applies LUT through available color/effect controls; depends on LUT path and effect/property availability. Description: Applies a Look-Up Table (LUT) to a clip for color grading. Implementation: `applyLut`; API hints: app.enableQE, qe.project, components.
 
-### Export and Rendering (2)
+### Export and Rendering (6)
 
 - `export_sequence` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Renders and exports a sequence to a video file. This is for creating the final video. Implementation: `exportSequence`; API hints: app.encoder.
-- `export_frame` — **CONDITIONAL / QE API**. Implemented through QE frame-export methods; availability can vary by Premiere/API format support. Description: Exports a single frame from a sequence as an image file. Implementation: `exportFrame`; API hints: app.enableQE, qe.project.
+- `list_export_presets` — **BUILT / local filesystem**. Lists `.epr` export presets from common Adobe/AME folders and optional roots without contacting Premiere, with optional query filtering. Implementation: `listExportPresets`; API hints: local filesystem.
+- `qc_rendered_media` — **BUILT / local QC**. Checks a rendered media file on disk using stat and `ffprobe` when available; reports missing/too-small/duration-mismatch outputs without contacting Premiere. Implementation: `qcRenderedMedia`; API hints: local filesystem, ffprobe.
+- `export_frame` — **CONDITIONAL / QE API**. Implemented through QE frame-export methods; availability can vary by Premiere/API format support. Records pre-export file size/mtime and rejects stale pre-existing outputs that were not modified instead of treating an old frame file as a fresh export. Description: Exports a single frame from a sequence as an image file. Implementation: `exportFrame`; API hints: app.enableQE, qe.project.
+- `capture_frame` — **CONDITIONAL / QE API + guarded local file readback**. Exports a single frame with the existing QE frame-export path, normalizes the expected extension casing to match QE output, verifies the returned path matches the expected export target, rejects stale pre-existing outputs that were not modified, verifies the file exists and is non-empty, reads it back as base64 image data for visual QC, and deletes only internally generated temporary frames by default. Explicit `outputPath` captures are preserved unless `deleteAfterRead=true` and freshness is proven. Implementation: `captureFrame`; API hints: app.enableQE, qe.project.
+- `export_omf` — **CONDITIONAL / host interchange API**. Defaults to dry-run capability diagnostics and only performs live export when `dryRun=false`; validates `.omf` output paths, fails rather than pre-deleting existing files unless `overwrite=true`, records pre-export file size/mtime, rejects stale pre-existing outputs that were not modified, and verifies a non-empty OMF file before reporting success. Hosts that do not expose `app.project.exportOMF` return `supported:false` rather than a fake success. Implementation: `exportOmf`; API hints: app.project.exportOMF.
 
 ### Markers (4)
 
@@ -178,11 +201,14 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `list_available_audio_effects` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all available audio effects in Premiere Pro. Implementation: `listAvailableAudioEffects`; API hints: app.enableQE, qe.project.
 - `list_available_audio_transitions` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Lists all available audio transitions in Premiere Pro. Implementation: `listAvailableAudioTransitions`; API hints: app.enableQE, qe.project.
 
-### Keyframes (3)
+### Keyframes (6)
 
 - `add_keyframe` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Adds a keyframe to a clip component parameter at a specific time. Implementation: `addKeyframe`; API hints: components.
 - `remove_keyframe` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Removes a keyframe from a clip component parameter at a specific time. Implementation: `removeKeyframe`; API hints: components.
 - `get_keyframes` — **BUILT / exposed**. Implemented as an MCP tool backed by the CEP/ExtendScript bridge. Description: Gets all keyframes for a clip component parameter. Implementation: `getKeyframes`; API hints: components.
+- `set_effect_keyframes` — **BUILT / exposed**. Bulk-adds/updates numeric keyframes on an existing effect/component property using `list_clip_effects`-style component/property selectors, validates strictly increasing finite keyframes before bridge mutation, and returns readback diagnostics. Implementation: `setEffectKeyframes`; API hints: components, ComponentParam.setTimeVarying, addKey, setValueAtKey, getKeys.
+- `set_keyframe_interpolation` — **CONDITIONAL / capability-honest**. Sets keyframe interpolation by selector when Premiere exposes `setInterpolationTypeAtKey`; otherwise returns `supported:false` instead of silently ignoring interpolation. Implementation: `setKeyframeInterpolation`; API hints: components, ComponentParam.setInterpolationTypeAtKey.
+- `get_effect_value_at_time` — **CONDITIONAL / capability-honest**. Reads an effect/component property value at a requested time using selector diagnostics and returns `supported:false` when `getValueAtTime` is unavailable. Implementation: `getEffectValueAtTime`; API hints: components, ComponentParam.getValueAtTime.
 
 ### Work Area (2)
 
@@ -216,10 +242,12 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 
 - `detect_scene_edits` — **CONDITIONAL / Premiere API**. Depends on Premiere exposing scene edit detection APIs and selected/valid sequence context. Description: Detects scene changes in selected clips and optionally adds cuts or markers. Implementation: `detectSceneEdits`; API hints: performSceneEditDetection.
 
-### Captions and native transcript workflow (10)
+### Captions and native transcript workflow (12)
 
 - `create_caption_track` — **CONDITIONAL / native caption import**. Creates a Premiere caption track from an already-imported caption/subtitle project item. The bridge script safely embeds identifiers and maps only the public native format keys `subtitle`, `cea-608`, `cea-708`, and `teletext` to `Sequence.CAPTION_FORMAT_*` constants/numeric fallbacks. Practical success still depends on Premiere accepting the caption project item. Implementation: `createCaptionTrack`; API hints: `Sequence.createCaptionTrack`.
 - `read_sequence_captions` — **CONDITIONAL / readable native caption tracks only**. Reads real native caption track collections when Premiere exposes `sequence.getCaptionTracks()` or `sequence.captionTracks`; reports `supported:false` only when no readable caption-track API is exposed, and reports `supported:true` with zero captions when an exposed collection is empty. It never fabricates captions from ordinary video clip names. Implementation: `readSequenceCaptions`; API hints: `sequence.getCaptionTracks`, `sequence.captionTracks`.
+- `remove_caption_tracks` — **CONDITIONAL / native caption cleanup**. Removes caption tracks only when Premiere exposes public caption-track removal APIs; defaults to dry-run diagnostics and does not fake removal. Implementation: `removeCaptionTracks`; API hints: `sequence.getCaptionTracks`, caption track remove/delete APIs when available.
+- `duplicate_sequence_without_captions` — **CONDITIONAL / non-destructive caption cleanup**. Duplicates a sequence and then removes native caption tracks from the duplicate only when public removal APIs are available; defaults to dry-run. Implementation: `duplicateSequenceWithoutCaptions`; API hints: duplicate sequence plus caption-track cleanup.
 - `probe_native_transcription_capabilities` — **BUILT / read-only diagnostic**. Inspects app/project/sequence surfaces for diagnostic native Adobe transcript/caption/speech-analysis indicators and does not trigger the Premiere Speech to Text UI. Implementation: `probeNativeTranscriptionCapabilities`; API hints: introspection only.
 - `generate_sequence_transcript` — **UNSUPPORTED / honest native diagnostic**. Does not invoke speculative or private transcription methods. It returns `supported:false` with diagnostics because Premiere's Transcribe Sequence UI is not publicly scriptable through the live-verified MCP/ExtendScript surface. Implementation: `generateSequenceTranscript`; API hints: diagnostic introspection only.
 - `generate_captions_from_premiere_transcript` — **UNSUPPORTED / honest native diagnostic**. Does not invoke speculative or private caption-generation methods. It returns `supported:false` with diagnostics and does not fake caption generation. Implementation: `generateCaptionsFromPremiereTranscript`; API hints: diagnostic introspection only.
@@ -320,8 +348,6 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `ame_queue_status` — **FUTURE**. Real Adobe Media Encoder queue status/progress.
 - `ame_cancel_job` — **FUTURE**. Cancel queued/running AME job.
 - `ame_pause_resume` — **FUTURE**. Pause/resume AME queue.
-- `export_preset_catalog` — **FUTURE**. List available export presets and validate preset paths.
-- `qc_export_with_ffprobe` — **FUTURE**. Run ffprobe/mediainfo QC after export and return duration, codec, dimensions, audio layout, bitrate.
 - `package_deliverable` — **FUTURE**. Export, QC, checksum, thumbnail/contact sheet, and package deliverables.
 - `upload_delivery_link` — **FUTURE**. Upload final deliverable to Google Drive and return share link.
 
@@ -348,11 +374,17 @@ Generated from the local Adobe Premiere Pro MCP repo/runtime inventory.
 - `eval_code` — **FUTURE**. Optional disabled-by-default developer tool for raw ExtendScript/UXP eval in trusted local debugging only.
 - `batch_script_transaction` — **FUTURE**. Run multiple operations with preflight and rollback/undo guidance.
 
+## Phase 8 third-party utility review notes
+
+- **Added:** `get_workspaces` and `set_workspace` as the only lower-priority Phase 8 additions because they are non-destructive, host-API-gated, and can return honest `supported:false` diagnostics.
+- **Already covered locally:** timeline add/remove/move/trim/split/duplicate, playhead/work-area/sequence in-out, source-monitor edit helpers, effects/transitions enumeration/application, captions sidecar utilities, markers, track targeting/selection, and audio level/keyframe helpers.
+- **Skipped/deferred:** playback controls and clipboard-style effect copy tools from the third-party repo because they depend on UI focus or broad QE mutations without a dry-run/duplication safety model. Revisit only if a future workflow needs them and can define deterministic readback/QC gates.
+
 ## Recommended build priorities
 
 - **P0:** `test_connection`, `bridge_health_report`, scratch-project `live_tool_sweep_safe` — These reduce setup/support friction immediately.
 - **P1:** `list_clip_effects`, `set_effect_parameter`, dedicated clip property helpers, `batch_set_clip_properties`, `set_clip_speed_settings`, `set_clip_time_remap_settings` — These make current editing operations much more controllable without huge new architecture; Time Remapping remains conditional because Premiere Pro 2026 did not expose a scriptable Time Remapping component on the scratch clip.
-- **P1:** `qc_export_with_ffprobe`, `package_deliverable`, `upload_delivery_link` — Matches real post/delivery workflows and can be implemented mostly outside Premiere.
+- **P1:** `package_deliverable`, `upload_delivery_link`, and richer delivery packaging around the existing `qc_rendered_media`/`list_export_presets` helpers — Matches real post/delivery workflows and can be implemented mostly outside Premiere.
 - **P2:** MOGRT probing/property tools and external graphic overlay workflow — Best path around weak native title scripting.
 - **P2:** Transcript/caption/search tools — High leverage for editorial note finding and social/commercial cuts.
 - **P3:** AME queue telemetry, multicam, nested sequence automation, deep Lumetri/Essential Sound — High value but likely blocked by Adobe API limitations or requires UXP/UI automation research.

@@ -27,12 +27,12 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.5.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "fs-extra": "^11.2.0",
     "node-fetch": "^3.3.2",
     "path": "^0.12.7",
-    "uuid": "^10.0.0",
-    "ws": "^8.18.0",
+    "uuid": "^11.1.1",
+    "ws": "^8.21.0",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.22.0"
   },

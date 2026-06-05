@@ -1,19 +1,25 @@
 const EXTENDSCRIPT_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+function escapeScriptLineTerminators(value: string): string {
+  return value
+    .replace(new RegExp(String.fromCharCode(0x2028), 'g'), '\\u2028')
+    .replace(new RegExp(String.fromCharCode(0x2029), 'g'), '\\u2029');
+}
+
 /**
  * Escape a string so it can be embedded inside a quoted ExtendScript string.
  * The return value is intentionally not wrapped in quotes.
  */
 export function escapeForExtendScript(value: string): string {
-  return String(value)
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/'/g, "\\'")
-    .replace(/\r/g, '\\r')
-    .replace(/\n/g, '\\n')
-    .replace(/\t/g, '\\t')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+  return escapeScriptLineTerminators(
+    String(value)
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/'/g, "\\'")
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\t/g, '\\t')
+  );
 }
 
 /**
@@ -38,9 +44,7 @@ export function literalForExtendScript(value: unknown): string {
     return 'undefined';
   }
 
-  return literal
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+  return escapeScriptLineTerminators(literal);
 }
 
 /**
