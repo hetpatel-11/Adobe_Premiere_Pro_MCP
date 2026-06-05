@@ -8,10 +8,15 @@
 import { Logger } from '../utils/logger.js';
 import { ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 import type { PremiereProBridgeDiagnostics, PremiereProTransport } from './types.js';
+
+const UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS = new Set([
+  '.ass',
+  '.ssa'
+]);
 
 const EXTENDSCRIPT_HELPERS = `
 function __mcpEscapeString(value) {
@@ -434,6 +439,16 @@ export class PremiereProBridge implements PremiereProTransport {
 
     // Use the normalized path from validation (don't double-escape)
     const safePath = pathValidation.normalized || filePath;
+    const ext = extname(safePath).toLowerCase();
+    if (UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS.has(ext)) {
+      return {
+        success: false,
+        error: `Unsupported import format "${ext}". Premiere Pro can show a blocking "File format not supported" modal for this file type, so the MCP server refused to import it before calling Premiere. Convert it to .srt or another Premiere-supported media format first.`,
+        filePath: safePath,
+        blockedBeforePremiere: true
+      } as any;
+    }
+
     const script = `
       try {
         function __walkItems(parent, output) {

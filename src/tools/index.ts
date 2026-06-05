@@ -1443,6 +1443,19 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'crop_clip',
+        description: 'Crops a timeline clip using Premiere Pro\'s built-in Crop video effect. Reuses an existing Crop effect on the clip when present; otherwise adds one. Omitted parameters keep their current/default values.',
+        inputSchema: z.object({
+          clipId: z.string().describe('The ID of the timeline video clip to crop'),
+          left: z.number().min(0).max(100).optional().describe('Percent to crop from the left edge (0-100)'),
+          right: z.number().min(0).max(100).optional().describe('Percent to crop from the right edge (0-100)'),
+          top: z.number().min(0).max(100).optional().describe('Percent to crop from the top edge (0-100)'),
+          bottom: z.number().min(0).max(100).optional().describe('Percent to crop from the bottom edge (0-100)'),
+          zoom: z.boolean().optional().describe('Crop effect Zoom toggle: scales the cropped image back up to fill the frame'),
+          edgeFeather: z.number().min(0).optional().describe('Edge Feather amount in pixels')
+        })
+      },
+      {
         name: 'list_clip_effects',
         description: 'Lists components/effects applied to a timeline clip, including component match names and best-effort property values. Pass sequenceId when the clip ID came from a non-active sequence.',
         inputSchema: z.object({
@@ -1749,11 +1762,11 @@ export class PremiereProTools {
       },
       {
         name: 'delete_track',
-        description: 'Deletes a track from the sequence.',
+        description: 'Deletes a video or audio track from the sequence. Caption track deletion is accepted by the schema but returns an explicit unsupported result because Premiere Pro exposes no caption-track delete/read API to scripting.',
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence'),
-          trackType: z.enum(['video', 'audio']).describe('Type of track'),
-          trackIndex: z.number().describe('The index of the track to delete')
+          trackType: z.enum(['video', 'audio', 'caption']).describe('Type of track'),
+          trackIndex: z.number().int().min(0).describe('The index of the track to delete')
         })
       },
       {
@@ -2236,7 +2249,7 @@ export class PremiereProTools {
       },
       {
         name: 'create_caption_track',
-        description: 'Creates a caption track from a caption/subtitle file.',
+        description: 'Creates a caption track on a sequence from an imported caption/subtitle file (e.g. an .srt imported via import_media). Pass the SRT project item ID directly.',
         inputSchema: z.object({
           sequenceId: z.string().min(1).describe('The ID of the sequence'),
           projectItemId: z.string().min(1).describe('The ID of the caption file project item'),
@@ -2626,6 +2639,15 @@ export class PremiereProTools {
         // Effects and Transitions
         case 'apply_effect':
           return await this.applyEffect(args.clipId, args.effectName, args.parameters);
+        case 'crop_clip':
+          return await this.cropClip(args.clipId, {
+            left: args.left,
+            right: args.right,
+            top: args.top,
+            bottom: args.bottom,
+            zoom: args.zoom,
+            edgeFeather: args.edgeFeather
+          });
         case 'list_clip_effects':
           return await this.listClipEffects(args.clipId, args.sequenceId);
         case 'set_effect_parameter':
@@ -7668,10 +7690,15 @@ export class PremiereProTools {
         ...result
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const maybeModalTimeout = /timeout|timed out/i.test(message);
       return {
         success: false,
-        error: `Failed to import media: ${error instanceof Error ? error.message : String(error)}`,
-        filePath: filePath
+        error: `Failed to import media: ${message}`,
+        filePath: filePath,
+        ...(maybeModalTimeout ? {
+          warning: 'Premiere may be showing a blocking modal dialog, such as "File format not supported". Dismiss the dialog in Premiere, then retry. For subtitle files, convert unsupported formats like .ass/.ssa to .srt before importing.'
+        } : {})
       };
     }
   }
@@ -8090,6 +8117,8 @@ export class PremiereProTools {
             message: 'This Premiere host did not expose readable native caption tracks through ExtendScript. Use exported SRT/VTT sidecars with export_captions/qc_captions/search_captions, or generate captions manually in Premiere and export a sidecar.',
             sequenceId: sequence.sequenceID,
             sequenceName: sequence.name,
+            captionReadSupported: false,
+            note: 'Premiere Pro did not expose sequence.getCaptionTracks or sequence.captionTracks, so native caption cue text/timing cannot be read from this host via ExtendScript. trackCount:0 does NOT prove the sequence has no captions; parse the source SRT/VTT sidecar when cue data is required.',
             trackCount: 0,
             captionCount: 0,
             captions: []
@@ -8103,6 +8132,8 @@ export class PremiereProTools {
             sequenceId: sequence.sequenceID,
             sequenceName: sequence.name,
             trackSource: trackSource,
+            captionReadSupported: true,
+            note: '',
             trackCount: 0,
             captionCount: 0,
             captions: []
@@ -8151,9 +8182,12 @@ export class PremiereProTools {
           success: true,
           sequenceId: sequence.sequenceID,
           sequenceName: sequence.name,
+          trackSource: trackSource,
+          captionReadSupported: true,
           trackCount: trackCount,
           captionCount: output.length,
-          captions: output
+          captions: output,
+          note: ''
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -10054,29 +10088,65 @@ export class PremiereProTools {
   }
 
   private async applyEffect(clipId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
-    const paramJson = JSON.stringify(parameters || {});
+    const paramJson = literalForExtendScript(parameters || {});
+    const clipIdLiteral = literalForExtendScript(clipId);
+    const effectNameLiteral = literalForExtendScript(effectName);
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${clipIdLiteral});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var activeSequence = app.project.activeSequence;
+        if (!activeSequence || String(activeSequence.sequenceID) !== String(info.sequenceId)) {
+          return JSON.stringify({
+            success: false,
+            mutationAttempted: false,
+            error: "apply_effect requires the target clip to be in the active sequence before QE mutation",
+            clipId: ${clipIdLiteral},
+            sequenceId: info.sequenceId || null,
+            activeSequenceId: activeSequence ? String(activeSequence.sequenceID) : null
+          });
+        }
         var clip = info.clip;
         var beforeCount = clip.components.numItems;
         var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence not available" });
         var qeTrack, effect;
         if (info.trackType === 'video') {
           qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-          effect = qe.project.getVideoEffectByName("${effectName}");
+          effect = qe.project.getVideoEffectByName(${effectNameLiteral});
         } else {
           qeTrack = qeSeq.getAudioTrackAt(info.trackIndex);
-          effect = qe.project.getAudioEffectByName("${effectName}");
+          effect = qe.project.getAudioEffectByName(${effectNameLiteral});
         }
-        if (!effect) return JSON.stringify({ success: false, error: "Effect not found: ${effectName}. Use list_available_effects to see available effects." });
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        if (!qeTrack) return JSON.stringify({ success: false, error: "QE track not found for effect application" });
+        if (!effect) return JSON.stringify({ success: false, error: "Effect not found: " + ${effectNameLiteral} + ". Use list_available_effects to see available effects." });
+        function findQeClipByExactStart() {
+          var targetTicks = String(info.clip.start.ticks);
+          for (var qi = 0; qi < qeTrack.numItems; qi++) {
+            var item = qeTrack.getItemAt(qi);
+            if (!item || String(item.type) !== "Clip") continue;
+            var itemTicks = String(item.start.ticks);
+            if (itemTicks === targetTicks) return item;
+          }
+          return null;
+        }
+        var qeClip = findQeClipByExactStart();
+        if (!qeClip) return JSON.stringify({ success: false, mutationAttempted: false, error: "Could not locate exact-start matching QE clip for effect application; mutation was not attempted" });
         if (info.trackType === 'video') { qeClip.addVideoEffect(effect); } else { qeClip.addAudioEffect(effect); }
 
         // Find the newly added component (last in the array)
         var afterCount = clip.components.numItems;
+        if (afterCount <= beforeCount) {
+          return JSON.stringify({
+            success: false,
+            error: "Effect add did not create a new component on the target clip",
+            clipId: ${clipIdLiteral},
+            effectName: ${effectNameLiteral},
+            beforeComponentCount: beforeCount,
+            afterComponentCount: afterCount
+          });
+        }
         var newCompIdx = afterCount - 1;
         var newComp = clip.components[newCompIdx];
 
@@ -10141,21 +10211,207 @@ export class PremiereProTools {
           }
         }
 
+        var failedParams = [];
+        for (var pr = 0; pr < paramResults.length; pr++) {
+          if (!paramResults[pr].ok) failedParams.push(paramResults[pr]);
+        }
+
         return JSON.stringify({
-          success: true,
+          success: failedParams.length === 0,
           message: "Effect applied",
-          clipId: "${clipId}",
-          effectName: "${effectName}",
+          clipId: ${clipIdLiteral},
+          effectName: ${effectNameLiteral},
           addedComponent: {
             displayName: String(newComp.displayName),
             componentIndex: newCompIdx,
             propertyCount: propsDump.length,
             properties: propsDump
           },
-          paramResults: paramResults
+          paramResults: paramResults,
+          error: failedParams.length ? "One or more effect parameters could not be set" : undefined
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async cropClip(clipId: string, options: { left?: number; right?: number; top?: number; bottom?: number; zoom?: boolean; edgeFeather?: number }): Promise<any> {
+    const params: Record<string, any> = {};
+    if (options.left !== undefined) params['Left'] = options.left;
+    if (options.top !== undefined) params['Top'] = options.top;
+    if (options.right !== undefined) params['Right'] = options.right;
+    if (options.bottom !== undefined) params['Bottom'] = options.bottom;
+    if (options.zoom !== undefined) params['Zoom'] = options.zoom;
+    if (options.edgeFeather !== undefined) params['Edge Feather'] = options.edgeFeather;
+
+    const paramJson = literalForExtendScript(params);
+    const clipIdLiteral = literalForExtendScript(clipId);
+    const script = `
+      try {
+        app.enableQE();
+        var info = __findClip(${clipIdLiteral});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        if (info.trackType !== "video") return JSON.stringify({ success: false, error: "crop_clip only supports video clips" });
+        var activeSequence = app.project.activeSequence;
+        if (!activeSequence || String(activeSequence.sequenceID) !== String(info.sequenceId)) {
+          return JSON.stringify({
+            success: false,
+            mutationAttempted: false,
+            error: "crop_clip requires the target clip to be in the active sequence before QE mutation",
+            clipId: ${clipIdLiteral},
+            sequenceId: info.sequenceId || null,
+            activeSequenceId: activeSequence ? String(activeSequence.sequenceID) : null
+          });
+        }
+
+        var clip = info.clip;
+        var cropComp = null;
+        var cropCompIdx = -1;
+
+        function isCropComponent(component) {
+          return String(component.displayName) === "Crop" || String(component.matchName) === "AE.ADBE AECrop";
+        }
+
+        function findCropComponent() {
+          for (var i = clip.components.numItems - 1; i >= 0; i--) {
+            var component = clip.components[i];
+            if (isCropComponent(component)) {
+              cropComp = component;
+              cropCompIdx = i;
+              return true;
+            }
+          }
+          return false;
+        }
+
+        var effectAdded = false;
+        if (!findCropComponent()) {
+          var qeSeq = qe.project.getActiveSequence();
+          if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence not available" });
+          var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+          if (!qeTrack) return JSON.stringify({ success: false, error: "QE video track not found for clip" });
+          var effect = qe.project.getVideoEffectByName("Crop");
+          if (!effect) return JSON.stringify({ success: false, error: "Crop effect not found. Use list_available_effects to inspect installed effects." });
+
+          function findQeClipByExactStart() {
+            var targetTicks = String(info.clip.start.ticks);
+            for (var qi = 0; qi < qeTrack.numItems; qi++) {
+              var item = qeTrack.getItemAt(qi);
+              if (!item || String(item.type) !== "Clip") continue;
+              var itemTicks = String(item.start.ticks);
+              if (itemTicks === targetTicks) return item;
+            }
+            return null;
+          }
+
+          var beforeCount = clip.components.numItems;
+          var qeClip = findQeClipByExactStart();
+          if (!qeClip) return JSON.stringify({ success: false, mutationAttempted: false, error: "Could not locate exact-start matching QE clip for Crop effect; mutation was not attempted" });
+          qeClip.addVideoEffect(effect);
+          if (clip.components.numItems <= beforeCount) {
+            return JSON.stringify({
+              success: false,
+              error: "Crop effect add did not create a new component on the target clip",
+              beforeComponentCount: beforeCount,
+              afterComponentCount: clip.components.numItems
+            });
+          }
+          effectAdded = true;
+          if (!findCropComponent()) {
+            var addedNames = [];
+            for (var ai = beforeCount; ai < clip.components.numItems; ai++) {
+              addedNames.push(String(clip.components[ai].displayName));
+            }
+            return JSON.stringify({
+              success: false,
+              error: "Effect add completed but the new component was not Crop",
+              addedComponents: addedNames
+            });
+          }
+        }
+
+        var requestedParams = ${paramJson};
+        var paramResults = [];
+        function normalize(s) { return String(s).toLowerCase().replace(/[\\s_-]+/g, ''); }
+        for (var pName in requestedParams) {
+          if (requestedParams.hasOwnProperty && !requestedParams.hasOwnProperty(pName)) continue;
+          var requestedVal = requestedParams[pName];
+          var matched = null;
+          for (var k = 0; k < cropComp.properties.numItems; k++) {
+            if (String(cropComp.properties[k].displayName) === pName) {
+              matched = { prop: cropComp.properties[k], strategy: "exact" };
+              break;
+            }
+          }
+          if (!matched) {
+            var nameN = normalize(pName);
+            for (var nk = 0; nk < cropComp.properties.numItems; nk++) {
+              if (normalize(String(cropComp.properties[nk].displayName)) === nameN) {
+                matched = { prop: cropComp.properties[nk], strategy: "normalized" };
+                break;
+              }
+            }
+          }
+          if (!matched) {
+            paramResults.push({ requestedName: pName, ok: false, error: "no Crop property matches this displayName" });
+            continue;
+          }
+          try {
+            var valueBefore = null;
+            try { valueBefore = matched.prop.getValue(); } catch (eB) {}
+            matched.prop.setValue(requestedVal, true);
+            var valueAfter = null;
+            try { valueAfter = matched.prop.getValue(); } catch (eA) {}
+            var clamped = false;
+            if (typeof valueAfter === "number" && typeof requestedVal === "number") {
+              clamped = Math.abs(valueAfter - requestedVal) > 0.0001;
+            } else {
+              clamped = valueAfter !== requestedVal;
+            }
+            paramResults.push({
+              requestedName: pName,
+              matchedDisplayName: String(matched.prop.displayName),
+              strategy: matched.strategy,
+              valueRequested: requestedVal,
+              valueBefore: valueBefore,
+              valueAfter: valueAfter,
+              clamped: clamped,
+              ok: true
+            });
+          } catch (eSet) {
+            paramResults.push({ requestedName: pName, ok: false, error: "setValue threw: " + eSet.toString() });
+          }
+        }
+
+        var propsDump = [];
+        for (var pi = 0; pi < cropComp.properties.numItems; pi++) {
+          var prop = cropComp.properties[pi];
+          var val = null;
+          try { val = prop.getValue(); } catch (eVal) { val = "<getValue threw: " + eVal.toString() + ">"; }
+          propsDump.push({ index: pi, displayName: String(prop.displayName), value: val });
+        }
+
+        var failedParams = [];
+        for (var pr = 0; pr < paramResults.length; pr++) {
+          if (!paramResults[pr].ok) failedParams.push(paramResults[pr]);
+        }
+
+        return JSON.stringify({
+          success: failedParams.length === 0,
+          message: effectAdded ? "Crop effect applied" : "Existing Crop effect updated",
+          clipId: ${clipIdLiteral},
+          effectName: "Crop",
+          effectAdded: effectAdded,
+          componentIndex: cropCompIdx,
+          properties: propsDump,
+          paramResults: paramResults,
+          error: failedParams.length ? "One or more Crop parameters could not be set" : undefined
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: "Crop effect failed: " + e.toString() });
       }
     `;
 
@@ -12052,13 +12308,28 @@ export class PremiereProTools {
   }
 
   private async deleteTrack(_sequenceId: string, trackType: string, trackIndex: number): Promise<any> {
+    if (trackType === 'caption') {
+      return {
+        success: false,
+        error: 'Caption track deletion is not supported by Premiere Pro scripting. The ExtendScript DOM exposes no sequence.captionTracks/getCaptionTracks surface, and the QE DOM exposes no caption-track accessor or delete method.',
+        sequenceId: _sequenceId,
+        trackType,
+        trackIndex,
+        unsupportedByPremiereApi: true,
+        workaround: 'Delete caption tracks manually in Premiere, or remove/recreate captions from the source .srt before creating the caption track.'
+      };
+    }
+
+    const sequenceIdLiteral = literalForExtendScript(_sequenceId);
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = __findSequence(${sequenceIdLiteral});
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found",
+            sequenceId: ${sequenceIdLiteral},
+            mutationAttempted: false
           });
         } else {
           var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};

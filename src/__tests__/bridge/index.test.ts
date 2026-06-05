@@ -121,6 +121,20 @@ describe('PremiereProBridge', () => {
     expect(result.id).toBe('item-123');
   });
 
+  it('blocks modal-prone unsupported subtitle imports before writing a command', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+
+    await bridge.initialize();
+    const result: any = await bridge.importMedia('/path/to/captions.ass');
+
+    expect(result.success).toBe(false);
+    expect(result.blockedBeforePremiere).toBe(true);
+    expect(result.error).toContain('Unsupported import format ".ass"');
+    expect(mockFs.writeFile).not.toHaveBeenCalled();
+  });
+
   it('creates projects using a concrete .prproj path and verifies activation', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);

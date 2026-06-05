@@ -771,6 +771,18 @@ describe('PremiereProTools', () => {
       expect(result.error).toBe('Import failed');
     });
 
+    it('adds an actionable modal warning when import_media times out', async () => {
+      mockBridge.importMedia = jest.fn().mockRejectedValue(new Error('Bridge response timeout'));
+
+      const result = await tools.executeTool('import_media', {
+        filePath: '/path/to/captions.ass'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Bridge response timeout');
+      expect(result.warning).toContain('blocking modal dialog');
+    });
+
     it('passes through successful timeline placement', async () => {
       mockBridge.addToTimeline = jest.fn().mockResolvedValue({
         success: true,
@@ -1164,6 +1176,109 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
       expect(result.cutVideoTracks).toEqual([0, 1]);
       expect(result.cutAudioTracks).toEqual([0, 2, 3]);
+    });
+
+    it('validates crop_clip bounds before calling the bridge', async () => {
+      const result = await tools.executeTool('crop_clip', {
+        clipId: 'clip-123',
+        left: 101
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('returns an explicit unsupported result for caption track deletion', async () => {
+      const result = await tools.executeTool('delete_track', {
+        sequenceId: 'seq-123',
+        trackType: 'caption',
+        trackIndex: 0
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.unsupportedByPremiereApi).toBe(true);
+      expect(result.error).toContain('Caption track deletion is not supported');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('executes crop_clip through the dedicated Crop implementation', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        effectName: 'Crop',
+        effectAdded: true,
+        paramResults: [
+          { requestedName: 'Left', ok: true, valueAfter: 12 },
+          { requestedName: 'Bottom', ok: true, valueAfter: 25 }
+        ]
+      });
+
+      const result = await tools.executeTool('crop_clip', {
+        clipId: 'clip-123',
+        left: 12,
+        bottom: 25,
+        zoom: true
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.effectName).toBe('Crop');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('getVideoEffectByName("Crop")');
+      expect(script).toContain('findQeClipByExactStart');
+      expect(script).toContain('mutation was not attempted');
+      expect(script).toContain('activeSequence');
+      expect(script).not.toContain('bestDelta');
+      expect(script).toContain('"Left":12');
+      expect(script).toContain('"Bottom":25');
+      expect(script).toContain('"Zoom":true');
+    });
+
+    it('fails delete_track closed when the requested sequence is missing', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: false, mutationAttempted: false, error: 'Sequence not found' });
+
+      const result = await tools.executeTool('delete_track', {
+        sequenceId: 'missing-seq',
+        trackType: 'video',
+        trackIndex: 0
+      });
+
+      expect(result.success).toBe(false);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('__findSequence("missing-seq")');
+      expect(script).toContain('mutationAttempted: false');
+      expect(script).not.toContain('sequence = app.project.activeSequence');
+    });
+
+    it('validates delete_track indices before destructive bridge calls', async () => {
+      const result = await tools.executeTool('delete_track', {
+        sequenceId: 'seq-123',
+        trackType: 'video',
+        trackIndex: -1
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('guards QE effect application to the active sequence and exact-start QE clip', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: false, mutationAttempted: false, error: 'Could not locate exact-start matching QE clip' });
+
+      const result = await tools.executeTool('apply_effect', {
+        clipId: 'clip-123',
+        effectName: 'Gaussian Blur',
+        parameters: { Blurriness: 12 }
+      });
+
+      expect(result.success).toBe(false);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('__findClip("clip-123")');
+      expect(script).toContain('apply_effect requires the target clip to be in the active sequence');
+      expect(script).toContain('findQeClipByExactStart');
+      expect(script).toContain('mutation was not attempted');
+      expect(script).toContain('"Blurriness":12');
+      expect(script).not.toContain('bestDelta');
     });
 
     it('uses current argument names for add_transition', async () => {
