@@ -6,9 +6,46 @@
  */
 
 import { z } from 'zod';
+import { promises as fs } from 'fs';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
+
+interface SrtEntry {
+  index: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
+function parseSrt(text: string): SrtEntry[] {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const blocks = normalized.split(/\n{2,}/);
+  const out: SrtEntry[] = [];
+  for (const block of blocks) {
+    const lines = block.split('\n').filter(l => l.length > 0);
+    if (lines.length < 2) continue;
+    let cursor = 0;
+    const firstLine = lines[0] ?? '';
+    const maybeIndex = parseInt(firstLine, 10);
+    let index = out.length + 1;
+    if (!Number.isNaN(maybeIndex) && /^\d+$/.test(firstLine.trim())) {
+      index = maybeIndex;
+      cursor = 1;
+    }
+    const tcLine = lines[cursor];
+    if (!tcLine) continue;
+    const m = tcLine.match(/(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})/);
+    if (!m) continue;
+    const toSec = (h: string, mm: string, s: string, ms: string) =>
+      parseInt(h, 10) * 3600 + parseInt(mm, 10) * 60 + parseInt(s, 10) + parseInt(ms.padEnd(3, '0').slice(0, 3), 10) / 1000;
+    const start = toSec(m[1] ?? '0', m[2] ?? '0', m[3] ?? '0', m[4] ?? '0');
+    const end = toSec(m[5] ?? '0', m[6] ?? '0', m[7] ?? '0', m[8] ?? '0');
+    const txt = lines.slice(cursor + 1).join('\n').trim();
+    out.push({ index, start, end, text: txt });
+  }
+  return out;
+}
 
 export interface MCPTool {
   name: string;
@@ -957,6 +994,23 @@ export class PremiereProTools {
           newName: z.string().describe('The new name for the project item')
         })
       },
+      {
+        name: 'export_transcript_to_srt',
+        description: 'Walks the caption tracks of a sequence and writes them out as a .srt subtitle file. Requires that the sequence already has caption tracks (use Premiere\'s Text > Captions panel to generate them via Speech-to-Text first).',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('The sequence to export captions from. Defaults to the active sequence.'),
+          outputPath: z.string().describe('Absolute file path to write the .srt to (e.g. /Users/me/Movies/transcript.srt)')
+        })
+      },
+      {
+        name: 'read_srt_file',
+        description: 'Reads a .srt subtitle file from disk and returns its contents. Pair with export_transcript_to_srt to ingest a sequence transcript for analysis (e.g. picking shorts, summarising).',
+        inputSchema: z.object({
+          filePath: z.string().describe('Absolute path to the .srt file'),
+          parsed: z.boolean().optional().describe('If true, return parsed entries with start/end seconds and text. Defaults to true.'),
+          includeRaw: z.boolean().optional().describe('If true, also include the raw file contents alongside parsed entries. Defaults to false.')
+        })
+      },
 
       // Subclip
       {
@@ -1407,6 +1461,10 @@ export class PremiereProTools {
         // Captions
         case 'create_caption_track':
           return await this.createCaptionTrack(args.sequenceId, args.projectItemId, args.startTime, args.captionFormat);
+        case 'export_transcript_to_srt':
+          return await this.exportTranscriptToSrt(args.sequenceId, args.outputPath);
+        case 'read_srt_file':
+          return await this.readSrtFile(args.filePath, args.parsed, args.includeRaw);
 
         // Subclip
         case 'create_subclip':
@@ -5327,6 +5385,134 @@ export class PremiereProTools {
       }
     `;
     return await this.bridge.executeScript(script);
+  }
+
+  // Export sequence captions as .srt
+  private async exportTranscriptToSrt(sequenceId: string | undefined, outputPath: string): Promise<any> {
+    const seqArg = sequenceId ? JSON.stringify(sequenceId) : 'null';
+    const script = `
+      try {
+        var seq = null;
+        var seqArg = ${seqArg};
+        if (seqArg) seq = __findSequence(seqArg);
+        if (!seq) seq = app.project.activeSequence;
+        if (!seq) return JSON.stringify({ success: false, error: "No sequence found" });
+
+        var entries = [];
+        function readText(ci) {
+          var t = '';
+          try {
+            if (typeof ci.getCaptionData === 'function') {
+              var raw = ci.getCaptionData();
+              if (raw) t = String(raw);
+            }
+          } catch (eA) {}
+          if (!t) {
+            try { if (ci.name) t = String(ci.name); } catch (eB) {}
+          }
+          // Strip XML tags and decode common entities so the .srt is human readable
+          t = t.replace(/<[^>]+>/g, '');
+          t = t.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+          // Collapse runs of whitespace inside a single caption
+          t = t.replace(/[\\t ]+/g, ' ').replace(/\\n{2,}/g, '\\n');
+          return t;
+        }
+        function collectFromTrack(track) {
+          if (!track || !track.clips) return;
+          for (var j = 0; j < track.clips.numItems; j++) {
+            var ci = track.clips[j];
+            var s = 0, e = 0;
+            try { s = ci.start.seconds; } catch (eS) {}
+            try { e = ci.end.seconds; } catch (eE) {}
+            entries.push({ start: s, end: e, text: readText(ci) });
+          }
+        }
+
+        var inspectedTracks = 0;
+        if (seq.captionTracks) {
+          var n = 0;
+          try { n = seq.captionTracks.numTracks; } catch (eN) { n = 0; }
+          for (var i = 0; i < n; i++) {
+            inspectedTracks++;
+            collectFromTrack(seq.captionTracks[i]);
+          }
+        }
+
+        if (!entries.length) {
+          return JSON.stringify({
+            success: false,
+            error: "No caption track items found on this sequence. Generate captions in Premiere's Text > Captions panel (Speech-to-Text) before calling this tool.",
+            inspectedCaptionTracks: inspectedTracks
+          });
+        }
+
+        entries.sort(function(a, b) { return a.start - b.start; });
+
+        function pad(n, l) {
+          var s = '000' + Math.floor(n);
+          return s.substr(s.length - l);
+        }
+        function fmtTime(t) {
+          if (t < 0) t = 0;
+          var h = Math.floor(t / 3600);
+          var m = Math.floor((t % 3600) / 60);
+          var s = Math.floor(t % 60);
+          var ms = Math.floor((t - Math.floor(t)) * 1000);
+          return pad(h, 2) + ':' + pad(m, 2) + ':' + pad(s, 2) + ',' + pad(ms, 3);
+        }
+
+        var lines = [];
+        for (var k = 0; k < entries.length; k++) {
+          lines.push(String(k + 1));
+          lines.push(fmtTime(entries[k].start) + ' --> ' + fmtTime(entries[k].end));
+          lines.push(entries[k].text || '');
+          lines.push('');
+        }
+
+        var f = new File(${JSON.stringify(outputPath)});
+        f.encoding = 'UTF-8';
+        if (!f.open('w')) {
+          return JSON.stringify({ success: false, error: 'Cannot open output file for writing: ' + ${JSON.stringify(outputPath)} });
+        }
+        f.write(lines.join('\\n'));
+        f.close();
+
+        return JSON.stringify({
+          success: true,
+          message: 'Transcript exported',
+          outputPath: ${JSON.stringify(outputPath)},
+          captionCount: entries.length,
+          inspectedCaptionTracks: inspectedTracks,
+          firstStart: entries[0].start,
+          lastEnd: entries[entries.length - 1].end
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  // Read .srt from disk (no Premiere round-trip)
+  private async readSrtFile(filePath: string, parsed?: boolean, includeRaw?: boolean): Promise<any> {
+    try {
+      const raw = await fs.readFile(filePath, 'utf-8');
+      const wantParsed = parsed !== false;
+      if (!wantParsed) {
+        return { success: true, filePath, content: raw, length: raw.length };
+      }
+      const entries = parseSrt(raw);
+      const result: any = {
+        success: true,
+        filePath,
+        count: entries.length,
+        entries
+      };
+      if (includeRaw) result.content = raw;
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err && err.message ? err.message : String(err) };
+    }
   }
 
   // Subclip Implementation
