@@ -22,6 +22,22 @@ export function sanitizeInput(input: string): string {
 }
 
 /**
+ * Escapes a string so it can be safely embedded inside a double-quoted
+ * ExtendScript string literal. Windows path backslashes, quotes, and
+ * control characters would otherwise be interpreted as escape sequences
+ * or break the generated script (e.g. "D:\\Videos\\clip.png" arriving in
+ * ExtendScript as "D:Videosclip.png").
+ */
+export function escapeExtendScriptString(value: string): string {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+/**
  * Validates file paths to prevent path traversal attacks
  */
 export function validateFilePath(filePath: string, allowedDirs?: string[]): { valid: boolean; normalized?: string; error?: string } {

@@ -10,7 +10,7 @@ import { ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
 import { extname, join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { createSecureTempDir, validateFilePath } from '../utils/security.js';
+import { createSecureTempDir, escapeExtendScriptString, validateFilePath } from '../utils/security.js';
 import type { PremiereProTransport } from './types.js';
 
 const UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS = new Set([
@@ -592,12 +592,12 @@ export class PremiereProBridge implements PremiereProTransport {
   async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true): Promise<PremiereProClip> {
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
+        var sequence = __findSequence("${escapeExtendScriptString(sequenceId)}");
         if (!sequence) {
           return JSON.stringify({ success: false, error: "Sequence not found" });
         }
 
-        var projectItem = __findProjectItem("${projectItemId}");
+        var projectItem = __findProjectItem("${escapeExtendScriptString(projectItemId)}");
         if (!projectItem) {
           return JSON.stringify({ success: false, error: "Project item not found" });
         }
@@ -697,16 +697,16 @@ export class PremiereProBridge implements PremiereProTransport {
 
   async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<any> {
     // Escape backslashes and quotes in paths so JSX string-eval is safe
-    const safePath = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const safePath = escapeExtendScriptString;
     const script = `
       try {
         // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper.
         // Fail hard if the requested sequence isn't found — silently falling back to
         // app.project.activeSequence would queue/render the wrong timeline while still
         // reporting success, masking caller bugs (stale IDs, etc.).
-        var sequence = __findSequence("${sequenceId}");
+        var sequence = __findSequence("${escapeExtendScriptString(sequenceId)}");
         if (!sequence) {
-          return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+          return JSON.stringify({ success: false, error: "Sequence not found by id: ${escapeExtendScriptString(sequenceId)}" });
         }
         if (typeof app.encoder === "undefined") {
           return JSON.stringify({ success: false, error: "app.encoder not available in this Premiere build" });
