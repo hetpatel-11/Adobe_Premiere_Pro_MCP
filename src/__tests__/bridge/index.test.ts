@@ -3,7 +3,9 @@
  */
 
 import { PremiereProBridge } from '../../bridge/index.js';
+import { createSecureTempDir } from '../../utils/security.js';
 import { promises as fs } from 'fs';
+import { join } from 'path';
 
 jest.mock('fs', () => ({
   promises: {
@@ -23,9 +25,15 @@ jest.mock('uuid', () => ({
 describe('PremiereProBridge', () => {
   const mockFs = fs as jest.Mocked<typeof fs>;
 
+  // The bridge builds file paths with path.join(), so expectations must use the
+  // platform-native separator to stay green on Windows as well as macOS/Linux.
+  const TEST_TEMP_DIR = '/tmp/premiere-mcp-bridge-test';
+  const COMMAND_FILE = join(TEST_TEMP_DIR, 'command-test-uuid-1234.json');
+  const RESPONSE_FILE = join(TEST_TEMP_DIR, 'response-test-uuid-1234.json');
+
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.PREMIERE_TEMP_DIR = '/tmp/premiere-mcp-bridge-test';
+    process.env.PREMIERE_TEMP_DIR = TEST_TEMP_DIR;
   });
 
   afterEach(() => {
@@ -39,7 +47,7 @@ describe('PremiereProBridge', () => {
 
     await bridge.initialize();
 
-    expect(mockFs.mkdir).toHaveBeenCalledWith('/tmp/premiere-mcp-bridge-test', {
+    expect(mockFs.mkdir).toHaveBeenCalledWith(TEST_TEMP_DIR, {
       recursive: true,
       mode: 0o700
     });
@@ -58,11 +66,11 @@ describe('PremiereProBridge', () => {
 
     expect(result).toEqual({ ok: true });
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('return JSON.stringify')
     );
-    expect(mockFs.unlink).toHaveBeenCalledWith('/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json');
-    expect(mockFs.unlink).toHaveBeenCalledWith('/tmp/premiere-mcp-bridge-test/response-test-uuid-1234.json');
+    expect(mockFs.unlink).toHaveBeenCalledWith(COMMAND_FILE);
+    expect(mockFs.unlink).toHaveBeenCalledWith(RESPONSE_FILE);
   });
 
   it('preserves self-invoking scripts instead of double-wrapping them', async () => {
@@ -77,11 +85,11 @@ describe('PremiereProBridge', () => {
     await bridge.executeScript('(function(){ return JSON.stringify({ ok: true }); })();');
 
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('(function(){ return JSON.stringify({ ok: true }); })();')
     );
     expect(mockFs.writeFile).not.toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('(function(){\n(function(){ return JSON.stringify({ ok: true }); })();\n})();')
     );
   });
@@ -137,11 +145,11 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.projectPath).toBe('/tmp/projects/Test.prproj');
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('app.newProject(projectPath)')
     );
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('Premiere Pro did not create or activate the requested project')
     );
   });
@@ -165,11 +173,11 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.actualPath).toBe('/tmp/projects/AlreadyOpen.prproj');
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('app.openDocument(projectPath)')
     );
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      COMMAND_FILE,
       expect.stringContaining('Premiere Pro did not activate the requested project')
     );
   });
@@ -218,6 +226,6 @@ describe('PremiereProBridge', () => {
     await bridge.initialize();
     await bridge.cleanup();
 
-    expect(mockFs.rm).toHaveBeenCalledWith('/tmp/premiere-bridge-test-uuid-1234', { recursive: true });
+    expect(mockFs.rm).toHaveBeenCalledWith(createSecureTempDir('test-uuid-1234'), { recursive: true });
   });
 });

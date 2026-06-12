@@ -87,7 +87,8 @@ These issues were real and are now resolved in the current code:
 - the server could delete an externally managed temp directory on shutdown
 - the CEP bridge could fail with `ENOENT` when the configured temp directory did not exist
 - `create_sequence` could create a sequence in Premiere but still report failure after a bridge timeout
-- `export_frame` called a non-existent API and now uses the QE export path
+- `export_frame` reported `success: true` without writing any file (confirmed live on Windows, June 10, 2026). Two causes: (1) Windows paths were injected into ExtendScript without escaping, so `D:\Videos\frame.png` arrived as `D:Videosframe.png`; (2) the QE `exportFramePNG`/`exportFrameJPEG`/`exportFrameTiff` methods expect a timecode string in the sequence display format (e.g. `"00:00:30:00"`) and silently do nothing when given a seconds number. The tool now converts seconds to a sequence-format timecode, and only reports success after verifying the output file exists (non-empty) on disk
+- ExtendScript string injection is now centralized: all tools that embed paths, names, or IDs in generated scripts go through `escapeExtendScriptString()` (backslashes, quotes, newlines), fixing the same path-corruption class of bug across the whole tool catalog
 - `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
 - the branded workflow response returned the wrong message due to object spread order
 

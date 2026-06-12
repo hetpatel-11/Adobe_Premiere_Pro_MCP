@@ -690,4 +690,69 @@ describe('PremiereProTools', () => {
       expect(result.error).toMatch(/app.encoder not available/);
     });
   });
+
+  describe('export_frame', () => {
+    const exportArgs = {
+      sequenceId: 'seq-1',
+      time: 30,
+      outputPath: 'D:\\Videos\\Red Dead 2\\Review 2026\\frame.png',
+      format: 'png',
+    };
+
+    async function generatedScript(args = exportArgs): Promise<string> {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('export_frame', args);
+
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      return mockBridge.executeScript.mock.calls[0][0] as string;
+    }
+
+    it('escapes Windows path backslashes in the generated ExtendScript', async () => {
+      const script = await generatedScript();
+
+      // The script source must contain doubled backslashes; a raw single
+      // backslash would be eaten as an escape sequence by ExtendScript
+      // ("D:\Videos\..." would arrive as "D:Videos...").
+      expect(script).toContain('D:\\\\Videos\\\\Red Dead 2\\\\Review 2026\\\\frame.png');
+      expect(script).not.toContain('"D:\\Videos');
+    });
+
+    it('escapes quotes in the sequence id', async () => {
+      const script = await generatedScript({
+        ...exportArgs,
+        sequenceId: 'seq-"quoted"',
+      });
+
+      expect(script).toContain('seq-\\"quoted\\"');
+    });
+
+    it('converts seconds to a sequence-format timecode string before exporting', async () => {
+      const script = await generatedScript();
+
+      expect(script).toContain('getFormatted(settings.videoFrameRate, settings.videoDisplayFormat)');
+      expect(script).toContain('tryExport(timecode, outputPath)');
+    });
+
+    it('verifies the exported file on disk instead of trusting silent QE calls', async () => {
+      const script = await generatedScript();
+
+      expect(script).toContain('function fileWasWritten()');
+      expect(script).toContain('check.exists && check.length > 0');
+      expect(script).toContain('no file was written to');
+      // every export attempt must be gated by the on-disk verification
+      expect(script).toContain('return fileWasWritten();');
+    });
+
+    it('passes the bridge result through, including verified failures', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: false,
+        error: 'Premiere reported no error, but no file was written to: D:\\out.png',
+      });
+
+      const result = await tools.executeTool('export_frame', exportArgs);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/no file was written/);
+    });
+  });
 });
