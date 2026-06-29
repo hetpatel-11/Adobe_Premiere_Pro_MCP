@@ -2680,25 +2680,99 @@ export class PremiereProTools {
   private async trimClip(clipId: string, inPoint?: number, outPoint?: number, duration?: number): Promise<any> {
     const script = `
       try {
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
-        var oldInPoint = clip.inPoint.seconds;
-        var oldOutPoint = clip.outPoint.seconds;
-        var oldDuration = clip.duration.seconds;
+        function secondsOf(value) {
+          if (value === undefined || value === null) return null;
+          if (typeof value === "number") return value;
+          if (value.seconds !== undefined) return Number(value.seconds);
+          if (value.ticks !== undefined) return Number(value.ticks) / 254016000000.0;
+          return null;
+        }
+        function closeEnough(a, b) {
+          return a !== null && b !== null && Math.abs(a - b) < 0.001;
+        }
+        function stateOf() {
+          return {
+            inPoint: secondsOf(clip.inPoint),
+            outPoint: secondsOf(clip.outPoint),
+            start: secondsOf(clip.start),
+            end: secondsOf(clip.end),
+            duration: secondsOf(clip.duration)
+          };
+        }
+
+        var before = stateOf();
+        var timelineEndError = null;
+
         ${inPoint !== undefined ? `clip.inPoint = new Time("${inPoint}s");` : ''}
         ${outPoint !== undefined ? `clip.outPoint = new Time("${outPoint}s");` : ''}
-        ${duration !== undefined ? `clip.outPoint = new Time(clip.inPoint.seconds + ${duration});` : ''}
+        ${duration !== undefined ? `
+        var targetDuration = ${duration};
+        var targetOutPoint = secondsOf(clip.inPoint) + targetDuration;
+        clip.outPoint = new Time(targetOutPoint + "s");
+        try {
+          if (clip.start !== undefined && clip.end !== undefined) {
+            clip.end = new Time((secondsOf(clip.start) + targetDuration) + "s");
+          }
+        } catch (timelineError) {
+          timelineEndError = timelineError.toString();
+        }
+        ` : ''}
+
+        var after = stateOf();
+        var verified = true;
+        var verificationErrors = [];
+        ${inPoint !== undefined ? `
+        if (!closeEnough(after.inPoint, ${inPoint})) {
+          verified = false;
+          verificationErrors.push("inPoint did not change to requested value");
+        }
+        ` : ''}
+        ${outPoint !== undefined ? `
+        if (!closeEnough(after.outPoint, ${outPoint})) {
+          verified = false;
+          verificationErrors.push("outPoint did not change to requested value");
+        }
+        ` : ''}
+        ${duration !== undefined ? `
+        if (!closeEnough(after.duration, ${duration})) {
+          verified = false;
+          verificationErrors.push("timeline duration did not change to requested value");
+        }
+        ` : ''}
+
+        if (!verified) {
+          return JSON.stringify({
+            success: false,
+            error: "Premiere Pro did not apply the requested trim",
+            clipId: ${JSON.stringify(clipId)},
+            requested: {
+              inPoint: ${inPoint !== undefined ? inPoint : 'null'},
+              outPoint: ${outPoint !== undefined ? outPoint : 'null'},
+              duration: ${duration !== undefined ? duration : 'null'}
+            },
+            before: before,
+            after: after,
+            verificationErrors: verificationErrors,
+            timelineEndError: timelineEndError
+          });
+        }
+
         return JSON.stringify({
           success: true,
-          message: "Clip trimmed successfully",
-          clipId: "${clipId}",
-          oldInPoint: oldInPoint,
-          oldOutPoint: oldOutPoint,
-          oldDuration: oldDuration,
-          newInPoint: clip.inPoint.seconds,
-          newOutPoint: clip.outPoint.seconds,
-          newDuration: clip.duration.seconds
+          message: "Clip trimmed and verified",
+          clipId: ${JSON.stringify(clipId)},
+          oldInPoint: before.inPoint,
+          oldOutPoint: before.outPoint,
+          oldDuration: before.duration,
+          newInPoint: after.inPoint,
+          newOutPoint: after.outPoint,
+          newDuration: after.duration,
+          before: before,
+          after: after,
+          timelineEndError: timelineEndError
         });
       } catch (e) {
         return JSON.stringify({
@@ -2709,6 +2783,55 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  private transitionVerificationScript(): string {
+    return `
+        function __readQeTransitionState(qeClip) {
+          var state = { available: false, count: null, names: [] };
+          if (!qeClip) return state;
+          function numberValue(value) {
+            if (typeof value === "number" && !isNaN(value)) return value;
+            if (value && typeof value.numItems === "number") return value.numItems;
+            if (value && typeof value.length === "number") return value.length;
+            return null;
+          }
+          var countProps = ["numTransitions", "numVideoTransitions", "numAudioTransitions", "transitions"];
+          for (var i = 0; i < countProps.length; i++) {
+            try {
+              var prop = qeClip[countProps[i]];
+              var count = numberValue(typeof prop === "function" ? prop.call(qeClip) : prop);
+              if (count !== null) {
+                state.available = true;
+                state.count = count;
+                break;
+              }
+            } catch (e) {}
+          }
+          if (state.count !== null && state.count > 0) {
+            var getterNames = ["getTransitionAt", "getVideoTransitionAt", "getAudioTransitionAt"];
+            for (var g = 0; g < getterNames.length; g++) {
+              if (typeof qeClip[getterNames[g]] !== "function") continue;
+              try {
+                for (var t = 0; t < state.count; t++) {
+                  var transition = qeClip[getterNames[g]](t);
+                  if (transition) {
+                    state.names.push(transition.name || transition.displayName || transition.toString());
+                  }
+                }
+                break;
+              } catch (e2) {}
+            }
+          }
+          return state;
+        }
+        function __transitionWasVerified(before, after) {
+          if (!before.available || !after.available) return false;
+          if (before.count !== null && after.count !== null && after.count > before.count) return true;
+          if (after.names && before.names && after.names.length > before.names.length) return true;
+          return false;
+        }
+    `;
   }
 
   private async splitClip(clipId: string, splitTime: number): Promise<any> {
@@ -3208,8 +3331,23 @@ export class PremiereProTools {
         var seq = app.project.activeSequence;
         var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
         var frames = Math.round(${duration} * fps);
-        qeClip.addTransition(transition, true, frames + ":00", "0:00", 0.5, false, true);
-        return JSON.stringify({ success: true, message: "Transition added", transitionName: "${transitionName}", duration: ${duration} });
+        ${this.transitionVerificationScript()}
+        var before = __readQeTransitionState(qeClip);
+        qeClip.addTransition(transition, true, String(frames), "0", 0.5, false, true);
+        var afterClip = qeTrack.getItemAt(info1.clipIndex);
+        var after = __readQeTransitionState(afterClip);
+        if (!__transitionWasVerified(before, after)) {
+          return JSON.stringify({
+            success: false,
+            error: "Transition call completed but Premiere Pro did not expose a verified transition change",
+            transitionName: "${transitionName}",
+            duration: ${duration},
+            frames: frames,
+            before: before,
+            after: after
+          });
+        }
+        return JSON.stringify({ success: true, message: "Transition added and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -3235,8 +3373,24 @@ export class PremiereProTools {
         var seq = app.project.activeSequence;
         var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
         var frames = Math.round(${duration} * fps);
-        qeClip.addTransition(transition, ${atEnd}, frames + ":00", "0:00", 0.5, true, true);
-        return JSON.stringify({ success: true, message: "Transition added at ${position}", transitionName: "${transitionName}", duration: ${duration} });
+        ${this.transitionVerificationScript()}
+        var before = __readQeTransitionState(qeClip);
+        qeClip.addTransition(transition, ${atEnd}, String(frames), "0", 0.5, true, true);
+        var afterClip = qeTrack.getItemAt(info.clipIndex);
+        var after = __readQeTransitionState(afterClip);
+        if (!__transitionWasVerified(before, after)) {
+          return JSON.stringify({
+            success: false,
+            error: "Transition call completed but Premiere Pro did not expose a verified transition change",
+            transitionName: "${transitionName}",
+            position: "${position}",
+            duration: ${duration},
+            frames: frames,
+            before: before,
+            after: after
+          });
+        }
+        return JSON.stringify({ success: true, message: "Transition added at ${position} and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -5059,19 +5213,38 @@ export class PremiereProTools {
         var errors = [];
         var fps = 254016000000 / parseInt(sequence.timebase, 10);
         var frames = Math.round(${duration} * fps);
+        ${this.transitionVerificationScript()}
         for (var i = 0; i < clipCount; i++) {
           try {
             var qeClip = qeTrack.getItemAt(i);
-            qeClip.addTransition(transition, true, frames + ":00", "0:00", 0.5, false, true);
-            added++;
+            var before = __readQeTransitionState(qeClip);
+            qeClip.addTransition(transition, true, String(frames), "0", 0.5, false, true);
+            var afterClip = qeTrack.getItemAt(i);
+            var after = __readQeTransitionState(afterClip);
+            if (__transitionWasVerified(before, after)) {
+              added++;
+            } else {
+              errors.push("Clip " + i + ": transition call completed but no verified transition change was exposed");
+            }
           } catch (e) {
             errors.push("Clip " + i + ": " + e.toString());
           }
+        }
+        if (added === 0) {
+          return JSON.stringify({
+            success: false,
+            error: "No transitions were verifiably added",
+            transitionsAdded: 0,
+            totalClips: clipCount,
+            frames: frames,
+            errors: errors
+          });
         }
         return JSON.stringify({
           success: true,
           transitionsAdded: added,
           totalClips: clipCount,
+          frames: frames,
           errors: errors
         });
       } catch (e) {

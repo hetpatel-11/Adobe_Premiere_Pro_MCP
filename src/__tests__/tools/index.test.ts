@@ -350,6 +350,66 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
     });
 
+    it('verifies trim_clip duration writes instead of trusting a silent Premiere no-op', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        newDuration: 2.5
+      });
+
+      const result = await tools.executeTool('trim_clip', {
+        clipId: 'clip-123',
+        duration: 2.5
+      });
+
+      expect(result.success).toBe(true);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('targetOutPoint + "s"');
+      expect(script).not.toContain('new Time(clip.inPoint.seconds + 2.5)');
+      expect(script).toContain('timeline duration did not change to requested value');
+      expect(script).toContain('Premiere Pro did not apply the requested trim');
+    });
+
+    it('uses verifiable QE transition calls for add_transition', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        transitionId: 'trans-123'
+      });
+
+      const result = await tools.executeTool('add_transition', {
+        clipId1: 'clip-1',
+        clipId2: 'clip-2',
+        transitionName: 'Cross Dissolve',
+        duration: 0.75
+      });
+
+      expect(result.success).toBe(true);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('qeClip.addTransition(transition, true, String(frames), "0"');
+      expect(script).not.toContain('frames + ":00"');
+      expect(script).toContain('__transitionWasVerified(before, after)');
+      expect(script).toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
+    });
+
+    it('fails batch_add_transitions when no transition is verifiably added', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: false,
+        error: 'No transitions were verifiably added'
+      });
+
+      const result = await tools.executeTool('batch_add_transitions', {
+        sequenceId: 'seq-123',
+        trackIndex: 0,
+        transitionName: 'Cross Dissolve',
+        duration: 0.5
+      });
+
+      expect(result.success).toBe(false);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('qeClip.addTransition(transition, true, String(frames), "0"');
+      expect(script).not.toContain('frames + ":00"');
+      expect(script).toContain('No transitions were verifiably added');
+    });
+
     it('looks up clip properties in the requested sequence', async () => {
       mockBridge.executeScript.mockResolvedValue({ success: true, properties: {} });
 
