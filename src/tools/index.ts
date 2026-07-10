@@ -306,7 +306,9 @@ export class PremiereProTools {
           trackIndex: z.number().describe('The index of the video or audio track (0-based)'),
           time: z.number().describe('The time in seconds where the clip should be placed on the timeline'),
           insertMode: z.enum(['overwrite', 'insert']).optional().describe('Whether to overwrite existing content or insert and shift'),
-          linkAudio: z.boolean().optional().describe('When false, removes the auto-linked audio counterpart that Premiere places on audio tracks for video-track clips. Useful for video overlays whose source media (e.g. Remotion .mov outputs) carry silent PCM that would overwrite existing audio. Default true (preserves Premiere\'s native linking behavior).')
+          linkAudio: z.boolean().optional().describe('When false, removes the auto-linked audio counterpart that Premiere places on audio tracks for video-track clips. Useful for video overlays whose source media (e.g. Remotion .mov outputs) carry silent PCM that would overwrite existing audio. Default true (preserves Premiere\'s native linking behavior).'),
+          sourceInPoint: z.number().optional().describe('Source IN point in seconds — the start of the sub-range to pull from the source (footage or sequence). Replicates marking an in point in the Source monitor. Requires sourceOutPoint. When omitted, the whole source (or its current marks) is placed.'),
+          sourceOutPoint: z.number().optional().describe('Source OUT point in seconds — the end of the sub-range to pull from the source. Replicates marking an out point in the Source monitor. Requires sourceInPoint.')
         })
       },
       {
@@ -1202,7 +1204,7 @@ export class PremiereProTools {
 
         // Timeline Operations
         case 'add_to_timeline':
-          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio);
+          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio, args.sourceInPoint, args.sourceOutPoint);
         case 'remove_from_timeline':
           return await this.removeFromTimeline(args.clipId, args.sequenceId, args.deleteMode);
         case 'move_clip':
@@ -2530,9 +2532,9 @@ export class PremiereProTools {
   }
 
   // Timeline Operations Implementation
-  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite', linkAudio: boolean = true): Promise<any> {
+  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite', linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<any> {
     try {
-      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio);
+      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio, sourceInPoint, sourceOutPoint);
       if (!result.success) {
         return {
           ...result,
@@ -2541,7 +2543,9 @@ export class PremiereProTools {
           trackIndex: trackIndex,
           time: time,
           insertMode: insertMode,
-          linkAudio: linkAudio
+          linkAudio: linkAudio,
+          sourceInPoint: sourceInPoint,
+          sourceOutPoint: sourceOutPoint
         };
       }
       return {
@@ -2553,6 +2557,8 @@ export class PremiereProTools {
         time: time,
         insertMode: insertMode,
         linkAudio: linkAudio,
+        sourceInPoint: sourceInPoint,
+        sourceOutPoint: sourceOutPoint,
         ...result
       };
     } catch (error) {

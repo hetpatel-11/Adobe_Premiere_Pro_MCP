@@ -574,7 +574,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true): Promise<PremiereProClip> {
+  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip> {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
@@ -605,6 +605,41 @@ export class PremiereProBridge implements PremiereProTransport {
           track = sequence.videoTracks[${trackIndex}];
           if (!track) {
             return JSON.stringify({ success: false, error: "Video track not found at index ${trackIndex}", videoTrackCount: sequence.videoTracks.numTracks });
+          }
+        }
+
+        // Source in/out: replicate the Source-monitor "mark in / mark out then
+        // overwrite" move. overwriteClip(projectItem, time) places whatever range
+        // is currently marked on the projectItem, so set the marks first. Without
+        // this, an arbitrary interior sub-range of a source cannot be placed.
+        var srcIn = ${sourceInPoint === undefined ? 'null' : sourceInPoint};
+        var srcOut = ${sourceOutPoint === undefined ? 'null' : sourceOutPoint};
+        var appliedSourceInOut = false;
+        var sourceInOutError = "";
+        if (srcIn !== null && srcOut !== null) {
+          try {
+            // mediaType 4 = all streams (video + audio) in one call
+            projectItem.setInPoint(srcIn, 4);
+            projectItem.setOutPoint(srcOut, 4);
+            appliedSourceInOut = true;
+          } catch (eio) {
+            try {
+              // fall back to per-stream marks (video=1, audio=2)
+              projectItem.setInPoint(srcIn, 1);
+              projectItem.setOutPoint(srcOut, 1);
+              projectItem.setInPoint(srcIn, 2);
+              projectItem.setOutPoint(srcOut, 2);
+              appliedSourceInOut = true;
+            } catch (eio2) {
+              try {
+                // last resort: no mediaType arg
+                projectItem.setInPoint(srcIn);
+                projectItem.setOutPoint(srcOut);
+                appliedSourceInOut = true;
+              } catch (eio3) {
+                sourceInOutError = String(eio3);
+              }
+            }
           }
         }
 
@@ -667,7 +702,9 @@ export class PremiereProBridge implements PremiereProTransport {
           duration: placedClip.duration.seconds,
           mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : "",
           linkAudio: ${linkAudio},
-          unlinkedAudioRemoved: unlinkedAudioRemoved
+          unlinkedAudioRemoved: unlinkedAudioRemoved,
+          appliedSourceInOut: appliedSourceInOut,
+          sourceInOutError: sourceInOutError
         });
       } catch (e) {
         return JSON.stringify({
