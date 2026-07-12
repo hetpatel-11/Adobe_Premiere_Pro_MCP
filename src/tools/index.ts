@@ -698,7 +698,7 @@ export class PremiereProTools {
       },
       {
         name: 'get_clip_properties',
-        description: 'Gets detailed properties of a clip. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
+        description: 'Gets detailed properties of a clip, INCLUDING current Motion values (opacity/scale/rotation/position). Position is returned both normalized (0..1) and in PIXELS (`motion.position`, using the sequence frame size) so you can verify or copy framing without exporting a frame. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip'),
           sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.')
@@ -722,7 +722,7 @@ export class PremiereProTools {
       },
       {
         name: 'set_clip_properties_batch',
-        description: 'Applies Motion properties (opacity/scale/rotation/position) to MANY clips in a single round-trip — the fast path for per-speaker framing across a whole rebuilt edit. ~50x faster than one set_clip_properties call per clip. Returns a per-clip result array.',
+        description: 'Applies Motion properties (opacity/scale/rotation/position) to MANY clips in a single round-trip — the fast path for per-speaker framing across a whole rebuilt edit. ~50x faster than one set_clip_properties call per clip. Returns a per-clip result array; each result carries an `applied` map ({opacity,scale,rotation,position}) and `success` is true only when EVERY requested property was actually found and set (a missing Motion property is reported, not silently ignored).',
         inputSchema: z.object({
           items: z.array(z.object({
             clipId: z.string().describe('The ID of the clip'),
@@ -4486,6 +4486,41 @@ export class PremiereProTools {
         var info = __findClip(${JSON.stringify(clipId)}, ${sequenceId ? JSON.stringify(sequenceId) : 'null'});
         if (!info) return JSON.stringify({ success: false, error: ${sequenceId ? JSON.stringify(`Clip not found in sequence: ${sequenceId}`) : '"Clip not found"'} });
         var clip = info.clip;
+
+        // Read back Motion (opacity/scale/rotation/position). Position is stored NORMALIZED
+        // (0..1); expose both the raw normalized value and PIXELS (using the sequence frame size)
+        // so callers can verify/copy framing without exporting a frame. Only present for video clips.
+        var __seqW = 1920, __seqH = 1080;
+        try {
+          if (info.sequence) {
+            if (info.sequence.frameSizeHorizontal) { __seqW = info.sequence.frameSizeHorizontal; __seqH = info.sequence.frameSizeVertical; }
+            else { var __ss = info.sequence.getSettings(); if (__ss) { __seqW = __ss.videoFrameWidth; __seqH = __ss.videoFrameHeight; } }
+          }
+        } catch (e0) {}
+        var motion = null;
+        try {
+          var m = {};
+          for (var ci = 0; ci < clip.components.numItems; ci++) {
+            var comp = clip.components[ci];
+            for (var pj = 0; pj < comp.properties.numItems; pj++) {
+              var pp = comp.properties[pj];
+              try {
+                if (pp.displayName === "Opacity") m.opacity = pp.getValue();
+                else if (pp.displayName === "Scale") m.scale = pp.getValue();
+                else if (pp.displayName === "Rotation") m.rotation = pp.getValue();
+                else if (pp.displayName === "Position") {
+                  var pv = pp.getValue();
+                  if (pv && pv.length >= 2) {
+                    m.positionNormalized = { x: pv[0], y: pv[1] };
+                    m.position = { x: Math.round(pv[0] * __seqW * 1000) / 1000, y: Math.round(pv[1] * __seqH * 1000) / 1000 };
+                  }
+                }
+              } catch (ep) {}
+            }
+          }
+          motion = m;
+        } catch (em) { motion = null; }
+
         return JSON.stringify({
           success: true,
           properties: {
@@ -4500,6 +4535,8 @@ export class PremiereProTools {
             trackType: info.trackType,
             sequenceId: info.sequenceId,
             sequenceName: info.sequenceName,
+            frameSize: { width: __seqW, height: __seqH },
+            motion: motion,
             speed: clip.getSpeed()
           }
         });
@@ -4514,24 +4551,21 @@ export class PremiereProTools {
   }
 
   private async setClipProperties(clipId: string, properties: any): Promise<any> {
-    const posX = properties?.position?.x;
-    const posY = properties?.position?.y;
-    const propCode = [
-      properties?.opacity !== undefined ? `if (p.displayName === "Opacity") p.setValue(${properties.opacity}, true);` : '',
-      properties?.scale !== undefined ? `if (p.displayName === "Scale") p.setValue(${properties.scale}, true);` : '',
-      properties?.rotation !== undefined ? `if (p.displayName === "Rotation") p.setValue(${properties.rotation}, true);` : '',
-      // Position is the Motion "Position" property. Callers pass PIXEL coordinates matching the
-      // Effect Controls panel (e.g. 960,756 in a 1920x1280 sequence); the API stores it as a
-      // NORMALIZED [x,y] (0..1, 0.5,0.5 = frame center), so divide by the sequence frame size
-      // (__seqW/__seqH, computed below). When only one axis is supplied, keep the current value
-      // for the other. Position was previously accepted by the schema but silently dropped here.
-      (posX !== undefined || posY !== undefined)
-        ? `if (p.displayName === "Position") { var __cur = [0.5, 0.5]; try { __cur = p.getValue(); } catch (ep) {} var __nx = ${posX !== undefined ? `(${posX})/__seqW` : '__cur[0]'}; var __ny = ${posY !== undefined ? `(${posY})/__seqH` : '__cur[1]'}; p.setValue([__nx, __ny], true); }`
-        : '',
-    ].filter(Boolean).join('\n              ');
-
+    // Position is the Motion "Position" property. Callers pass PIXEL coordinates matching the
+    // Effect Controls panel (e.g. 960,756 in a 1920x1280 sequence); the API stores it as a
+    // NORMALIZED [x,y] (0..1, 0.5,0.5 = frame center), so we divide by the sequence frame size
+    // (__seqW/__seqH). Per-property flags surface a silently-failed setValue or a missing Motion
+    // property instead of reporting a blanket success.
+    const spec = {
+      opacity: properties?.opacity === undefined ? null : properties.opacity,
+      scale: properties?.scale === undefined ? null : properties.scale,
+      rotation: properties?.rotation === undefined ? null : properties.rotation,
+      posX: properties?.position?.x === undefined ? null : properties.position.x,
+      posY: properties?.position?.y === undefined ? null : properties.position.y,
+    };
     const script = `
       try {
+        var it = ${JSON.stringify(spec)};
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
@@ -4544,16 +4578,37 @@ export class PremiereProTools {
             else { var __ss = info.sequence.getSettings(); if (__ss) { __seqW = __ss.videoFrameWidth; __seqH = __ss.videoFrameHeight; } }
           }
         } catch (e0) {}
+        var want = { opacity: it.opacity !== null, scale: it.scale !== null, rotation: it.rotation !== null, position: (it.posX !== null || it.posY !== null) };
+        var done = { opacity: false, scale: false, rotation: false, position: false };
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
           for (var j = 0; j < comp.properties.numItems; j++) {
             var p = comp.properties[j];
             try {
-              ${propCode}
+              if (want.opacity && p.displayName === "Opacity") { p.setValue(it.opacity, true); done.opacity = true; }
+              if (want.scale && p.displayName === "Scale") { p.setValue(it.scale, true); done.scale = true; }
+              if (want.rotation && p.displayName === "Rotation") { p.setValue(it.rotation, true); done.rotation = true; }
+              if (want.position && p.displayName === "Position") {
+                var __cur = [0.5, 0.5];
+                try { __cur = p.getValue(); } catch (ep) {}
+                var __nx = it.posX !== null ? (it.posX / __seqW) : __cur[0];
+                var __ny = it.posY !== null ? (it.posY / __seqH) : __cur[1];
+                p.setValue([__nx, __ny], true);
+                done.position = true;
+              }
             } catch (e2) {}
           }
         }
-        return JSON.stringify({ success: true, message: "Clip properties updated" });
+        var missing = [];
+        if (want.opacity && !done.opacity) missing.push("opacity");
+        if (want.scale && !done.scale) missing.push("scale");
+        if (want.rotation && !done.rotation) missing.push("rotation");
+        if (want.position && !done.position) missing.push("position");
+        return JSON.stringify({
+          success: (missing.length === 0),
+          applied: done,
+          message: missing.length ? ("properties not applied: " + missing.join(", ")) : "Clip properties updated"
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
@@ -4592,25 +4647,37 @@ export class PremiereProTools {
                 else { var __ss = info.sequence.getSettings(); if (__ss) { __seqW = __ss.videoFrameWidth; __seqH = __ss.videoFrameHeight; } }
               }
             } catch (e0) {}
+            // Track which requested properties we actually FOUND and SET, so a silently-failed
+            // setValue (or a Motion property that isn't present) surfaces instead of a false success.
+            var want = { opacity: it.opacity !== null, scale: it.scale !== null, rotation: it.rotation !== null, position: (it.posX !== null || it.posY !== null) };
+            var done = { opacity: false, scale: false, rotation: false, position: false };
             for (var i = 0; i < clip.components.numItems; i++) {
               var comp = clip.components[i];
               for (var j = 0; j < comp.properties.numItems; j++) {
                 var p = comp.properties[j];
                 try {
-                  if (it.opacity !== null && p.displayName === "Opacity") p.setValue(it.opacity, true);
-                  if (it.scale !== null && p.displayName === "Scale") p.setValue(it.scale, true);
-                  if (it.rotation !== null && p.displayName === "Rotation") p.setValue(it.rotation, true);
-                  if ((it.posX !== null || it.posY !== null) && p.displayName === "Position") {
+                  if (want.opacity && p.displayName === "Opacity") { p.setValue(it.opacity, true); done.opacity = true; }
+                  if (want.scale && p.displayName === "Scale") { p.setValue(it.scale, true); done.scale = true; }
+                  if (want.rotation && p.displayName === "Rotation") { p.setValue(it.rotation, true); done.rotation = true; }
+                  if (want.position && p.displayName === "Position") {
                     var __cur = [0.5, 0.5];
                     try { __cur = p.getValue(); } catch (ep) {}
                     var __nx = it.posX !== null ? (it.posX / __seqW) : __cur[0];
                     var __ny = it.posY !== null ? (it.posY / __seqH) : __cur[1];
                     p.setValue([__nx, __ny], true);
+                    done.position = true;
                   }
                 } catch (e2) {}
               }
             }
-            r.success = true;
+            var missing = [];
+            if (want.opacity && !done.opacity) missing.push("opacity");
+            if (want.scale && !done.scale) missing.push("scale");
+            if (want.rotation && !done.rotation) missing.push("rotation");
+            if (want.position && !done.position) missing.push("position");
+            r.applied = done;
+            r.success = (missing.length === 0);
+            if (missing.length) r.error = "properties not applied: " + missing.join(", ");
           } catch (e) {
             r.error = e.toString();
           }
@@ -4618,7 +4685,7 @@ export class PremiereProTools {
         }
         var applied = 0;
         for (var k = 0; k < results.length; k++) { if (results[k].success) applied++; }
-        return JSON.stringify({ success: true, applied: applied, total: specs.length, results: results });
+        return JSON.stringify({ success: (applied === specs.length), applied: applied, total: specs.length, results: results });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
