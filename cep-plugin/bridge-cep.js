@@ -232,10 +232,10 @@
                 return;
             }
             done({ success: true, result: result, timestamp: new Date().toISOString() });
-        });
+        }, command.timeoutMs);
     };
 
-    MCPPremiereBridge.prototype.executeExtendScript = function(script, callback) {
+    MCPPremiereBridge.prototype.executeExtendScript = function(script, callback, requestedTimeoutMs) {
         var self = this;
         try {
             if (!this.csInterface) {
@@ -252,7 +252,12 @@
 
             var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + script;
             var settled = false;
+            // Honor a per-command timeout from the server (batch operations request up to 300s).
+            // Fall back to 45s when the server does not specify one, and never go below it.
             var timeoutMs = 45000;
+            if (typeof requestedTimeoutMs === 'number' && requestedTimeoutMs > timeoutMs) {
+                timeoutMs = requestedTimeoutMs;
+            }
             var timeoutId = setTimeout(function() {
                 if (settled) return;
                 settled = true;

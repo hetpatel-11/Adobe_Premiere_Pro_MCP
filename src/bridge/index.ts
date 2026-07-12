@@ -250,7 +250,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return EXTENDSCRIPT_HELPERS + '(function(){\n' + script + '\n})();';
   }
 
-  async executeScript(script: string): Promise<any> {
+  async executeScript(script: string, timeoutMs?: number): Promise<any> {
     if (!this.isInitialized) {
       throw new Error('Bridge not initialized. Call initialize() first.');
     }
@@ -262,15 +262,20 @@ export class PremiereProBridge implements PremiereProTransport {
     try {
       const fullScript = this.buildExecutableScript(script);
 
-      // Write command to file
+      // Write command to file. Include timeoutMs so the CEP/UXP panel can extend its own
+      // execution watchdog to match — otherwise the panel's default (45s) kills long batch
+      // scripts well before the server's own timeout elapses.
       await fs.writeFile(commandFile, JSON.stringify({
         id: commandId,
         script: fullScript,
+        timeoutMs: timeoutMs,
         timestamp: new Date().toISOString()
       }));
 
-      // Wait for response (in a real implementation, this would be handled by the UXP plugin)
-      const response = await this.waitForResponse(responseFile);
+      // Wait for response (in a real implementation, this would be handled by the UXP plugin).
+      // Batch operations pass a larger timeout because a single round-trip does the work of
+      // dozens of individual calls inside one ExtendScript pass.
+      const response = await this.waitForResponse(responseFile, timeoutMs);
       
       // Clean up files
       await fs.unlink(commandFile).catch(() => {});
@@ -715,6 +720,94 @@ export class PremiereProBridge implements PremiereProTransport {
     `;
 
     return await this.executeScript(script);
+  }
+
+  // Batch variant of addToTimeline: place many clips in ONE ExtendScript round-trip.
+  // The per-call file/WS round-trip (~seconds each, 60s timeout) is the real bottleneck when
+  // placing a whole edit; looping inside one script collapses N round-trips into 1. Mirrors the
+  // single-clip logic: audio-only routing by extension, Source-monitor in/out marking (mediaType
+  // 4 with per-stream + no-arg fallbacks), overwriteClip. Returns a per-clip result array so a
+  // single bad clip never sinks the batch.
+  async addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any> {
+    const specs = clips.map(c => ({
+      projectItemId: c.projectItemId,
+      trackIndex: c.trackIndex,
+      time: c.time,
+      sourceInPoint: c.sourceInPoint === undefined ? null : c.sourceInPoint,
+      sourceOutPoint: c.sourceOutPoint === undefined ? null : c.sourceOutPoint,
+    }));
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) {
+          return JSON.stringify({ success: false, error: "Sequence not found" });
+        }
+        var specs = ${JSON.stringify(specs)};
+        var results = [];
+        for (var c = 0; c < specs.length; c++) {
+          var spec = specs[c];
+          var r = { index: c, time: spec.time, success: false };
+          try {
+            var projectItem = __findProjectItem(spec.projectItemId);
+            if (!projectItem) { r.error = "Project item not found"; results.push(r); continue; }
+
+            var mediaPath = projectItem.getMediaPath ? projectItem.getMediaPath() : "";
+            var isAudioOnly = /\\.(mp3|wav|aif|aiff|m4a|aac|flac|ogg|wma)$/i.test(mediaPath);
+            var track = isAudioOnly ? sequence.audioTracks[spec.trackIndex] : sequence.videoTracks[spec.trackIndex];
+            if (!track) { r.error = "Track not found at index " + spec.trackIndex; results.push(r); continue; }
+
+            if (spec.sourceInPoint !== null && spec.sourceOutPoint !== null) {
+              try {
+                projectItem.setInPoint(spec.sourceInPoint, 4);
+                projectItem.setOutPoint(spec.sourceOutPoint, 4);
+              } catch (eio) {
+                try {
+                  projectItem.setInPoint(spec.sourceInPoint, 1);
+                  projectItem.setOutPoint(spec.sourceOutPoint, 1);
+                  projectItem.setInPoint(spec.sourceInPoint, 2);
+                  projectItem.setOutPoint(spec.sourceOutPoint, 2);
+                } catch (eio2) {
+                  try {
+                    projectItem.setInPoint(spec.sourceInPoint);
+                    projectItem.setOutPoint(spec.sourceOutPoint);
+                  } catch (eio3) {}
+                }
+              }
+            }
+
+            track.overwriteClip(projectItem, spec.time);
+
+            var placedClip = null;
+            for (var i = 0; i < track.clips.numItems; i++) {
+              var candidate = track.clips[i];
+              if (candidate && candidate.projectItem && candidate.projectItem.nodeId === projectItem.nodeId && Math.abs(candidate.start.seconds - spec.time) < 0.1) {
+                placedClip = candidate;
+                break;
+              }
+            }
+            if (!placedClip && track.clips.numItems > 0) {
+              placedClip = track.clips[track.clips.numItems - 1];
+            }
+            if (!placedClip) { r.error = "Clip placement did not produce a track item"; results.push(r); continue; }
+
+            r.success = true;
+            r.id = placedClip.nodeId;
+            r.name = placedClip.name;
+            r.inPoint = placedClip.start.seconds;
+            r.outPoint = placedClip.end.seconds;
+          } catch (e) {
+            r.error = e.toString();
+          }
+          results.push(r);
+        }
+        var placed = 0;
+        for (var k = 0; k < results.length; k++) { if (results[k].success) placed++; }
+        return JSON.stringify({ success: true, placed: placed, total: specs.length, results: results });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.executeScript(script, 300000);
   }
 
   async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<any> {
