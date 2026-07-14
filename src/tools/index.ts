@@ -314,13 +314,14 @@ export class PremiereProTools {
       },
       {
         name: 'add_to_timeline_batch',
-        description: 'Places MANY clips onto one sequence in a single round-trip — the fast path for rebuilding a whole edit (e.g. a Descript/EDL stringout). Equivalent to calling add_to_timeline (overwrite) once per clip, but ~50x faster because it loops inside one ExtendScript pass instead of one file round-trip per clip. Each clip supports per-clip sourceInPoint/sourceOutPoint (Source-monitor in/out). Returns a per-clip result array so one bad clip does not sink the batch.',
+        description: 'Places MANY clips onto one sequence in a single round-trip — the fast path for rebuilding a whole edit (e.g. a Descript/EDL stringout). Equivalent to calling add_to_timeline (overwrite) once per clip, but ~50x faster because it loops inside one ExtendScript pass instead of one file round-trip per clip. Each clip supports per-clip linkAudio and sourceInPoint/sourceOutPoint (Source-monitor in/out). Returns a per-clip result array so one bad clip does not sink the batch, plus an aggregate status: top-level success is true ONLY when every clip placed; status is "success" | "partial" | "failure" with placed/failed/total counts.',
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence (timeline) to add clips to'),
           clips: z.array(z.object({
             projectItemId: z.string().describe('The ID of the project item (clip / multicam) to add'),
             trackIndex: z.number().describe('The index of the video or audio track (0-based)'),
             time: z.number().describe('Timeline position in seconds where the clip is placed (overwrite)'),
+            linkAudio: z.boolean().optional().describe('When false, removes the auto-linked audio counterpart Premiere places on audio tracks for a video-track clip whose source carries an embedded audio stream (prevents overwriting existing audio in overlay/rebuild workflows). Default true (preserves Premiere\'s native linking).'),
             sourceInPoint: z.number().optional().describe('Source IN point in seconds (requires sourceOutPoint)'),
             sourceOutPoint: z.number().optional().describe('Source OUT point in seconds (requires sourceInPoint)')
           })).describe('Ordered list of clips to place. All use overwrite mode.')
@@ -2607,7 +2608,7 @@ export class PremiereProTools {
   }
 
   // Timeline Operations Implementation
-  private async addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any> {
+  private async addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; linkAudio?: boolean; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any> {
     try {
       const result: any = await this.bridge.addToTimelineBatch(sequenceId, clips);
       return { sequenceId, requested: clips.length, ...result };

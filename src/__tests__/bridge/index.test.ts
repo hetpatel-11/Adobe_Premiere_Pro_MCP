@@ -183,6 +183,53 @@ describe('PremiereProBridge', () => {
     expect(commandPayload.script).toContain('Sequence creation completed but the new sequence could not be located');
   });
 
+  it('honors per-clip linkAudio in addToTimelineBatch (mirrors single-call audio-counterpart cleanup)', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: true, placed: 2, total: 2, results: [] }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.addToTimelineBatch('seq-1', [
+      { projectItemId: 'pi-1', trackIndex: 0, time: 0, linkAudio: false },
+      { projectItemId: 'pi-2', trackIndex: 0, time: 5 } // omitted → defaults to true
+    ]);
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+
+    // per-clip linkAudio is embedded in the specs (explicit false + defaulted true)
+    expect(commandPayload.script).toContain('"linkAudio":false');
+    expect(commandPayload.script).toContain('"linkAudio":true');
+    // the counterpart-audio cleanup is mirrored from the single-call addToTimeline path
+    expect(commandPayload.script).toContain('spec.linkAudio === false');
+    expect(commandPayload.script).toContain('audioClip.remove(false, false)');
+    expect(commandPayload.script).toContain('unlinkedAudioRemoved');
+  });
+
+  it('reports aggregate success/partial/failure in addToTimelineBatch instead of always claiming success', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: false, status: 'partial', placed: 1, failed: 1, total: 2, results: [] }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.addToTimelineBatch('seq-1', [
+      { projectItemId: 'pi-1', trackIndex: 0, time: 0 },
+      { projectItemId: 'pi-2', trackIndex: 0, time: 5 }
+    ]);
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+
+    // aggregate success is derived from the placed count, not hard-coded true
+    expect(commandPayload.script).toContain('var allPlaced = (specs.length > 0 && placed === specs.length)');
+    expect(commandPayload.script).toContain('success: allPlaced');
+    expect(commandPayload.script).toContain('status:');
+    // the old always-true aggregate must be gone
+    expect(commandPayload.script).not.toContain('success: true, placed: placed, total: specs.length');
+  });
+
   it('does not delete externally managed temp directories during cleanup', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);

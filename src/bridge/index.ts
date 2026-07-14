@@ -728,11 +728,13 @@ export class PremiereProBridge implements PremiereProTransport {
   // single-clip logic: audio-only routing by extension, Source-monitor in/out marking (mediaType
   // 4 with per-stream + no-arg fallbacks), overwriteClip. Returns a per-clip result array so a
   // single bad clip never sinks the batch.
-  async addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any> {
+  async addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; linkAudio?: boolean; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any> {
     const specs = clips.map(c => ({
       projectItemId: c.projectItemId,
       trackIndex: c.trackIndex,
       time: c.time,
+      // Mirror the single-call default (true = keep Premiere's native audio linking).
+      linkAudio: c.linkAudio === undefined ? true : c.linkAudio,
       sourceInPoint: c.sourceInPoint === undefined ? null : c.sourceInPoint,
       sourceOutPoint: c.sourceOutPoint === undefined ? null : c.sourceOutPoint,
     }));
@@ -795,6 +797,36 @@ export class PremiereProBridge implements PremiereProTransport {
             r.name = placedClip.name;
             r.inPoint = placedClip.start.seconds;
             r.outPoint = placedClip.end.seconds;
+
+            // linkAudio=false cleanup — mirror the single-call addToTimeline path so batch
+            // rebuild/overlay workflows don't reintroduce the silent embedded-audio overwrite
+            // bug. When a video-track clip's source carries an embedded audio stream, Premiere
+            // auto-links and overwrites its counterpart onto an audio track, which can DESTROY
+            // existing audio. When linkAudio is false, remove that counterpart at the same
+            // start time. The video on the target track is untouched.
+            r.linkAudio = spec.linkAudio;
+            r.unlinkedAudioRemoved = 0;
+            if (!isAudioOnly && spec.linkAudio === false) {
+              var videoStart = placedClip.start.seconds;
+              var tolerance = 0.1;
+              for (var at = 0; at < sequence.audioTracks.numTracks; at++) {
+                var audioTrack = sequence.audioTracks[at];
+                // iterate backwards because remove() may shift indices
+                for (var ai = audioTrack.clips.numItems - 1; ai >= 0; ai--) {
+                  var audioClip = audioTrack.clips[ai];
+                  if (audioClip && audioClip.projectItem &&
+                      audioClip.projectItem.nodeId === projectItem.nodeId &&
+                      Math.abs(audioClip.start.seconds - videoStart) < tolerance) {
+                    try {
+                      audioClip.remove(false, false); // ripple=false, alignToVideo=false
+                      r.unlinkedAudioRemoved++;
+                    } catch (rmErr) {
+                      // best effort — don't fail this clip over cleanup
+                    }
+                  }
+                }
+              }
+            }
           } catch (e) {
             r.error = e.toString();
           }
@@ -802,7 +834,19 @@ export class PremiereProBridge implements PremiereProTransport {
         }
         var placed = 0;
         for (var k = 0; k < results.length; k++) { if (results[k].success) placed++; }
-        return JSON.stringify({ success: true, placed: placed, total: specs.length, results: results });
+        var failed = specs.length - placed;
+        // Aggregate status must reflect reality: success is true ONLY when every requested
+        // clip placed. placed===0 => failure; some-but-not-all => partial. Per-clip results[]
+        // still carry the detail. (PR #48 review: don't report success when placements failed.)
+        var allPlaced = (specs.length > 0 && placed === specs.length);
+        return JSON.stringify({
+          success: allPlaced,
+          status: (placed === 0 ? "failure" : (allPlaced ? "success" : "partial")),
+          placed: placed,
+          failed: failed,
+          total: specs.length,
+          results: results
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
