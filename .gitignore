@@ -12,3 +12,7 @@ dist/
 
 # Worktrees
 .worktrees/
+
+.specstory/
+
+.cursorindexingignore
