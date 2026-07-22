@@ -4205,7 +4205,7 @@ export class PremiereProTools {
         } else {
           var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
           if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
-            tracks[${trackIndex}].setLocked(${locked});
+            tracks[${trackIndex}].setLocked(${locked ? 1 : 0});
             return JSON.stringify({
               success: true,
               message: "Track " + (${locked} ? "locked" : "unlocked")
