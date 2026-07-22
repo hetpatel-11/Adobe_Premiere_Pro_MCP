@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { spawn } from 'child_process';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
@@ -426,6 +427,20 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the audio clip to adjust'),
           level: z.number().describe('The new audio level in decibels (dB). Can be positive or negative.')
+        })
+      },
+
+      // Audio Analysis
+      {
+        name: 'detect_silence',
+        description: 'Analyzes a media file\'s audio for silent stretches using ffmpeg\'s silencedetect filter, run locally via child_process -- NOT via Premiere\'s scripting API, which has no audio-level/RMS reading capability at all (confirmed: every audio tool in this codebase only writes levels, never reads them). Requires ffmpeg on PATH; returns an explicit error if it is not found rather than failing silently. This is DETECTION ONLY -- it does not cut or modify anything. Use the returned intervals with split_clip/ripple_delete/razor_timeline_at_time if you want to remove the silence.',
+        inputSchema: z.object({
+          mediaPath: z.string().optional().describe('Direct filesystem path to the media file to analyze'),
+          projectItemId: z.string().optional().describe('Project item ID to resolve to a media path instead of passing mediaPath directly'),
+          noiseThresholdDb: z.number().optional().describe('Silence threshold in dBFS, e.g. -30 (default -30). Audio quieter than this is considered silent.'),
+          minDurationSeconds: z.number().optional().describe('Minimum duration in seconds for a quiet stretch to be reported as silence (default 1.5)')
+        }).refine((data) => Boolean(data.mediaPath) || Boolean(data.projectItemId), {
+          message: 'Provide either mediaPath or projectItemId'
         })
       },
       {
@@ -1297,6 +1312,10 @@ export class PremiereProTools {
           return await this.addTransition(args.clipId1, args.clipId2, args.transitionName, args.duration);
         case 'add_transition_to_clip':
           return await this.addTransitionToClip(args.clipId, args.transitionName, args.position, args.duration);
+
+        // Audio Analysis
+        case 'detect_silence':
+          return await this.detectSilence(args.mediaPath, args.projectItemId, args.noiseThresholdDb, args.minDurationSeconds);
 
         // Audio Operations
         case 'adjust_audio_levels':
@@ -3488,6 +3507,137 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  // Audio Analysis Implementation
+  private async resolveProjectItemMediaPath(projectItemId: string): Promise<{ path?: string; error?: string }> {
+    const script = `
+      try {
+        var item = __findProjectItem(${JSON.stringify(projectItemId)});
+        if (!item) {
+          return JSON.stringify({ success: false, error: "Project item not found by id: " + ${JSON.stringify(projectItemId)} });
+        }
+        var mediaPath = null;
+        try {
+          mediaPath = item.getMediaPath();
+        } catch (eMedia) {
+          return JSON.stringify({ success: false, error: "Could not read media path: " + eMedia.toString() });
+        }
+        if (!mediaPath) {
+          return JSON.stringify({ success: false, error: "Project item has no media path (is it a sequence or bin?)" });
+        }
+        return JSON.stringify({ success: true, mediaPath: mediaPath });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    const result = await this.bridge.executeScript(script);
+    if (result?.success === false) {
+      return { error: result.error || 'Failed to resolve project item media path' };
+    }
+    return { path: result?.mediaPath };
+  }
+
+  private checkFfmpegAvailable(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const proc = spawn('ffmpeg', ['-version']);
+      proc.on('error', () => resolve(false));
+      proc.on('close', (code) => resolve(code === 0));
+    });
+  }
+
+  private parseSilenceIntervals(stderr: string): Array<{ start: number; end: number; duration: number }> {
+    const starts: number[] = [];
+    const ends: number[] = [];
+    const startRe = /silence_start:\s*(-?[\d.]+)/g;
+    const endRe = /silence_end:\s*(-?[\d.]+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = startRe.exec(stderr)) !== null) {
+      starts.push(parseFloat(match[1]!));
+    }
+    while ((match = endRe.exec(stderr)) !== null) {
+      ends.push(parseFloat(match[1]!));
+    }
+    const intervals: Array<{ start: number; end: number; duration: number }> = [];
+    const count = Math.min(starts.length, ends.length);
+    for (let i = 0; i < count; i++) {
+      const start = starts[i]!;
+      const end = ends[i]!;
+      intervals.push({
+        start,
+        end,
+        duration: Math.round((end - start) * 1000) / 1000,
+      });
+    }
+    return intervals;
+  }
+
+  private async detectSilence(
+    mediaPath?: string,
+    projectItemId?: string,
+    noiseThresholdDb = -30,
+    minDurationSeconds = 1.5
+  ): Promise<any> {
+    let resolvedPath = mediaPath;
+
+    if (!resolvedPath && projectItemId) {
+      const resolved = await this.resolveProjectItemMediaPath(projectItemId);
+      if (resolved.error) {
+        return { success: false, error: resolved.error };
+      }
+      resolvedPath = resolved.path;
+    }
+
+    if (!resolvedPath) {
+      return { success: false, error: 'Provide either mediaPath or projectItemId' };
+    }
+
+    const ffmpegAvailable = await this.checkFfmpegAvailable();
+    if (!ffmpegAvailable) {
+      return {
+        success: false,
+        error: 'ffmpeg was not found on PATH. detect_silence analyzes audio via ffmpeg\'s silencedetect filter, not Premiere\'s scripting API (which cannot read audio levels at all). Install ffmpeg (e.g. `brew install ffmpeg` on macOS) and try again.'
+      };
+    }
+
+    return new Promise((resolve) => {
+      const ffmpegArgs = [
+        '-i', resolvedPath as string,
+        '-af', `silencedetect=noise=${noiseThresholdDb}dB:d=${minDurationSeconds}`,
+        '-f', 'null', '-'
+      ];
+      const proc = spawn('ffmpeg', ffmpegArgs);
+      let stderr = '';
+
+      proc.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on('error', (err) => {
+        resolve({ success: false, error: `Failed to run ffmpeg: ${err.message}` });
+      });
+
+      proc.on('close', (code) => {
+        if (code !== 0 && stderr.indexOf('silence_start') === -1) {
+          resolve({
+            success: false,
+            error: `ffmpeg exited with code ${code} and produced no silence data. This usually means the file couldn't be read.`,
+            mediaPath: resolvedPath,
+            ffmpegStderr: stderr.slice(-2000)
+          });
+          return;
+        }
+        const silenceIntervals = this.parseSilenceIntervals(stderr);
+        resolve({
+          success: true,
+          mediaPath: resolvedPath,
+          noiseThresholdDb,
+          minDurationSeconds,
+          silenceIntervals,
+          note: 'Detection only -- nothing was cut. Use split_clip/ripple_delete/razor_timeline_at_time on a sequence to remove any of these intervals.'
+        });
+      });
+    });
   }
 
   // Audio Operations Implementation

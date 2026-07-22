@@ -18,6 +18,24 @@ Run `node scripts/live-tool-sweep.mjs` against a scratch Premiere project before
 
 ## Confirmed Runtime Limitation
 
+### `detect_silence` requires ffmpeg on PATH, and does not use Premiere's scripting API at all
+
+Status: by design, not a bug
+
+Reason:
+
+- Premiere's ExtendScript/QE DOM surface has no audio-level or RMS/waveform reading
+  capability whatsoever -- confirmed by inspecting every existing audio tool in this
+  codebase (`adjust_audio_levels`, `add_audio_keyframes`, `apply_audio_effect`), all of
+  which only *write* levels, never read them.
+- `detect_silence` therefore runs `ffmpeg`'s `silencedetect` audio filter directly via
+  `child_process`, analyzing the underlying media file rather than anything inside
+  Premiere. It requires `ffmpeg` to be installed and on `PATH`; if it is not found, the
+  tool returns an explicit error explaining why, rather than a cryptic spawn failure.
+- This is a detection-only tool -- it never cuts anything itself. Use the returned
+  intervals with `split_clip`/`ripple_delete`/`razor_timeline_at_time` to actually remove
+  silence from a sequence.
+
 ### `get_render_queue_status`
 
 Status: expected runtime limitation
