@@ -437,6 +437,194 @@ describe('PremiereProTools', () => {
     });
   });
 
+  describe('build_sequence_from_clip_plan', () => {
+    it('builds a single-segment sequence with no markers/bin in the minimal number of calls', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({ success: true, newSequenceId: 'seq-new-1' }); // duplicateSequence
+      mockBridge.addToTimelineBatch = jest.fn().mockResolvedValue({
+        success: true, status: 'success', placed: 1, failed: 0, total: 1, results: []
+      } as any);
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Short A',
+        sourceProjectItemId: 'item-1',
+        segments: [{ sourceInPoint: 10, sourceOutPoint: 40 }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.sequenceId).toBe('seq-new-1');
+      expect(result.expectedDurationSeconds).toBe(30);
+      expect(result.markersRequested).toBe(0);
+      expect(result.movedToBin).toBeUndefined();
+      // Only duplicateSequence goes through executeScript; addToTimelineBatch is a separate bridge method.
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      expect(mockBridge.addToTimelineBatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('computes cumulative timeline positions correctly across multiple segments', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({ success: true, newSequenceId: 'seq-new-2' });
+      mockBridge.addToTimelineBatch = jest.fn().mockResolvedValue({
+        success: true, status: 'success', placed: 3, failed: 0, total: 3, results: []
+      } as any);
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Clip B',
+        sourceProjectItemId: 'item-1',
+        segments: [
+          { sourceInPoint: 0, sourceOutPoint: 30 },   // duration 30, starts at 0
+          { sourceInPoint: 100, sourceOutPoint: 120 }, // duration 20, starts at 30
+          { sourceInPoint: 200, sourceOutPoint: 210 }  // duration 10, starts at 50
+        ]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.expectedDurationSeconds).toBe(60);
+      const placedClips = mockBridge.addToTimelineBatch.mock.calls[0][1];
+      expect(placedClips.map((c: any) => c.time)).toEqual([0, 30, 50]);
+      expect(placedClips.map((c: any) => c.sourceInPoint)).toEqual([0, 100, 200]);
+      expect(placedClips.map((c: any) => c.sourceOutPoint)).toEqual([30, 120, 210]);
+    });
+
+    it('adds markers via an explicit setActiveSequence call, not relying on implicit active-sequence side effects', async () => {
+      mockBridge.addToTimelineBatch = jest.fn().mockResolvedValue({
+        success: true, status: 'success', placed: 2, failed: 0, total: 2, results: []
+      } as any);
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, newSequenceId: 'seq-new-3' }) // duplicateSequence
+        .mockResolvedValueOnce({ success: true, message: 'Active sequence set' }) // setActiveSequence
+        .mockResolvedValueOnce({ success: true, markerId: 'm1' }); // addMarker
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Clip C',
+        sourceProjectItemId: 'item-1',
+        segments: [
+          { sourceInPoint: 0, sourceOutPoint: 30 },
+          { sourceInPoint: 100, sourceOutPoint: 110 }
+        ],
+        markers: [
+          { time: 30, name: 'segment boundary', comment: 'stitched segment 2 of 2 starts here' }
+        ]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.markersRequested).toBe(1);
+      expect(result.markersAdded).toBe(1);
+      expect(result.markersFailed).toBe(false);
+      // duplicateSequence, setActiveSequence, addMarker = 3 executeScript calls (addToTimelineBatch is separate)
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(3);
+    });
+
+    it('files the new sequence into a bin by exact name match after creation', async () => {
+      mockBridge.addToTimelineBatch = jest.fn().mockResolvedValue({
+        success: true, status: 'success', placed: 1, failed: 0, total: 1, results: []
+      } as any);
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, newSequenceId: 'seq-new-4' }) // duplicateSequence
+        .mockResolvedValueOnce({
+          success: true,
+          items: [
+            { id: 'item-decoy', name: 'Short D (old copy)', type: 'sequence' },
+            { id: 'item-real', name: 'Short D', type: 'sequence' }
+          ],
+          count: 2
+        }) // findProjectItemByName -- must pick the EXACT name match, not the first substring hit
+        .mockResolvedValueOnce({ success: true, message: 'Item moved to bin', itemId: 'item-real', targetBinId: 'bin-1' }); // moveItemToBin
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Short D',
+        sourceProjectItemId: 'item-1',
+        segments: [{ sourceInPoint: 0, sourceOutPoint: 10 }],
+        targetBinId: 'bin-1'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.movedToBin).toBe(true);
+      const moveCallScript = mockBridge.executeScript.mock.calls[2][0];
+      expect(moveCallScript).toContain('item-real');
+      expect(moveCallScript).not.toContain('item-decoy');
+    });
+
+    it('reports movedToBin: false without failing the whole call when the project item cannot be located', async () => {
+      mockBridge.addToTimelineBatch = jest.fn().mockResolvedValue({
+        success: true, status: 'success', placed: 1, failed: 0, total: 1, results: []
+      } as any);
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, newSequenceId: 'seq-new-5' })
+        .mockResolvedValueOnce({ success: true, items: [], count: 0 }); // findProjectItemByName finds nothing
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Short E',
+        sourceProjectItemId: 'item-1',
+        segments: [{ sourceInPoint: 0, sourceOutPoint: 10 }],
+        targetBinId: 'bin-1'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.movedToBin).toBe(false);
+      expect(result.steps.moveItemToBin.success).toBe(false);
+    });
+
+    it('stops early and reports the real error when duplicateSequence fails', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({ success: false, error: 'Sequence not found' });
+      mockBridge.addToTimelineBatch = jest.fn();
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-missing',
+        sequenceName: 'Short F',
+        sourceProjectItemId: 'item-1',
+        segments: [{ sourceInPoint: 0, sourceOutPoint: 10 }]
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Sequence not found');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      expect(mockBridge.addToTimelineBatch).not.toHaveBeenCalled();
+    });
+
+    it('stops before markers/bin steps when a segment fails to place', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({ success: true, newSequenceId: 'seq-new-6' });
+      mockBridge.addToTimelineBatch = jest.fn().mockResolvedValue({
+        success: false,
+        status: 'partial',
+        placed: 0,
+        failed: 1,
+        total: 1,
+        results: [{ index: 0, success: false, error: 'Bad in/out point' }]
+      } as any);
+
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Short G',
+        sourceProjectItemId: 'item-1',
+        segments: [{ sourceInPoint: 999999, sourceOutPoint: 1 }],
+        markers: [{ time: 0, name: 'should never be added' }],
+        targetBinId: 'bin-1'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('failed to place');
+      // Only duplicateSequence -- markers/bin steps never attempted, so no further executeScript calls.
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an empty segments array before touching the bridge', async () => {
+      const result = await tools.executeTool('build_sequence_from_clip_plan', {
+        templateSequenceId: 'seq-template',
+        sequenceName: 'Short H',
+        sourceProjectItemId: 'item-1',
+        segments: []
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+  });
+
   describe('high-level workflow tools', () => {
     it('builds a motion graphics demo sequence', async () => {
       mockBridge.createSequence = jest.fn().mockResolvedValue({
