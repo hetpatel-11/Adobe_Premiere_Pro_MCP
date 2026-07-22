@@ -18,6 +18,22 @@ Run `node scripts/live-tool-sweep.mjs` against a scratch Premiere project before
 
 ## Confirmed Runtime Limitation
 
+### Several "expanded" tools silently no-op instead of doing anything
+
+Status: confirmed, not fixed in this change -- flagging for a future contribution
+
+While validating `build_sequence_from_clip_plan` live, `delete_bin` was called to clean up a
+disposable test bin and returned `{"success": true, "accepted": true, "args": {}}` without
+actually deleting the bin (confirmed: the bin was still present afterward). Looking at
+`src/tools/expanded.ts`, several expanded tool names (including `delete_bin`,
+`set_sequence_frame_rate`, `set_sequence_resolution`, `set_sequence_pixel_aspect_ratio`,
+`set_sequence_field_type`, `set_sequence_display_format`, `set_sequence_audio_settings`) are
+registered in `expandedToolNames` but have no matching `case` in `buildExpandedToolScript`'s
+dispatch switch -- they all fall through to the generic `default:` handler, which reports
+`accepted: true` while doing nothing to the project at all. Worth an audit and either real
+implementations or an honest "not implemented" response for each, per this project's own rule
+against fake success.
+
 ### `get_render_queue_status`
 
 Status: expected runtime limitation

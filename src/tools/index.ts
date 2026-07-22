@@ -297,6 +297,27 @@ export class PremiereProTools {
           sequenceId: z.string().describe('The ID of the sequence to delete')
         })
       },
+      {
+        name: 'build_sequence_from_clip_plan',
+        description: 'High-level workflow tool: builds one complete sequence from a list of source segments in a single call, instead of separately calling duplicate_sequence, add_to_timeline_batch, add_marker (per marker), find_project_item_by_name, and move_item_to_bin yourself. Duplicates templateSequenceId (clearContents) to get a correctly-specced blank target, places all segments back-to-back computing cumulative timeline positions automatically, adds any markers (at NEW-sequence-relative time, not source time), and optionally files the result into a bin. Returns a `steps` object with each sub-operation\'s raw result so a partial failure is diagnosable rather than opaque.',
+        inputSchema: z.object({
+          templateSequenceId: z.string().describe('Sequence ID to duplicate as the correctly-specced blank target (see duplicate_sequence -- this is the reliable way to get the right resolution/frame rate)'),
+          sequenceName: z.string().describe('Name for the new sequence'),
+          sourceProjectItemId: z.string().describe('Project item ID of the source clip to place on the new sequence'),
+          segments: z.array(z.object({
+            sourceInPoint: z.number().describe('Source in-point in seconds'),
+            sourceOutPoint: z.number().describe('Source out-point in seconds')
+          })).min(1).describe('Ordered segments to place back-to-back on the new sequence\'s timeline. 2+ segments stitch together with cumulative positions computed automatically (segment 2 starts where segment 1 ends, etc.)'),
+          markers: z.array(z.object({
+            time: z.number().describe('Marker time in seconds on the NEW sequence\'s own timeline -- NOT the source video\'s absolute timestamp. For a marker at a segment boundary, this is the cumulative duration of the preceding segments.'),
+            name: z.string().describe('Marker name/label'),
+            comment: z.string().optional().describe('Marker comment/description')
+          })).optional().describe('Markers to add after placement, e.g. segment-stitch boundaries or compliance flags'),
+          targetBinId: z.string().optional().describe('Bin to move the new sequence into after creation (see create_bin/list_project_items to find a bin ID)'),
+          trackIndex: z.number().optional().describe('Video/audio track index to place clips on (default 0)'),
+          linkAudio: z.boolean().optional().describe('Keep audio linked to video when placing clips (default true)')
+        })
+      },
 
       // Timeline Operations
       {
@@ -1258,6 +1279,17 @@ export class PremiereProTools {
           return await this.duplicateSequence(args.sequenceId, args.newName, args.clearContents);
         case 'delete_sequence':
           return await this.deleteSequence(args.sequenceId);
+        case 'build_sequence_from_clip_plan':
+          return await this.buildSequenceFromClipPlan(
+            args.templateSequenceId,
+            args.sequenceName,
+            args.sourceProjectItemId,
+            args.segments,
+            args.markers,
+            args.targetBinId,
+            args.trackIndex,
+            args.linkAudio
+          );
         case 'read_sequence_captions':
           return await this.readSequenceCaptions(args.sequenceId);
         case 'rename_project_item':
@@ -2515,6 +2547,98 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  // High-level workflow: builds one sequence from a clip plan in a single tool call,
+  // composing duplicate_sequence + add_to_timeline_batch + add_marker (per marker) +
+  // find_project_item_by_name + move_item_to_bin -- the exact sequence of calls needed
+  // to build a short/clip sequence by hand, reduced to one round trip per sequence.
+  private async buildSequenceFromClipPlan(
+    templateSequenceId: string,
+    sequenceName: string,
+    sourceProjectItemId: string,
+    segments: Array<{ sourceInPoint: number; sourceOutPoint: number }>,
+    markers?: Array<{ time: number; name: string; comment?: string }>,
+    targetBinId?: string,
+    trackIndex = 0,
+    linkAudio = true
+  ): Promise<any> {
+    const steps: Record<string, any> = {};
+
+    const dup = await this.duplicateSequence(templateSequenceId, sequenceName, true);
+    steps.duplicateSequence = dup;
+    if (dup?.success === false || !dup?.newSequenceId) {
+      return {
+        success: false,
+        error: dup?.error || 'Failed to duplicate templateSequenceId into a blank target sequence',
+        steps
+      };
+    }
+    const sequenceId: string = dup.newSequenceId;
+
+    let cumulative = 0;
+    const clips = segments.map((seg) => {
+      const clip = {
+        projectItemId: sourceProjectItemId,
+        trackIndex,
+        time: cumulative,
+        sourceInPoint: seg.sourceInPoint,
+        sourceOutPoint: seg.sourceOutPoint,
+        linkAudio
+      };
+      cumulative += seg.sourceOutPoint - seg.sourceInPoint;
+      return clip;
+    });
+
+    const placeResult = await this.addToTimelineBatch(sequenceId, clips);
+    steps.addToTimelineBatch = placeResult;
+    if (placeResult?.success === false) {
+      return {
+        success: false,
+        error: 'One or more segments failed to place -- see steps.addToTimelineBatch.results for per-clip detail',
+        sequenceId,
+        steps
+      };
+    }
+
+    const markerResults: any[] = [];
+    if (markers && markers.length > 0) {
+      steps.setActiveSequence = await this.setActiveSequence(sequenceId);
+      for (const marker of markers) {
+        markerResults.push(await this.addMarker(sequenceId, marker.time, marker.name, marker.comment));
+      }
+    }
+    steps.markers = markerResults;
+
+    let binResult: any;
+    if (targetBinId) {
+      const findResult = await this.findProjectItemByName(sequenceName, 'sequence');
+      steps.findProjectItemByName = findResult;
+      const matchedItem = Array.isArray(findResult?.items)
+        ? findResult.items.find((item: any) => item.name === sequenceName)
+        : undefined;
+      if (matchedItem?.id) {
+        binResult = await this.moveItemToBin(matchedItem.id, targetBinId);
+      } else {
+        binResult = { success: false, error: 'Could not find the newly created sequence\'s project item by exact name to move it into the bin' };
+      }
+      steps.moveItemToBin = binResult;
+    }
+
+    const markersFailed = markerResults.some((m) => m?.success === false);
+
+    return {
+      success: true,
+      sequenceId,
+      sequenceName,
+      segmentCount: segments.length,
+      expectedDurationSeconds: cumulative,
+      markersRequested: markers?.length || 0,
+      markersAdded: markerResults.filter((m) => m?.success !== false).length,
+      markersFailed,
+      movedToBin: targetBinId ? binResult?.success !== false : undefined,
+      steps
+    };
   }
 
   private async renameProjectItem(projectItemId: string, newName: string): Promise<any> {
