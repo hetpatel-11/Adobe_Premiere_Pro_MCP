@@ -146,6 +146,162 @@ describe('PremiereProTools', () => {
       expect(result.warning).toBeUndefined();
     });
 
+    it('create_sequence does not attempt to apply settings when none are requested', async () => {
+      mockBridge.createSequence = jest.fn().mockResolvedValue({
+        success: true,
+        id: 'seq-plain',
+        name: 'Plain Sequence'
+      });
+
+      const result = await tools.executeTool('create_sequence', { name: 'Plain Sequence' });
+
+      expect(result.success).toBe(true);
+      expect(result.settingsApplied).toBeUndefined();
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('create_sequence applies and verifies width/height when requested', async () => {
+      mockBridge.createSequence = jest.fn().mockResolvedValue({
+        success: true,
+        id: 'seq-custom',
+        name: 'Custom Sequence'
+      });
+
+      // setSequenceSettings makes 3 executeScript calls in sequence: before-read, mutate, after-read
+      mockBridge.executeScript
+        .mockResolvedValueOnce({
+          success: true,
+          settings: { width: 1920, height: 1080, timebase: '10594584000', audioSampleRate: { seconds: 1 / 48000 } }
+        })
+        .mockResolvedValueOnce({ success: true, applyErrors: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          settings: { width: 1080, height: 1920, timebase: '10594584000', audioSampleRate: { seconds: 1 / 48000 } }
+        });
+
+      const result = await tools.executeTool('create_sequence', {
+        name: 'Custom Sequence',
+        width: 1080,
+        height: 1920
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.settingsApplied.applied.width).toBe(true);
+      expect(result.settingsApplied.applied.height).toBe(true);
+      expect(result.settingsApplied.allRequestedApplied).toBe(true);
+    });
+
+    it('create_sequence honestly reports frameRate as not applied when Premiere ignores it', async () => {
+      mockBridge.createSequence = jest.fn().mockResolvedValue({
+        success: true,
+        id: 'seq-fps',
+        name: 'FPS Sequence'
+      });
+
+      const unchangedSettings = {
+        width: 1920,
+        height: 1080,
+        timebase: '10594584000', // 23.976fps, unaffected by the requested 24fps
+        audioSampleRate: { seconds: 1 / 48000 }
+      };
+
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, settings: unchangedSettings })
+        .mockResolvedValueOnce({ success: true, applyErrors: {} })
+        .mockResolvedValueOnce({ success: true, settings: unchangedSettings });
+
+      const result = await tools.executeTool('create_sequence', {
+        name: 'FPS Sequence',
+        frameRate: 24
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.settingsApplied.applied.frameRate).toBe(false);
+      expect(result.settingsApplied.allRequestedApplied).toBe(false);
+    });
+  });
+
+  describe('set_sequence_settings', () => {
+    it('rejects invalid arguments before touching the bridge', async () => {
+      const result = await tools.executeTool('set_sequence_settings', {
+        sequenceId: 'seq-1',
+        settings: { width: 'not-a-number' }
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('returns an error and makes no further calls when the sequence is not found', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({
+        success: false,
+        error: 'Sequence not found by id: seq-missing'
+      });
+
+      const result = await tools.executeTool('set_sequence_settings', {
+        sequenceId: 'seq-missing',
+        settings: { width: 1080 }
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Sequence not found');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+    });
+
+    it('never calls getSettings() again within the same script as a setSettings() call (crash-avoidance regression guard)', async () => {
+      mockBridge.executeScript
+        .mockResolvedValueOnce({
+          success: true,
+          settings: { width: 1280, height: 720, timebase: '8467200000', audioSampleRate: { seconds: 1 / 48000 } }
+        })
+        .mockResolvedValueOnce({ success: true, applyErrors: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          settings: { width: 1080, height: 1920, timebase: '8467200000', audioSampleRate: { seconds: 1 / 48000 } }
+        });
+
+      await tools.executeTool('set_sequence_settings', {
+        sequenceId: 'seq-1',
+        settings: { width: 1080, height: 1920 }
+      });
+
+      // The mutate script (2nd call) must never contain a getSettings() call after its
+      // setSettings() call -- that exact pattern crashes the ExtendScript host (see comment
+      // above setSequenceSettings). Assert on the actual generated script, not just the result,
+      // so this regresses loudly if someone reintroduces the crash-prone pattern.
+      const mutateScriptCall = mockBridge.executeScript.mock.calls[1][0];
+      const setIndex = mutateScriptCall.indexOf('setSettings(mutable)');
+      const nextGetSettingsIndex = mutateScriptCall.indexOf('.getSettings()', setIndex);
+      expect(setIndex).toBeGreaterThan(-1);
+      expect(nextGetSettingsIndex).toBe(-1);
+    });
+
+    it('issues sample rate mutation as its own separate script, never combined with the dimensions setSettings call', async () => {
+      mockBridge.executeScript
+        .mockResolvedValueOnce({
+          success: true,
+          settings: { width: 1280, height: 720, timebase: '8467200000', audioSampleRate: { seconds: 1 / 44100 } }
+        })
+        .mockResolvedValueOnce({ success: true, applyErrors: {} })
+        .mockResolvedValueOnce({ success: true })
+        .mockResolvedValueOnce({
+          success: true,
+          settings: { width: 1280, height: 720, timebase: '8467200000', audioSampleRate: { seconds: 1 / 44100 } }
+        });
+
+      await tools.executeTool('set_sequence_settings', {
+        sequenceId: 'seq-1',
+        settings: { width: 1080, sampleRate: 48000 }
+      });
+
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(4);
+      const dimensionsScript = mockBridge.executeScript.mock.calls[1][0];
+      const sampleRateScript = mockBridge.executeScript.mock.calls[2][0];
+      expect(dimensionsScript).not.toContain('audioSampleRate');
+      expect(sampleRateScript).toContain('audioSampleRate');
+    });
+
     it('passes through successful imports', async () => {
       mockBridge.importMedia = jest.fn().mockResolvedValue({
         success: true,

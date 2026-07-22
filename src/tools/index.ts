@@ -271,14 +271,14 @@ export class PremiereProTools {
       // Sequence Management
       {
         name: 'create_sequence',
-        description: 'Creates a new sequence in the project. A sequence is a timeline where you edit clips.',
+        description: 'Creates a new sequence in the project (from Premiere\'s default/last-used preset), then -- if width/height/frameRate/sampleRate are given -- attempts to apply them and reports per-field whether each one actually took effect (see `settingsApplied.applied`). Width/height are reliably applied; frame rate and sample rate are NOT reliably changeable on a freshly created sequence in Premiere, so check `settingsApplied.applied.frameRate`/`.sampleRate` rather than assuming success -- if false, use `presetPath` pointing at a preset with the desired rate, or duplicate_sequence from an existing sequence that already has it.',
         inputSchema: z.object({
           name: z.string().describe('The name for the new sequence'),
           presetPath: z.string().optional().describe('Optional path to a sequence preset file for custom settings'),
-          width: z.number().optional().describe('Sequence width in pixels'),
-          height: z.number().optional().describe('Sequence height in pixels'),
-          frameRate: z.number().optional().describe('Frame rate (e.g., 24, 25, 30, 60)'),
-          sampleRate: z.number().optional().describe('Audio sample rate (e.g., 48000)')
+          width: z.number().optional().describe('Sequence width in pixels -- reliably applied post-creation if provided'),
+          height: z.number().optional().describe('Sequence height in pixels -- reliably applied post-creation if provided'),
+          frameRate: z.number().optional().describe('Frame rate (e.g., 24, 25, 30, 60) -- attempted post-creation but not reliably supported by Premiere, check settingsApplied.applied.frameRate'),
+          sampleRate: z.number().optional().describe('Audio sample rate in Hz (e.g., 48000) -- attempted post-creation but not reliably supported by Premiere, check settingsApplied.applied.sampleRate')
         })
       },
       {
@@ -700,14 +700,14 @@ export class PremiereProTools {
       },
       {
         name: 'set_sequence_settings',
-        description: 'Updates sequence settings.',
+        description: 'Updates sequence settings. Width/height changes are reliably supported and verified by reading the setting back after the write. Frame rate and audio sample rate changes are attempted but are NOT reliably supported by Premiere on an existing sequence -- check the returned `applied` map per field rather than assuming success; if `applied.frameRate` or `applied.sampleRate` comes back false, use `presetPath` on create_sequence pointing at a preset with the desired rate, or duplicate_sequence from an existing sequence that already has it.',
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence'),
           settings: z.object({
-            width: z.number().optional().describe('Frame width'),
-            height: z.number().optional().describe('Frame height'),
-            frameRate: z.number().optional().describe('Frame rate'),
-            pixelAspectRatio: z.number().optional().describe('Pixel aspect ratio')
+            width: z.number().optional().describe('Frame width in pixels'),
+            height: z.number().optional().describe('Frame height in pixels'),
+            frameRate: z.number().optional().describe('Frame rate (e.g. 24, 25, 30, 60) -- attempted but not reliably supported post-creation, check applied.frameRate'),
+            sampleRate: z.number().optional().describe('Audio sample rate in Hz (e.g. 48000) -- attempted but not reliably supported post-creation, check applied.sampleRate')
           }).describe('Settings to update')
         })
       },
@@ -2394,7 +2394,7 @@ export class PremiereProTools {
   }
 
   // Sequence Management Implementation
-  private async createSequence(name: string, presetPath?: string, _width?: number, _height?: number, _frameRate?: number, _sampleRate?: number): Promise<any> {
+  private async createSequence(name: string, presetPath?: string, width?: number, height?: number, frameRate?: number, sampleRate?: number): Promise<any> {
     try {
       const result: any = await this.bridge.createSequence(name, presetPath);
       if (result?.success === false) {
@@ -2404,11 +2404,30 @@ export class PremiereProTools {
         };
       }
 
+      let settingsApplied: any = undefined;
+      const wantsCustomSettings = width !== undefined || height !== undefined || frameRate !== undefined || sampleRate !== undefined;
+      if (wantsCustomSettings && result?.id) {
+        try {
+          settingsApplied = await this.setSequenceSettings(result.id, {
+            ...(width !== undefined ? { width } : {}),
+            ...(height !== undefined ? { height } : {}),
+            ...(frameRate !== undefined ? { frameRate } : {}),
+            ...(sampleRate !== undefined ? { sampleRate } : {}),
+          });
+        } catch (settingsError) {
+          settingsApplied = {
+            success: false,
+            error: settingsError instanceof Error ? settingsError.message : String(settingsError)
+          };
+        }
+      }
+
       return {
         success: true,
         message: `Sequence "${name}" created successfully`,
         sequenceName: name,
-        ...result
+        ...result,
+        ...(settingsApplied ? { settingsApplied } : {})
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -4902,11 +4921,136 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async setSequenceSettings(_sequenceId: string, _settings: any): Promise<any> {
+  // IMPORTANT: calling sequence.getSettings() again immediately after sequence.setSettings()
+  // within the SAME ExtendScript execution reliably crashes the ExtendScript host (returns
+  // Adobe's generic "EvalScript error." at the CEP layer, bypassing any try/catch in the
+  // script -- confirmed by isolated testing, not assumed). So each mutation below is its own
+  // separate bridge.executeScript() call (get once, set once, return -- no re-read), and
+  // verification happens via a completely separate, later executeScript() call
+  // (getSequenceSettings), never inside the same script as a setSettings() call.
+  private async setSequenceSettings(sequenceId: string, settings: {
+    width?: number;
+    height?: number;
+    frameRate?: number;
+    sampleRate?: number;
+  }): Promise<any> {
+    const requested: { width?: number; height?: number; frameRate?: number; sampleRate?: number } = {
+      ...(settings.width !== undefined ? { width: settings.width } : {}),
+      ...(settings.height !== undefined ? { height: settings.height } : {}),
+      ...(settings.frameRate !== undefined ? { frameRate: settings.frameRate } : {}),
+      ...(settings.sampleRate !== undefined ? { sampleRate: settings.sampleRate } : {}),
+    };
+
+    const beforeRaw = await this.getSequenceSettings(sequenceId);
+    if (beforeRaw?.success === false) {
+      return { success: false, error: beforeRaw.error || `Sequence not found by id: ${sequenceId}` };
+    }
+
+    const applyErrors: Record<string, string> = {};
+
+    if (requested.width !== undefined || requested.height !== undefined || requested.frameRate !== undefined) {
+      const dimensionAssignments = [
+        requested.width !== undefined ? `mutable.videoFrameWidth = ${requested.width};` : '',
+        requested.height !== undefined ? `mutable.videoFrameHeight = ${requested.height};` : '',
+      ].filter(Boolean).join('\n          ');
+
+      const frameRateAssignment = requested.frameRate !== undefined
+        ? `
+        try {
+          sequence.timebase = String(Math.round(254016000000 / ${requested.frameRate}));
+        } catch (eFps) {
+          applyErrors.frameRate = eFps.toString();
+        }`
+        : '';
+
+      const mutateScript = `
+        try {
+          var sequence = __findSequence(${JSON.stringify(sequenceId)});
+          if (!sequence) {
+            return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
+          }
+          var applyErrors = {};
+          ${dimensionAssignments ? `
+          try {
+            var mutable = sequence.getSettings();
+            ${dimensionAssignments}
+            sequence.setSettings(mutable);
+          } catch (eDim) {
+            applyErrors.dimensions = eDim.toString();
+          }` : ''}
+          ${frameRateAssignment}
+          return JSON.stringify({ success: true, applyErrors: applyErrors });
+        } catch (e) {
+          return JSON.stringify({ success: false, error: e.toString() });
+        }
+      `;
+      const mutateResult = await this.bridge.executeScript(mutateScript);
+      if (mutateResult?.applyErrors) {
+        Object.assign(applyErrors, mutateResult.applyErrors);
+      }
+      if (mutateResult?.success === false) {
+        applyErrors.dimensionsOrFrameRate = mutateResult.error || 'Unknown error applying width/height/frameRate';
+      }
+    }
+
+    // Sample rate needs its own getSettings()+setSettings() pair -- kept in a separate bridge
+    // call so it never follows the dimensions block's setSettings() within the same script.
+    if (requested.sampleRate !== undefined) {
+      const rateScript = `
+        try {
+          var sequence = __findSequence(${JSON.stringify(sequenceId)});
+          if (!sequence) {
+            return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
+          }
+          try {
+            var rateSettings = sequence.getSettings();
+            if (rateSettings.audioSampleRate && rateSettings.audioSampleRate.ticks !== undefined) {
+              rateSettings.audioSampleRate.ticks = String(Math.round(254016000000 / ${requested.sampleRate}));
+              sequence.setSettings(rateSettings);
+            }
+            return JSON.stringify({ success: true });
+          } catch (eRate) {
+            return JSON.stringify({ success: false, error: eRate.toString() });
+          }
+        } catch (e) {
+          return JSON.stringify({ success: false, error: e.toString() });
+        }
+      `;
+      const rateResult = await this.bridge.executeScript(rateScript);
+      if (rateResult?.success === false) {
+        applyErrors.sampleRate = rateResult.error || 'Unknown error applying sampleRate';
+      }
+    }
+
+    const afterRaw = await this.getSequenceSettings(sequenceId);
+
+    const beforeSettings = beforeRaw?.settings || {};
+    const afterSettings = afterRaw?.settings || {};
+    const TICKS_PER_SECOND = 254016000000;
+    const beforeFps = beforeSettings.timebase ? TICKS_PER_SECOND / parseInt(beforeSettings.timebase, 10) : null;
+    const afterFps = afterSettings.timebase ? TICKS_PER_SECOND / parseInt(afterSettings.timebase, 10) : null;
+    const beforeSampleHz = beforeSettings.audioSampleRate?.seconds ? Math.round(1 / beforeSettings.audioSampleRate.seconds) : null;
+    const afterSampleHz = afterSettings.audioSampleRate?.seconds ? Math.round(1 / afterSettings.audioSampleRate.seconds) : null;
+
+    const applied: Record<string, boolean> = {};
+    if (requested.width !== undefined) applied.width = afterSettings.width === requested.width;
+    if (requested.height !== undefined) applied.height = afterSettings.height === requested.height;
+    if (requested.frameRate !== undefined) applied.frameRate = afterFps !== null && Math.abs(afterFps - requested.frameRate) < 0.01;
+    if (requested.sampleRate !== undefined) applied.sampleRate = afterSampleHz !== null && Math.abs(afterSampleHz - requested.sampleRate) < 1;
+
+    const anyRequested = Object.keys(applied).length > 0;
+    const allRequestedApplied = anyRequested ? Object.values(applied).every(Boolean) : null;
+
     return {
-      success: false,
-      error: "set_sequence_settings: Sequence settings cannot be changed after creation in Premiere Pro",
-      note: "Create a new sequence with desired settings instead"
+      success: true,
+      sequenceId,
+      requested,
+      applied,
+      allRequestedApplied,
+      applyErrors,
+      before: { width: beforeSettings.width, height: beforeSettings.height, frameRate: beforeFps, sampleRate: beforeSampleHz },
+      after: { width: afterSettings.width, height: afterSettings.height, frameRate: afterFps, sampleRate: afterSampleHz },
+      note: "Width/height changes are supported and verified above via read-back. Premiere does not reliably support changing an existing sequence's frame rate or audio sample rate after creation -- if applied.frameRate or applied.sampleRate is false, use presetPath on create_sequence pointing at a preset with the desired rate, or duplicate_sequence from an existing sequence that already has it."
     };
   }
 
