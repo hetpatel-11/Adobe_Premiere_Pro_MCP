@@ -50,9 +50,47 @@ Current behavior:
 - the tool is still exposed
 - it returns an error explaining that render queue monitoring requires Adobe Media Encoder
 
+## Confirmed Runtime Limitation
+
+### `create_sequence` can trigger an interactive "New Sequence" dialog
+
+Status: confirmed, non-deterministic, no fix identified yet
+
+Reason:
+
+- `app.project.createNewSequence(name, presetPath)` calls Premiere's stock sequence-creation
+  API. In some sessions (root cause not yet isolated -- did not reproduce on every call in
+  testing) this pops Premiere's interactive "New Sequence" dialog instead of creating silently.
+- While that dialog is open, the entire ExtendScript host is blocked -- not just the current
+  tool call. Every subsequent tool call (including `ping`) times out until a human clicks
+  through the dialog in Premiere's UI.
+- When this happens mid-`create_sequence`, the sequence is left at Premiere's default preset
+  (1920x1080 @ 23.976fps) and any requested width/height/frameRate/sampleRate never gets
+  applied, because the timeout aborts the call before the settings-apply step runs.
+
+Practical consequence:
+
+- `create_sequence` is not safe to rely on for fully unattended/headless workflows today.
+- `duplicate_sequence` (with `clearContents: true`) has not shown this behavior across dozens
+  of calls in testing and is the recommended way to reliably create a correctly-specced
+  sequence without risking an interactive dialog.
+
 ## Operational Limits
 
 These are not hidden bugs; they are boundaries of the current architecture.
+
+### Never call `getSettings()` again after `setSettings()` within the same script
+
+Calling `sequence.getSettings()` a second time immediately after `sequence.setSettings()`
+inside the *same* ExtendScript execution reliably crashes the ExtendScript host -- Premiere
+returns its generic `EvalScript error.` at the CEP layer, which bypasses any try/catch in the
+script entirely (confirmed via isolated bisection testing, not assumed from a single failure).
+
+Practical consequence for anyone adding new sequence-settings-mutating tools:
+
+- Split "mutate" and "verify" into separate `bridge.executeScript()` calls.
+- `setSequenceSettings` does this correctly (see its implementation comment) -- follow that
+  pattern rather than combining a settings mutation and a fresh settings read in one script.
 
 ### Premiere scripting is incomplete
 
@@ -105,6 +143,8 @@ These issues were real and are now resolved in the current code:
 - the server could delete an externally managed temp directory on shutdown
 - the CEP bridge could fail with `ENOENT` when the configured temp directory did not exist
 - `create_sequence` could create a sequence in Premiere but still report failure after a bridge timeout
+- `create_sequence` silently ignored its `width`/`height`/`frameRate`/`sampleRate` parameters -- they were accepted by the schema but never forwarded past the TypeScript wrapper, so every sequence came out at Premiere's default preset regardless of what was requested
+- `set_sequence_settings` was a hardcoded stub that always returned `success: false` without generating any ExtendScript at all. It now genuinely applies width/height (verified via a post-write read-back) and honestly reports per-field whether frame rate/sample rate changes actually took effect, since Premiere does not reliably support changing those on an existing sequence
 - `export_frame` called a non-existent API and now uses the QE export path
 - `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
 - the branded workflow response returned the wrong message due to object spread order
