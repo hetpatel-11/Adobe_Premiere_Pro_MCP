@@ -4524,8 +4524,31 @@ export class PremiereProTools {
   // NEW TOOLS IMPLEMENTATION
   // ============================================
 
+  // Premiere marker setColorByIndex: 0=green, 1=red, 2=purple, 3=orange, 4=yellow, 5=white, 6=blue, 7=cyan
+  private markerColorIndex(color?: string): number | null {
+    if (!color) return null;
+    const key = String(color).trim().toLowerCase();
+    const map: Record<string, number> = {
+      green: 0,
+      red: 1,
+      purple: 2,
+      orange: 3,
+      yellow: 4,
+      tan: 4,
+      white: 5,
+      blue: 6,
+      cyan: 7,
+      aquamarine: 7,
+      turquoise: 7
+    };
+    if (Object.prototype.hasOwnProperty.call(map, key)) return map[key] as number;
+    const asNum = parseInt(key, 10);
+    return Number.isFinite(asNum) ? asNum : null;
+  }
+
   // Markers Implementation
   private async addMarker(_sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
+    const colorIndex = this.markerColorIndex(color);
     const script = `
       try {
         var sequence = app.project.activeSequence;
@@ -4538,7 +4561,7 @@ export class PremiereProTools {
           var marker = sequence.markers.createMarker(${time});
           marker.name = ${JSON.stringify(name)};
           ${comment ? `marker.comments = ${JSON.stringify(comment)};` : ''}
-          ${color ? `marker.setColorByIndex(${color === 'red' ? '5' : color === 'green' ? '3' : color === 'blue' ? '1' : '0'});` : ''}
+          ${colorIndex !== null ? `marker.setColorByIndex(${colorIndex});` : ''}
           ${duration && duration > 0 ? `marker.end = ${time + duration};` : ''}
 
           return JSON.stringify({
@@ -4592,6 +4615,7 @@ export class PremiereProTools {
   }
 
   private async updateMarker(_sequenceId: string, markerId: string, updates: any): Promise<any> {
+    const colorIndex = this.markerColorIndex(updates?.color);
     const script = `
       try {
         var sequence = app.project.activeSequence;
@@ -4602,15 +4626,16 @@ export class PremiereProTools {
           });
         } else {
           var found = false;
-          for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            var marker = sequence.markers[i];
+          var marker = sequence.markers.getFirstMarker();
+          while (marker) {
             if (marker.guid === ${JSON.stringify(markerId)}) {
               ${updates.name ? `marker.name = ${JSON.stringify(updates.name)};` : ''}
               ${updates.comment ? `marker.comments = ${JSON.stringify(updates.comment)};` : ''}
-              ${updates.color ? `marker.setColorByIndex(${updates.color === 'red' ? '5' : updates.color === 'green' ? '3' : updates.color === 'blue' ? '1' : '0'});` : ''}
+              ${colorIndex !== null ? `marker.setColorByIndex(${colorIndex});` : ''}
               found = true;
               break;
             }
+            marker = sequence.markers.getNextMarker(marker);
           }
 
           return JSON.stringify({
