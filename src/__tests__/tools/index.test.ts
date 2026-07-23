@@ -2,10 +2,34 @@
  * Unit tests for PremiereProTools
  */
 
+import { EventEmitter } from 'events';
+import { spawn } from 'child_process';
 import { PremiereProTools } from '../../tools/index.js';
 import { PremiereProBridge } from '../../bridge/index.js';
 
 jest.mock('../../bridge/index.js');
+jest.mock('child_process');
+
+const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
+
+/** Builds a fake child_process for a scripted ffmpeg run: emits stderr, then closes. */
+function fakeFfmpegProcess(stderrOutput: string, closeCode: number | null = 0): any {
+  const proc: any = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  process.nextTick(() => {
+    if (stderrOutput) proc.stderr.emit('data', Buffer.from(stderrOutput));
+    proc.emit('close', closeCode);
+  });
+  return proc;
+}
+
+/** Builds a fake child_process that immediately errors (e.g. ffmpeg not on PATH). */
+function fakeMissingFfmpegProcess(): any {
+  const proc: any = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  process.nextTick(() => proc.emit('error', new Error('ENOENT')));
+  return proc;
+}
 
 describe('PremiereProTools', () => {
   let tools: PremiereProTools;
@@ -15,6 +39,7 @@ describe('PremiereProTools', () => {
     mockBridge = new PremiereProBridge() as jest.Mocked<PremiereProBridge>;
     tools = new PremiereProTools(mockBridge);
     jest.clearAllMocks();
+    mockSpawn.mockReset();
   });
 
   describe('getAvailableTools()', () => {
@@ -223,6 +248,105 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('Track not found');
+    });
+  });
+
+  describe('detect_silence', () => {
+    it('rejects when neither mediaPath nor projectItemId is provided', async () => {
+      const result = await tools.executeTool('detect_silence', {});
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('returns an explicit error when ffmpeg is not on PATH, rather than a cryptic spawn failure', async () => {
+      mockSpawn.mockReturnValueOnce(fakeMissingFfmpegProcess());
+
+      const result = await tools.executeTool('detect_silence', {
+        mediaPath: '/tmp/some-clip.mp4'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('ffmpeg was not found on PATH');
+      // Only the version-check spawn should have happened -- never attempted the real analysis.
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('parses silence_start/silence_end pairs from ffmpeg stderr into intervals', async () => {
+      const ffmpegStderr = [
+        '[silencedetect @ 0x0] silence_start: 1.999977',
+        '[silencedetect @ 0x0] silence_end: 5.000045 | silence_duration: 3.000068',
+        '[silencedetect @ 0x0] silence_start: 6.999977',
+        '[silencedetect @ 0x0] silence_end: 10.000000 | silence_duration: 3.000023'
+      ].join('\n');
+
+      // Dispatch on the actual args ffmpeg was invoked with, rather than call order --
+      // more robust than chained mockReturnValueOnce for a two-spawn-call code path.
+      mockSpawn.mockImplementation((_cmd: any, spawnArgs: any) => {
+        const isVersionCheck = Array.isArray(spawnArgs) && spawnArgs.includes('-version');
+        return isVersionCheck ? fakeFfmpegProcess('', 0) : fakeFfmpegProcess(ffmpegStderr, 0);
+      });
+
+      const result = await tools.executeTool('detect_silence', {
+        mediaPath: '/tmp/some-clip.mp4',
+        noiseThresholdDb: -30,
+        minDurationSeconds: 1
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.silenceIntervals).toEqual([
+        { start: 1.999977, end: 5.000045, duration: 3 },
+        { start: 6.999977, end: 10, duration: 3 }
+      ]);
+      expect(result.note).toContain('Detection only');
+    });
+
+    it('resolves a projectItemId to a media path via the bridge before running ffmpeg', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({
+        success: true,
+        mediaPath: '/Volumes/Footage/session.mp4'
+      });
+      mockSpawn.mockImplementation(() => fakeFfmpegProcess('', 0));
+
+      const result = await tools.executeTool('detect_silence', {
+        projectItemId: 'item-789'
+      });
+
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(true);
+      expect(result.mediaPath).toBe('/Volumes/Footage/session.mp4');
+      expect(result.silenceIntervals).toEqual([]);
+    });
+
+    it('surfaces a clear error when the project item cannot be resolved to a media path', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({
+        success: false,
+        error: 'Project item has no media path (is it a sequence or bin?)'
+      });
+
+      const result = await tools.executeTool('detect_silence', {
+        projectItemId: 'item-a-bin'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('no media path');
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
+    it('reports a clear failure when ffmpeg cannot read the file at all', async () => {
+      mockSpawn.mockImplementation((_cmd: any, spawnArgs: any) => {
+        const isVersionCheck = Array.isArray(spawnArgs) && spawnArgs.includes('-version');
+        return isVersionCheck ? fakeFfmpegProcess('', 0) : fakeFfmpegProcess('Error opening input file', 254);
+      });
+
+      const result = await tools.executeTool('detect_silence', {
+        mediaPath: '/tmp/does-not-exist.mp4'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("couldn't be read");
     });
   });
 
