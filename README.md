@@ -99,7 +99,19 @@ npx skills add https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/tree/main/s
 
 The skill teaches agents how to install the MCP, start and verify the CEP bridge, use the Premiere tools safely, import real media before editing, prefer sequence-aware operations, and run diagnostics when something fails.
 
-## Fastest Install (macOS)
+## Fastest Install
+
+### Windows with VS Code and GitHub Copilot
+
+```powershell
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm run setup:win
+```
+
+The Windows installer builds the server, installs the CEP extension, enables CEP debug mode, creates the bridge temp directory, and adds `premiere-pro` to the VS Code user MCP configuration used by GitHub Copilot. It does not require Claude and does not create or modify Claude configuration.
+
+### macOS with Claude Desktop
 
 ```bash
 git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
@@ -143,6 +155,18 @@ If you need a visual reference for the developer mode toggle, it looks like this
 If the panel reports that Premiere is ready after `Start Bridge`, the bridge is live.
 
 ## Install By Client
+
+### VS Code and GitHub Copilot on Windows
+
+Run:
+
+```powershell
+npm run setup:win
+```
+
+The installer writes the `premiere-pro` server entry to `%APPDATA%\Code\User\mcp.json` while preserving other configured servers. After installation, restart VS Code and run `MCP: List Servers` from the Command Palette to confirm that `premiere-pro` is running.
+
+The bridge directory shown in the Premiere CEP panel must match `%TEMP%\premiere-mcp-bridge`.
 
 ### Claude Desktop
 

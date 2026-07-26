@@ -2,6 +2,25 @@
 
 This is the shortest path to a working install.
 
+## GitHub Copilot in VS Code (Windows)
+
+```powershell
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm run setup:win
+```
+
+This installs and builds the MCP server, installs the Premiere CEP panel, and registers `premiere-pro` in the VS Code user MCP configuration. It does not use or configure Claude.
+
+Then:
+
+1. Restart VS Code and Premiere Pro.
+2. In Premiere Pro, open `Window > Extensions > MCP Bridge (CEP)`.
+3. Set `Temp Directory` to `%TEMP%\premiere-mcp-bridge` using the expanded path printed by the installer.
+4. Click `Save Configuration`, `Start Bridge`, and `Test Connection`.
+5. In VS Code, run `MCP: List Servers` and confirm that `premiere-pro` is running.
+6. Open GitHub Copilot Chat in Agent mode and ask `What's my current Premiere Pro project info?`.
+
 ## Claude Desktop (macOS)
 
 ```bash

@@ -17,6 +17,14 @@ npm run setup:mac
 
 That installs the CEP extension, builds the server, enables CEP debug mode, and updates Claude Desktop config.
 
+For Windows with VS Code and GitHub Copilot:
+
+```powershell
+npm run setup:win
+```
+
+That performs the equivalent setup and updates the VS Code user MCP config without creating Claude config.
+
 ## Core Development Loop
 
 Use this order:
@@ -48,6 +56,7 @@ cep-plugin/
 
 scripts/
   install-macos.sh        macOS installer
+  install-windows.ps1     Windows installer for VS Code and Copilot
   doctor-macos.sh         local installation verifier
   uninstall-macos.sh      macOS uninstall helper
   live-tool-sweep.mjs     end-to-end live tool verifier
