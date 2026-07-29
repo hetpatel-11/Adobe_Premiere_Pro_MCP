@@ -458,6 +458,57 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript).not.toHaveBeenCalled();
     });
 
+    it('identifies the newly inserted apply_effect component instead of assuming it is last', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        effectName: 'Lumetri Color',
+        addedComponent: {
+          displayName: 'Lumetri Color',
+          componentIndex: 2,
+          identificationStrategy: 'unique ordered component fingerprint insertion'
+        }
+      });
+
+      const result = await tools.executeTool('apply_effect', {
+        clipId: 'clip-123',
+        effectName: 'Lumetri Color',
+        parameters: { Exposure: 0 }
+      });
+
+      expect(result.success).toBe(true);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('var beforeComponents = snapshotComponents(clip)');
+      expect(script).toContain('var afterInfo = __findClip("clip-123")');
+      expect(script).toContain('if (afterIndex !== candidateIndex) withoutCandidate.push(afterComponents[afterIndex])');
+      expect(script).toContain('if (candidateIndices.length !== 1)');
+      expect(script).toContain('no parameters were written');
+      expect(script).toContain('effectAdded: true');
+      expect(script).toContain('retryUnsafe: true');
+      expect(script).not.toContain('var newCompIdx = afterCount - 1');
+    });
+
+    it('requires apply_effect parameter readback to verify or demonstrably change', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: false,
+        error: 'One or more effect parameters could not be set'
+      });
+
+      await tools.executeTool('apply_effect', {
+        clipId: 'clip-123',
+        effectName: 'Lumetri Color',
+        parameters: { Exposure: -5.7 }
+      });
+
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('verification: verified ? "verified"');
+      expect(script).toContain('var resultOk = verified || acceptedWithWarning');
+      expect(script).toContain('Premiere changed the property but readback differs');
+      expect(script).toContain('Premiere accepted setValue but the resulting value could not be read back');
+      expect(script).toContain('if (!valuesEquivalent(actual[vai], requested[vai]))');
+      expect(script).toContain('warnings: paramWarnings');
+      expect(script).toContain('if (!paramResults[pr].ok)');
+    });
+
     it('returns an explicit unsupported result for caption track deletion', async () => {
       const result = await tools.executeTool('delete_track', {
         sequenceId: 'seq-123',
