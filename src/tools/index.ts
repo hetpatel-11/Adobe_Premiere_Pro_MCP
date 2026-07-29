@@ -4511,13 +4511,73 @@ export class PremiereProTools {
         var info = __findClip("${clipId}");
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var oldSpeed = info.clip.getSpeed();
+        var oldDuration = info.clip.duration ? Number(info.clip.duration.seconds) : null;
         var qeSeq = qe.project.getActiveSequence();
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         var qeClip = qeTrack.getItemAt(info.clipIndex);
-        try { qeClip.setSpeed(${speed}, ${maintainAudio}); } catch(e2) {
-          return JSON.stringify({ success: false, error: "Speed change via QE DOM not available: " + e2.toString() });
+
+        // QE setSpeed requires ALL FIVE arguments:
+        //   setSpeed(speed, durationTimecode, reverse, audioPitchCorrection, rippleEdit)
+        // Anything shorter throws "Not Enough Parameters" — verified on Premiere Pro 26.0.2 by
+        // probing each arity in turn; 1 through 4 arguments all threw, 5 succeeded. The old
+        // two-argument call therefore never worked at all.
+        //
+        // The duration argument is not optional either: it drives the resulting clip length, so
+        // it is derived from the current duration and the requested multiplier rather than left
+        // for Premiere to infer.
+        var frameRate = 30;
+        try {
+          if (info.sequence && info.sequence.timebase) {
+            frameRate = 254016000000 / parseInt(info.sequence.timebase, 10);
+          }
+        } catch (rateError) {}
+
+        function toTimecode(totalSeconds, fps) {
+          if (!totalSeconds || totalSeconds < 0) totalSeconds = 0;
+          var whole = Math.floor(totalSeconds);
+          var frames = Math.round((totalSeconds - whole) * fps);
+          if (frames >= Math.round(fps)) { whole += 1; frames = 0; }
+          var hh = Math.floor(whole / 3600);
+          var mm = Math.floor((whole % 3600) / 60);
+          var ss = whole % 60;
+          function pad(n) { return (n < 10 ? "0" : "") + n; }
+          return pad(hh) + ";" + pad(mm) + ";" + pad(ss) + ";" + pad(frames);
         }
-        return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speed} });
+
+        var targetDuration = (oldDuration !== null && ${speed} !== 0) ? (oldDuration / ${speed}) : null;
+        var durationTimecode = toTimecode(targetDuration === null ? 0 : targetDuration, frameRate);
+
+        try {
+          qeClip.setSpeed(${speed}, durationTimecode, false, ${maintainAudio}, false);
+        } catch(e2) {
+          return JSON.stringify({
+            success: false,
+            error: "Speed change via QE DOM not available: " + e2.toString(),
+            attemptedTimecode: durationTimecode
+          });
+        }
+
+        // Verify rather than assume: read the clip back and confirm the duration actually moved.
+        var newDuration = null;
+        try {
+          var recheck = __findClip("${clipId}");
+          if (recheck && recheck.clip.duration) newDuration = Number(recheck.clip.duration.seconds);
+        } catch (verifyError) {}
+
+        var applied = (newDuration !== null && oldDuration !== null)
+          ? Math.abs(newDuration - oldDuration) > 0.01
+          : null;
+
+        return JSON.stringify({
+          success: applied === false ? false : true,
+          error: applied === false ? "setSpeed returned without changing the clip duration" : undefined,
+          oldSpeed: oldSpeed,
+          newSpeed: ${speed},
+          oldDuration: oldDuration,
+          newDuration: newDuration,
+          durationTimecode: durationTimecode,
+          frameRate: frameRate
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
