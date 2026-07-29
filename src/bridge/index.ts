@@ -82,7 +82,7 @@ function __findClip(nodeId, sequenceId) {
   if (!app.project) return null;
   if (sequenceId) return __findClipInSequence(__findSequence(sequenceId), nodeId);
 
-  var found = __findClipInSequence(app.project.activeSequence, nodeId);
+  var found = __findClipInSequence(__activeSequence(), nodeId);
   if (found) return found;
 
   if (!app.project.sequences) return null;
@@ -111,6 +111,34 @@ function __findProjectItem(nodeId) {
     return null;
   }
   return walk(app.project.rootItem);
+}
+function __activeSequence() {
+  // app.project.activeSequence keeps returning a sequence from a previously open project after
+  // a project switch. Reproduced on Premiere Pro 26.0.2: a freshly created empty project
+  // reported sequenceCount 0 while activeSequence still named a sequence from the project
+  // before it, and that stale object stayed readable rather than throwing. Anything built on
+  // it is operating on a sequence that is not in the open project.
+  //
+  // The stale value is detectable — its sequenceID is absent from app.project.sequences — so
+  // check membership and return null instead of handing back a phantom.
+  //
+  // This is the one place that reads the raw property; everywhere else calls this.
+  if (!app.project) return null;
+
+  var active = null;
+  try { active = app.project.activeSequence; } catch (e) { return null; }
+  if (!active) return null;
+
+  var activeId = null;
+  try { activeId = String(active.sequenceID); } catch (e) { return null; }
+  if (!activeId || !app.project.sequences) return null;
+
+  for (var i = 0; i < app.project.sequences.numSequences; i++) {
+    try {
+      if (String(app.project.sequences[i].sequenceID) === activeId) return active;
+    } catch (e) {}
+  }
+  return null;
 }
 function __ticksToSeconds(ticks) {
   return parseInt(ticks, 10) / 254016000000;
@@ -931,7 +959,7 @@ export class PremiereProBridge implements PremiereProTransport {
       try {
         // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper.
         // Fail hard if the requested sequence isn't found — silently falling back to
-        // app.project.activeSequence would queue/render the wrong timeline while still
+        // __activeSequence() would queue/render the wrong timeline while still
         // reporting success, masking caller bugs (stale IDs, etc.).
         var sequence = __findSequence("${sequenceId}");
         if (!sequence) {

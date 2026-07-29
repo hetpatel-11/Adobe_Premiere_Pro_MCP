@@ -243,7 +243,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       return Number(timeValue) || 0;
     }
     function activeSequence() {
-      return app.project && app.project.activeSequence ? app.project.activeSequence : null;
+      return app.project && __activeSequence() ? __activeSequence() : null;
     }
     function findSequence(idOrName) {
       if (!app.project || !app.project.sequences) return null;

@@ -169,27 +169,36 @@ unknown. It is recorded here as an observation, not a diagnosis.
 If you can reproduce it, the useful details are what the previous project was, how it was
 created, and whether it had ever been saved.
 
-## Confirmed: activeSequence goes stale after a project switch
+## Fixed: activeSequence went stale after a project switch
 
-Status: open — no fix here
+Status: **fixed** — reads now go through a `__activeSequence()` membership guard.
 
-`app.project.activeSequence` keeps returning a sequence from a previously open project. Observed
-directly in one `get_project_info` response:
+`app.project.activeSequence` keeps returning a sequence from a previously open project.
+Reproduced deterministically: create a sequence, switch to a fresh empty project, and the
+empty project still reports the old sequence as active. The stale object stays readable rather
+than throwing, so nothing downstream notices.
 
 ```json
 {
-  "name": "switch-probe.prproj",
+  "name": "guard-probe.prproj",
   "sequenceCount": 0,
-  "activeSequence": { "id": "a767a860-...", "name": "Dirty2 1825" }
+  "activeSequence": { "id": "e268ece2-...", "name": "Guard Probe 2790" }
 }
 ```
 
-A project containing zero sequences cannot have an active one, and `Dirty2 1825` belonged to a
-project that was no longer open. Any tool reading project state gets a phantom sequence, and an
-agent that then targets `activeSequence` is operating on something that does not exist.
+A project containing zero sequences cannot have an active one. Any tool reading project state
+got a phantom, and an agent targeting `activeSequence` operated on something that did not exist.
 
-Callers should cross-check `activeSequence` against `list_sequences` rather than trusting it
-after any project switch.
+The stale value is detectable — its `sequenceID` is absent from `app.project.sequences` — so
+`EXTENDSCRIPT_HELPERS` gained `__activeSequence()`, which checks membership and returns `null`
+instead. All 44 read sites across `bridge/`, `tools/`, and `resources/` now call it. The two
+assignments (`app.project.activeSequence = seq`) are untouched, and the helper itself is the
+only remaining place that reads the raw property.
+
+Verified on Premiere Pro 26.0.2: in a freshly created empty project the raw property still
+returns `"Guard Probe 5164"` while `__activeSequence()` returns `null` and `get_project_info`
+reports `activeSequence: null, hasActiveSequence: false`. With a valid active sequence,
+`ping`, `get_project_info`, and `get_premiere_state` all still report it correctly.
 
 ## Confirmed Runtime Limitation
 
