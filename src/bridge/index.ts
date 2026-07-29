@@ -601,15 +601,21 @@ export class PremiereProBridge implements PremiereProTransport {
       }
     `;
 
-    // createNewSequence is far slower than a normal bridge round-trip, and the cost is wildly
-    // variable. Three runs on Premiere Pro 26.0.2 / Windows against the same empty project:
-    // 29.3s, 39.2s, and once it never returned at all (the scripting host stopped answering
-    // and recovered on its own minutes later). Even the fast run is half the 60s default.
+    // createNewSequence opens Premiere's modal "New Sequence" dialog and blocks until a human
+    // clicks it. Confirmed on Premiere Pro 26.0.2 / Windows by enumerating the host's windows
+    // while a call was in flight: an owned window of class #32770 titled "New Sequence", with
+    // the main Premiere window DISABLED — the signature of an application-modal dialog. It
+    // appears whether or not presetPath is supplied.
     //
-    // When it overruns, the caller gets a timeout failure for a sequence Premiere actually
-    // created — the false negative reported upstream as issue #25 — and an agent that retries
-    // then stacks up duplicates. 180s covers the observed range; it cannot cover a host that
-    // has stopped responding, which no timeout can.
+    // So the elapsed time of this call is human reaction time, not Premiere's. Timings that
+    // look like variable performance (29.3s, 39.2s, >180s across three runs here) are just how
+    // long someone took to notice the dialog. With nobody at the keyboard it never returns,
+    // which makes this tool unusable in the unattended agent workflows this server exists to
+    // support. Issue #25's "false negative" is the same root cause.
+    //
+    // No timeout value fixes that — a longer one only waits longer for a click. 180s is enough
+    // for an attended run to succeed rather than reporting a failure for a sequence that
+    // Premiere did create. See KNOWN_ISSUES.md.
     return await this.executeScript(script, 180000);
   }
 

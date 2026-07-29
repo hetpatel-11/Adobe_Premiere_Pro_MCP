@@ -44,35 +44,53 @@ Notes:
 - A signed extension does not need `PlayerDebugMode`. Leaving it on lets any unsigned CEP
   extension load in every Adobe app on that account.
 
-## Confirmed: create_sequence is slow, and its cost is wildly variable
+## Confirmed: create_sequence requires a human click and cannot run unattended
 
-Status: mitigated, not solved
+Status: **not fixable from this side.** Documented, partially mitigated.
 
-Three `create_sequence` runs on Premiere Pro 26.0.2 / Windows, same empty project, no other
-load:
+`create_sequence` opens Premiere's modal **New Sequence** dialog and blocks until somebody
+clicks it. Confirmed on Premiere Pro 26.0.2 / Windows by enumerating the host's windows while
+a call was in flight:
 
-| Run | Elapsed | Result |
-| --- | --- | --- |
-| 1 | 39.2s | success |
-| 2 | >180s | never returned |
-| 3 | 29.3s | success |
+```
+[OWNED/DIALOG] enabled=True   class=#32770        title='New Sequence'
+[TOP]          enabled=False  class=Premiere Pro  title='Adobe Premiere - ...'
+```
 
-Even the fastest run is half the 60s default bridge timeout. When it overruns, the caller gets
-a timeout failure for a sequence Premiere actually created — the false negative recorded below
-as a fixed issue — and an agent that retries on failure then stacks up duplicate sequences.
+`#32770` is the standard Win32 dialog class, and the main window being **disabled** is the
+signature of an application-modal dialog. It appears whether or not `presetPath` is supplied —
+tested with an explicit `.sqpreset` from Premiere's own `Settings/SequencePresets`, which still
+blocked and still had to be dismissed by hand.
 
-`createSequence` now passes an explicit 180s timeout, which covers the observed successful
-range. It cannot cover run 2.
+**The elapsed time of this call is human reaction time, not Premiere's.** Three runs here
+measured 39.2s, >180s, and 29.3s, which looks like wildly variable performance and is nothing
+of the sort — it is how long someone took to notice the dialog. The >180s run was nobody
+watching.
 
-In run 2 the ExtendScript host stopped answering entirely: subsequent unrelated calls
-(`list_sequences`, `get_premiere_state`) hit the CEP panel's own 45s watchdog with
-`ExtendScript execution timed out after 45000ms`. Premiere reported `Responding=True` at the OS
-level, had no modal dialog open (window enumeration confirmed a single enabled top-level
-window), and the panel was still consuming command files — so the bridge was healthy and
-Premiere's scripting engine was not. It recovered on its own without intervention.
+Consequences:
 
-No timeout value fixes that. Callers should treat a `create_sequence` timeout as *unknown*
-rather than *failed*, and read the sequence list back before retrying.
+- With nobody at the keyboard, `create_sequence` **never returns**. That makes it unusable in
+  exactly the unattended agent workflows this server exists to support.
+- While the dialog is open, Premiere's whole scripting host is blocked, so *unrelated* calls
+  fail too — `list_sequences` and `get_premiere_state` hit the CEP panel's own 45s watchdog
+  with `ExtendScript execution timed out after 45000ms`. The bridge is healthy; the host is
+  not answering.
+- Premiere still reports `Responding=True` at the OS level throughout, so process-level health
+  checks will not catch this.
+
+`createSequence` passes a 180s timeout. That is not a fix — a longer timeout only waits longer
+for a click. It exists so an *attended* run succeeds instead of reporting a failure for a
+sequence Premiere did create.
+
+If you are driving this from an agent:
+
+- treat a `create_sequence` timeout as **unknown**, never as **failed**
+- read the sequence list back before retrying, or you will stack up duplicates
+- expect any call issued while the dialog is open to fail regardless of what it does
+
+Anyone who knows a Premiere scripting path that creates a sequence without prompting —
+`createNewSequenceFromClips`, a QE call, or a preset form that suppresses the dialog — that is
+the real fix and is very welcome.
 
 ## Confirmed Runtime Limitation
 
