@@ -2,13 +2,84 @@ import { z } from 'zod';
 import type { PremiereProTransport } from '../bridge/types.js';
 import type { MCPTool } from './index.js';
 
+// Tools below are backed by a real handler in buildExpandedToolScript (or by an explicit
+// TypeScript branch in executeExpandedTool). Only these are advertised to MCP clients.
 export const expandedToolNames = [
+  'find_items_by_media_path',
+  'get_item_info',
+  'rename_clip',
+  'get_clip_speed',
+  'set_clip_selection',
+  'link_selection',
+  'unlink_selection',
+  'get_effect_properties',
+  'execute_extendscript',
+  'evaluate_expression',
+  'inspect_dom_object',
+  'list_clip_effects',
+  'get_sequence_structure',
+  'get_premiere_state',
+  'get_full_project_overview',
+  'get_bin_contents',
+  'get_full_sequence_info',
+  'get_full_clip_info',
+  'get_project_item_info',
+  'search_project_items',
+  'get_timeline_summary',
+  'get_offline_media',
+  'get_used_media_report',
+  'select_clips_by_name',
+  'select_all_clips',
+  'deselect_all_clips',
+  'select_clips_in_range',
+  'select_disabled_clips',
+  'open_in_source',
+  'close_source_monitor',
+  'close_all_source_clips',
+  'set_source_in_out',
+  'insert_from_source',
+  'overwrite_from_source',
+  'get_source_monitor_info',
+  'set_target_track',
+  'get_target_tracks',
+  'rename_track',
+  'get_track_info',
+  'clear_item_in_out',
+  'set_item_in_out',
+  'remove_selected_clips',
+  'get_qe_clip_info',
+  'redo',
+  'multiple_undo',
+  'get_version_info',
+  'get_unused_media',
+  'get_duplicate_media',
+  'lift_selection',
+  'extract_selection',
+  'get_clip_links',
+  'get_clip_at_playhead',
+  'get_sequence_count',
+  'get_total_clip_count',
+  'match_frame',
+  'ping',
+  'get_workspaces',
+  'set_workspace',
+  'play_timeline',
+  'stop_playback',
+  'play_source_monitor',
+  'get_source_monitor_position'
+] as const;
+
+// Declared-but-unimplemented operations. These previously fell through to a permissive
+// `default:` branch that returned `success: true` without touching Premiere, so an agent
+// was told an edit had landed when nothing had happened. They are kept here as an explicit
+// roadmap and are deliberately NOT advertised in the tool catalog. Implementing one means
+// adding a real handler and moving its name into expandedToolNames above.
+export const unimplementedExpandedToolNames = [
   'close_project',
   'import_ae_comps',
   'delete_bin',
   'rename_bin',
   'create_smart_bin',
-  'find_items_by_media_path',
   'start_batch_encode',
   'add_custom_metadata_field',
   'import_sequences',
@@ -26,7 +97,6 @@ export const expandedToolNames = [
   'set_override_frame_rate',
   'set_override_pixel_aspect_ratio',
   'set_scale_to_frame_size',
-  'get_item_info',
   'select_item',
   'set_start_time',
   'unnest_sequence',
@@ -51,11 +121,6 @@ export const expandedToolNames = [
   'set_clip_speed_qe',
   'set_frame_blend',
   'set_time_interpolation',
-  'rename_clip',
-  'get_clip_speed',
-  'set_clip_selection',
-  'link_selection',
-  'unlink_selection',
   'overwrite_clip',
   'create_sequence_from_clips',
   'close_sequence',
@@ -68,56 +133,22 @@ export const expandedToolNames = [
   'get_clip_adjustment_layer',
   'get_linked_items',
   'get_mogrt_component',
-  'get_effect_properties',
   'set_effect_property',
   'remove_keyframe_range',
   'set_keyframe_interpolation',
   'get_value_at_time',
-  'execute_extendscript',
-  'evaluate_expression',
-  'inspect_dom_object',
-  'list_clip_effects',
-  'get_sequence_structure',
-  'get_premiere_state',
-  'get_full_project_overview',
-  'get_bin_contents',
-  'get_full_sequence_info',
-  'get_full_clip_info',
-  'get_project_item_info',
-  'search_project_items',
   'get_timeline_gaps',
-  'get_timeline_summary',
-  'get_offline_media',
-  'get_used_media_report',
-  'select_clips_by_name',
-  'select_all_clips',
-  'deselect_all_clips',
-  'select_clips_in_range',
   'select_clips_by_color',
   'invert_selection',
-  'select_disabled_clips',
   'copy_effects_between_clips',
   'copy_effect_values',
   'replace_clip_media',
   'batch_apply_effect',
   'remove_effect_by_name',
   'set_blend_mode',
-  'open_in_source',
-  'close_source_monitor',
-  'close_all_source_clips',
-  'set_source_in_out',
-  'insert_from_source',
-  'overwrite_from_source',
-  'get_source_monitor_info',
-  'set_target_track',
-  'get_target_tracks',
   'set_all_tracks_targeted',
-  'rename_track',
-  'get_track_info',
   'razor_all_tracks',
   'set_clip_start_time',
-  'clear_item_in_out',
-  'set_item_in_out',
   'import_image_sequence',
   'set_clip_position',
   'set_clip_scale',
@@ -128,14 +159,9 @@ export const expandedToolNames = [
   'set_clip_pan',
   'batch_rename_clips',
   'batch_enable_disable',
-  'remove_selected_clips',
   'clear_sequence_in_out',
   'get_encoder_presets',
-  'get_qe_clip_info',
-  'redo',
-  'multiple_undo',
   'set_poster_frame',
-  'get_version_info',
   'move_items_to_bin',
   'set_anti_alias_quality',
   'set_uniform_scale',
@@ -150,31 +176,15 @@ export const expandedToolNames = [
   'set_sequence_pixel_aspect_ratio',
   'set_sequence_field_type',
   'get_all_project_paths',
-  'get_unused_media',
-  'get_duplicate_media',
-  'lift_selection',
-  'extract_selection',
-  'get_clip_links',
   'get_sequence_markers_by_type',
   'get_clip_markers',
   'add_marker_to_project_item',
   'set_sequence_display_format',
-  'get_clip_at_playhead',
   'get_next_edit_point',
   'move_playhead_to_edit',
   'set_project_scratch_disk',
   'get_project_scratch_disks',
   'nest_clips',
-  'get_sequence_count',
-  'get_total_clip_count',
-  'match_frame',
-  'ping',
-  'get_workspaces',
-  'set_workspace',
-  'play_timeline',
-  'stop_playback',
-  'play_source_monitor',
-  'get_source_monitor_position',
   'consolidate_and_transfer'
 ] as const;
 
@@ -192,19 +202,35 @@ export function isExpandedTool(name: string): boolean {
   return (expandedToolNames as readonly string[]).includes(name);
 }
 
+export function isUnimplementedExpandedTool(name: string): boolean {
+  return (unimplementedExpandedToolNames as readonly string[]).includes(name);
+}
+
 export async function executeExpandedTool(
   bridge: PremiereProTransport,
   name: string,
   args: Record<string, any>
 ): Promise<any> {
   try {
+    // Belt-and-braces: the catalog no longer advertises these, so executeTool rejects them
+    // before we get here. If one is reached anyway, fail loudly rather than reporting a
+    // no-op as a success.
+    if (isUnimplementedExpandedTool(name)) {
+      return {
+        success: false,
+        tool: name,
+        implemented: false,
+        error: `Tool '${name}' is declared but not implemented against the Premiere scripting API. It is not exposed in the tool catalog and performs no work.`
+      };
+    }
+
     if (name === 'add_tracks') {
       return {
-        success: true,
+        success: false,
         tool: name,
         available: false,
         skipped: true,
-        note: 'Premiere addTracks can block CEP execution in this bridge. Use add_track repeatedly for safe one-track-at-a-time creation.'
+        error: 'Premiere addTracks can block CEP execution in this bridge. Use add_track repeatedly for safe one-track-at-a-time creation.'
       };
     }
 
@@ -227,7 +253,7 @@ export async function executeExpandedTool(
   }
 }
 
-function buildExpandedToolScript(name: string, args: Record<string, any>): string {
+export function buildExpandedToolScript(name: string, args: Record<string, any>): string {
   return `
     var toolName = ${JSON.stringify(name)};
     var args = ${JSON.stringify(args ?? {})};
@@ -660,9 +686,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!track) return fail("Track not found");
           return ok({ name: track.name, index: trackIndex, type: trackType, clipCount: track.clips.numItems });
 
-        case "add_tracks":
-          return fail("Premiere's addTracks scripting API can block CEP execution in this bridge. Use the existing add_track tool for one track at a time.");
-
         case "get_clip_at_playhead":
           var playSeq = activeSequence();
           if (!playSeq) return fail("No active sequence");
@@ -713,24 +736,14 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "match_frame":
           return commandByName("Match Frame");
 
-        case "capture_frame":
-        case "get_encoder_presets":
-        case "get_project_scratch_disks":
-        case "get_project_panel_metadata":
-        case "get_xmp_metadata":
-        case "get_color_space":
-        case "get_graphics_white_luminance":
-        case "is_work_area_enabled":
-        case "get_insertion_bin":
-        case "get_all_project_paths":
-        case "get_timeline_gaps":
-        case "get_clip_markers":
-        case "get_sequence_markers_by_type":
-        case "get_next_edit_point":
-          return ok({ available: true, project: app.project ? app.project.name : null, note: "Read operation completed; this Premiere DOM surface exposes limited details in ExtendScript." });
-
         default:
-          return ok({ accepted: true, name: toolName, args: args, note: "Expanded tool dispatched through the native Premiere bridge. No copied upstream implementation is used." });
+          // Never report an unrecognized tool as a success. The previous behaviour returned
+          // { success: true, accepted: true } without touching Premiere, which told the calling
+          // agent that an edit had landed when nothing had happened.
+          return fail(
+            "No handler for '" + toolName + "' in the Premiere bridge. This tool performs no work and is not exposed in the tool catalog.",
+            { implemented: false }
+          );
       }
     } catch (error) {
       return fail(error && error.message ? error.message : error, { name: toolName });

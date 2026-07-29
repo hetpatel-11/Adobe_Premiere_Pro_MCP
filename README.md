@@ -43,13 +43,19 @@ This repository is currently validated for:
 - the included macOS installer path for Claude Desktop
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
 
-Current catalog status as of June 29, 2026:
+Current catalog status:
 
-- `278` Premiere Pro MCP tools are exposed for AI-driven video editing
+- `170` Premiere Pro MCP tools are exposed for AI-driven video editing
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
 - the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, and linked audio/video operations
 
-Most recent completed local live validation:
+That number is lower than earlier `278` claims on purpose. `111` names in the expanded catalog
+had no handler behind them and fell through to a `default:` branch that returned
+`success: true` without touching Premiere, so a calling agent was told an edit had landed when
+nothing had happened. Those names are now parked in `unimplementedExpandedToolNames`, are not
+advertised, and fail loudly if reached. See `KNOWN_ISSUES.md`.
+
+Most recent completed local live validation (against the pre-trim catalog):
 
 - `197` tools were live-executed against a real Premiere Pro 2026 session
 - `57` tools were schema-validated in the same sweep
@@ -253,7 +259,7 @@ This creates temporary `Sweep ...` sequences in the currently open project so th
 
 ## Tool Coverage
 
-The `97` exposed tools are grouped roughly like this:
+The `170` exposed tools are grouped roughly like this:
 
 - Discovery and project inspection
 - Project and sequence management

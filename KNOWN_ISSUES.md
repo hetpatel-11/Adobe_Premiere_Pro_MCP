@@ -2,13 +2,70 @@
 
 This file tracks current, confirmed limits. It is no longer a backlog of already-fixed prototype bugs.
 
-## Current State (May 16, 2026)
+## Current State
 
 The current built tool catalog exposes:
 
-- `104` tools
+- `108` core tools with a real dispatch in `src/tools/index.ts`
+- `62` expanded tools with a real handler in `src/tools/expanded.ts`
+- `170` advertised in total (expanded names that duplicate a core name are filtered out)
 
-The last broad live sweep in this repository was run on March 4, 2026:
+`111` further names are declared in `unimplementedExpandedToolNames` and are deliberately
+**not** advertised. See the next section for why.
+
+## Fixed: expanded tools reported fake success
+
+Status: fixed
+
+The expanded catalog advertised `173` names but only `62` had a handler. Everything else fell
+through to:
+
+```js
+default:
+  return ok({ accepted: true, name: toolName, args: args, note: "..." });
+```
+
+`ok()` sets `success: true`. So `ripple_delete`, `roll_edit`, `slip_edit`, `remove_effect`,
+`scene_edit_detection`, `move_clip_to_track`, `set_effect_property`, `replace_clip_media`,
+`export_omf` and roughly ninety others returned a success to the calling agent while doing
+nothing to the project. A further `14` read tools returned
+`{ available: true, note: "Read operation completed..." }` with no data, and `add_tracks`
+returned `success: true` alongside `skipped: true`.
+
+For an agent driving an edit this is the worst possible failure mode: it believes the timeline
+changed, and it builds its next several calls on that belief.
+
+Now:
+
+- unimplemented names are parked in `unimplementedExpandedToolNames` and never advertised
+- `executeExpandedTool` rejects them explicitly if one is reached anyway
+- the generated ExtendScript `default:` branch returns `fail(...)`, not `ok(...)`
+- `src/__tests__/tools/expanded.test.ts` pins the invariant so the list and the switch cannot
+  drift apart silently again
+
+Implementing one of the parked tools means adding a real handler and moving its name into
+`expandedToolNames`.
+
+## Known: the jest suite does not run under ESM
+
+Status: pre-existing, not addressed here
+
+`npm test` fails with `ReferenceError: jest is not defined` in five of the six original suites.
+Under `ts-jest/presets/default-esm` Jest does not inject globals, so each suite needs
+`import { jest } from '@jest/globals'`, and the `jest.mock(...)` calls need porting to
+`jest.unstable_mockModule`. `src/__tests__/tools/expanded.test.ts` takes the import route and
+passes; the older suites still need the mock rewrite.
+
+Run the passing suite with:
+
+```bash
+NODE_OPTIONS=--experimental-vm-modules npx jest src/__tests__/tools/expanded.test.ts
+```
+
+## Live sweep
+
+The last broad live sweep in this repository was run on March 4, 2026, against the pre-trim
+catalog:
 
 - `43` tools were live-executed against a real Premiere Pro session
 - `50` tools were schema-validated in the same sweep
