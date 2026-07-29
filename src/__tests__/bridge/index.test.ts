@@ -4,6 +4,7 @@
 
 import { PremiereProBridge } from '../../bridge/index.js';
 import { promises as fs } from 'fs';
+import path from 'path';
 
 jest.mock('fs', () => ({
   promises: {
@@ -22,10 +23,13 @@ jest.mock('uuid', () => ({
 
 describe('PremiereProBridge', () => {
   const mockFs = fs as jest.Mocked<typeof fs>;
+  const configuredTempDir = '/tmp/premiere-mcp-bridge-test';
+  const commandPath = path.join(configuredTempDir, 'command-test-uuid-1234.json');
+  const responsePath = path.join(configuredTempDir, 'response-test-uuid-1234.json');
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.PREMIERE_TEMP_DIR = '/tmp/premiere-mcp-bridge-test';
+    process.env.PREMIERE_TEMP_DIR = configuredTempDir;
   });
 
   afterEach(() => {
@@ -58,11 +62,11 @@ describe('PremiereProBridge', () => {
 
     expect(result).toEqual({ ok: true });
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('return JSON.stringify')
     );
-    expect(mockFs.unlink).toHaveBeenCalledWith('/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json');
-    expect(mockFs.unlink).toHaveBeenCalledWith('/tmp/premiere-mcp-bridge-test/response-test-uuid-1234.json');
+    expect(mockFs.unlink).toHaveBeenCalledWith(commandPath);
+    expect(mockFs.unlink).toHaveBeenCalledWith(responsePath);
   });
 
   it('preserves self-invoking scripts instead of double-wrapping them', async () => {
@@ -77,11 +81,11 @@ describe('PremiereProBridge', () => {
     await bridge.executeScript('(function(){ return JSON.stringify({ ok: true }); })();');
 
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('(function(){ return JSON.stringify({ ok: true }); })();')
     );
     expect(mockFs.writeFile).not.toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('(function(){\n(function(){ return JSON.stringify({ ok: true }); })();\n})();')
     );
   });
@@ -137,11 +141,11 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.projectPath).toBe('/tmp/projects/Test.prproj');
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('app.newProject(projectPath)')
     );
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('Premiere Pro did not create or activate the requested project')
     );
   });
@@ -165,11 +169,11 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.actualPath).toBe('/tmp/projects/AlreadyOpen.prproj');
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('app.openDocument(projectPath)')
     );
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      '/tmp/premiere-mcp-bridge-test/command-test-uuid-1234.json',
+      commandPath,
       expect.stringContaining('Premiere Pro did not activate the requested project')
     );
   });
@@ -265,6 +269,9 @@ describe('PremiereProBridge', () => {
     await bridge.initialize();
     await bridge.cleanup();
 
-    expect(mockFs.rm).toHaveBeenCalledWith('/tmp/premiere-bridge-test-uuid-1234', { recursive: true });
+    const generatedTempDir = process.platform === 'win32'
+      ? path.join(process.env.TEMP || 'C:\\Temp', 'premiere-bridge-test-uuid-1234')
+      : '/tmp/premiere-bridge-test-uuid-1234';
+    expect(mockFs.rm).toHaveBeenCalledWith(generatedTempDir, { recursive: true });
   });
 });
