@@ -2876,9 +2876,30 @@ export class PremiereProTools {
           });
         }
 
+        // The checks above only confirm in/out MATCH the requested values — which is also true
+        // when they already did and nothing happened. Report whether the clip actually moved,
+        // and whether its timeline duration reflects the requested range, so a caller can tell
+        // "already correct" and "cannot be trimmed this way" apart from a real edit.
+        //
+        // This matters for stills: setting in/out on a still leaves its timeline duration
+        // untouched, so asking for a 1.5s still returns a verified success and a ~5s clip.
+        // Reproduced on Premiere Pro 26.0.2 with an imported .heic.
+        var changed = !(closeEnough(before.inPoint, after.inPoint) &&
+                        closeEnough(before.outPoint, after.outPoint) &&
+                        closeEnough(before.duration, after.duration));
+        var requestedSpan = ${inPoint !== undefined && outPoint !== undefined ? `${outPoint} - ${inPoint}` : 'null'};
+        var durationMatchesRange = requestedSpan === null ? null : closeEnough(after.duration, requestedSpan);
+
         return JSON.stringify({
           success: true,
-          message: "Clip trimmed and verified",
+          message: changed
+            ? "Clip trimmed and verified"
+            : "Requested in/out already matched; nothing changed on the timeline",
+          changed: changed,
+          durationMatchesRequestedRange: durationMatchesRange,
+          note: (durationMatchesRange === false)
+            ? "The clip's timeline duration does not match the requested in/out range. Stills in particular keep their default duration when in/out are set."
+            : undefined,
           clipId: ${JSON.stringify(clipId)},
           oldInPoint: before.inPoint,
           oldOutPoint: before.outPoint,
