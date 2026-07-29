@@ -4,7 +4,7 @@
 
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
-import { PremiereProTools } from '../../tools/index.js';
+import { PremiereProTools, evaluateTextInjectionResult } from '../../tools/index.js';
 import { PremiereProBridge } from '../../bridge/index.js';
 import { executeExpandedTool, expandedToolNames, unimplementedExpandedToolNames } from '../../tools/expanded.js';
 
@@ -394,6 +394,208 @@ describe('PremiereProTools', () => {
   });
 
   describe('script-backed tools', () => {
+    it('fails add_text_overlay when every requested text write fails', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        clipId: 'graphic-123',
+        premiereVersion: '26.0',
+        premiereBuild: '12',
+        textRequestedCount: 1,
+        textInjectionResults: [
+          { _strategy: 'components_fallback', textCompsFound: 1 },
+          {
+            textIndex: 0,
+            compIndex: 3,
+            propIndex: 0,
+            requestedText: 'TREETOP TRANSMISSIONS',
+            ok: false,
+            error: 'Both JSON parse strategies failed'
+          }
+        ]
+      });
+
+      const result = await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Basic Title.mogrt',
+        text: 'TREETOP TRANSMISSIONS'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.textInjectionStatus).toBe('failed');
+      expect(result.textInjectionSummary).toEqual({ requested: 1, succeeded: 0, failed: 1 });
+      expect(result.error).toContain('Premiere Pro 26.0 (build 12)');
+      expect(result.error).toContain('remains on the timeline');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+    });
+
+    it('optionally removes the timeline Graphic after total text injection failure', async () => {
+      mockBridge.executeScript
+        .mockResolvedValueOnce({
+          success: true,
+          clipId: 'graphic-rollback',
+          premiereVersion: '26.0',
+          textRequestedCount: 1,
+          textInjectionResults: [{ textIndex: 0, compIndex: 3, propIndex: 0, ok: false }]
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          timelineGraphicRemoved: true,
+          note: 'The imported project item may remain in the Project panel.'
+        });
+
+      const result = await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Basic Title.mogrt',
+        text: 'TREETOP TRANSMISSIONS',
+        rollbackOnTextFailure: true
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.rollback.timelineGraphicRemoved).toBe(true);
+      expect(result.error).toContain('timeline Graphic was removed');
+      expect(result.clipId).toBeUndefined();
+      expect(result.removedClipId).toBe('graphic-rollback');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(2);
+      expect(mockBridge.executeScript.mock.calls[1][0]).toContain(
+        '__findClip("graphic-rollback", "seq-123")'
+      );
+      expect(mockBridge.executeScript.mock.calls[1][0]).toContain('info.clip.remove(false, true)');
+    });
+
+    it('reports partial add_text_overlay writes without treating strategy markers as attempts', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        clipId: 'graphic-partial',
+        textRequestedCount: 2,
+        textInjectionResults: [
+          { _strategy: 'getMGTComponent', textCompsFound: 2 },
+          { textIndex: 0, ok: true },
+          { textIndex: 1, ok: false, error: 'readback mismatch' }
+        ]
+      });
+
+      const result = await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Lower Third.mogrt',
+        text: 'Title',
+        text2: 'Subtitle'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.textInjectionStatus).toBe('partial');
+      expect(result.textInjectionSummary).toEqual({ requested: 2, succeeded: 1, failed: 1 });
+      expect(result.warning).toContain('1 of 2');
+    });
+
+    it('does not roll back an imported Graphic when at least one requested text write succeeds', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        clipId: 'graphic-partial',
+        textRequestedCount: 2,
+        textInjectionResults: [
+          { textIndex: 0, ok: true },
+          { textIndex: 1, ok: false }
+        ]
+      });
+
+      const result = await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Lower Third.mogrt',
+        text: 'Title',
+        text2: 'Subtitle',
+        rollbackOnTextFailure: true
+      });
+
+      expect(result.textInjectionStatus).toBe('partial');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports rollback failure while preserving the original text injection failure', async () => {
+      mockBridge.executeScript
+        .mockResolvedValueOnce({
+          success: true,
+          clipId: 'graphic-stuck',
+          premiereVersion: '26.0',
+          textRequestedCount: 1,
+          textInjectionResults: [{ textIndex: 0, ok: false }]
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          timelineGraphicRemoved: false,
+          error: 'Track item is locked'
+        });
+
+      const result = await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Basic Title.mogrt',
+        text: 'Title',
+        rollbackOnTextFailure: true
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Text injection failed');
+      expect(result.error).toContain('Rollback of the imported timeline Graphic also failed');
+      expect(result.rollback.error).toBe('Track item is locked');
+      expect(result.clipId).toBe('graphic-stuck');
+      expect(result.removedClipId).toBeUndefined();
+    });
+
+    it('rolls back a Graphic surfaced by a hard post-import script failure', async () => {
+      mockBridge.executeScript
+        .mockResolvedValueOnce({
+          success: false,
+          error: 'Unexpected property access failure',
+          clipId: 'graphic-hard-failure'
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          timelineGraphicRemoved: true
+        });
+
+      const result = await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Basic Title.mogrt',
+        text: 'Title',
+        rollbackOnTextFailure: true
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Unexpected property access failure');
+      expect(result.error).toContain('timeline Graphic was removed');
+      expect(result.removedClipId).toBe('graphic-hard-failure');
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps import-only text overlay results distinct from failed injection', () => {
+      const result = evaluateTextInjectionResult({
+        success: true,
+        textRequestedCount: 0,
+        textInjectionResults: [{ _strategy: 'components_fallback', textCompsFound: 0 }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.textInjectionStatus).toBe('not_requested');
+      expect(result.textInjectionSummary).toEqual({ requested: 0, succeeded: 0, failed: 0 });
+    });
+
     it('executes list_project_items', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
