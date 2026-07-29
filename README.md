@@ -169,6 +169,18 @@ Then add the MCP server on a single line:
 codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
 ```
 
+Replace `/absolute/path/to/Adobe_Premiere_Pro_MCP` with the real absolute path to your clone. For example:
+
+```bash
+codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /Users/yourname/Downloads/Adobe_Premiere_Pro_MCP/dist/index.js
+```
+
+Before restarting Codex, verify the built entrypoint exists:
+
+```bash
+ls -l /Users/yourname/Downloads/Adobe_Premiere_Pro_MCP/dist/index.js
+```
+
 ### Claude Code
 
 Build the server the same way:
