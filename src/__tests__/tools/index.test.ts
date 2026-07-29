@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import { PremiereProTools } from '../../tools/index.js';
 import { PremiereProBridge } from '../../bridge/index.js';
+import { executeExpandedTool, expandedToolNames, unimplementedExpandedToolNames } from '../../tools/expanded.js';
 
 jest.mock('../../bridge/index.js');
 jest.mock('child_process');
@@ -56,11 +57,22 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('add_to_timeline');
       expect(toolNames).toContain('import_mogrt');
       expect(toolNames).toContain('setup_ducking');
+      expect(toolNames).toContain('validate_project_for_export');
+      expect(toolNames).toContain('detect_silence');
       expect(toolNames).toContain('ping');
       expect(toolNames).toContain('get_full_project_overview');
       expect(toolNames).toContain('open_in_source');
       expect(toolNames).toContain('nest_clips');
       expect(toolNames).toContain('unnest_sequence');
+      expect(toolNames).toContain('ripple_delete');
+      expect(toolNames).toContain('capture_frame');
+      expect(toolNames).toContain('add_tracks');
+      expect(toolNames).not.toContain('import_ae_comps');
+      expect(availableTools).toHaveLength(281);
+      expect(unimplementedExpandedToolNames).toEqual([]);
+      for (const name of expandedToolNames) {
+        expect(toolNames).toContain(name);
+      }
     });
 
     it('returns valid tool metadata', () => {
@@ -108,6 +120,37 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript).toHaveBeenCalled();
       expect(result.success).toBe(true);
       expect(result.data.connected).toBe(true);
+    });
+
+    it('does not report expanded track creation as successful unless Premiere confirms it', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: false,
+        tool: 'add_tracks',
+        error: 'Premiere did not add the requested tracks'
+      });
+
+      const result = await tools.executeTool('add_tracks', {
+        sequenceId: 'seq-123',
+        videoTracks: 1
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Premiere did not add');
+      expect(mockBridge.executeScript).toHaveBeenCalled();
+    });
+
+    it('keeps the expanded dispatcher fail-closed for missing handlers and placeholder reads', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: false, error: 'not executed in unit test' });
+
+      await executeExpandedTool(mockBridge, 'ripple_delete', { clipId: 'clip-123' });
+      const missingHandlerScript = mockBridge.executeScript.mock.calls[0][0];
+      expect(missingHandlerScript).toContain('Expanded tool is advertised but has no implemented handler');
+      expect(missingHandlerScript).not.toContain('accepted: true');
+
+      await executeExpandedTool(mockBridge, 'capture_frame', {});
+      const placeholderReadScript = mockBridge.executeScript.mock.calls[1][0];
+      expect(placeholderReadScript).toContain('not implemented with a verifiable Premiere DOM readback yet');
+      expect(placeholderReadScript).not.toContain('Read operation completed');
     });
   });
 
@@ -487,10 +530,36 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(true);
       const script = mockBridge.executeScript.mock.calls[0][0];
-      expect(script).toContain('targetOutPoint + "s"');
+      expect(script).toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
+      expect(script).toContain('clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration)');
       expect(script).not.toContain('new Time(clip.inPoint.seconds + 2.5)');
       expect(script).toContain('timeline duration did not change to requested value');
       expect(script).toContain('Premiere Pro did not apply the requested trim');
+    });
+
+    it('generates a non-destructive export readiness validation script', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        readyForExport: true,
+        errors: [],
+        warnings: [],
+        summary: { videoClipCount: 1 }
+      });
+
+      const result = await tools.executeTool('validate_project_for_export', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/output.mp4',
+        presetPath: '/tmp/export.epr'
+      });
+
+      expect(result.success).toBe(true);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('readyForExport');
+      expect(script).toContain('OFFLINE_OR_MISSING_MEDIA');
+      expect(script).toContain('PRESET_NOT_FOUND');
+      expect(script).toContain('TIMELINE_GAPS');
+      expect(script).not.toContain('encodeSequence');
+      expect(script).not.toContain('renderSequence');
     });
 
     it('uses verifiable QE transition calls for add_transition', async () => {
@@ -508,9 +577,11 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(true);
       const script = mockBridge.executeScript.mock.calls[0][0];
-      expect(script).toContain('qeClip.addTransition(transition, true, String(frames), "0"');
+      expect(script).toContain('var info2 = __findClip("clip-2")');
+      expect(script).toContain('qeClip.addTransition(transition, info2 ? false : true, String(frames), "0"');
       expect(script).not.toContain('frames + ":00"');
       expect(script).toContain('__transitionWasVerified(before, after)');
+      expect(script).toContain('__transitionWasVerifiedByXml(beforeXml, afterXml)');
       expect(script).toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
     });
 

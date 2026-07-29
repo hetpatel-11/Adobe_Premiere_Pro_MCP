@@ -159,6 +159,17 @@ export class PremiereProTools {
         inputSchema: z.object({})
       },
       {
+        name: 'validate_project_for_export',
+        description: 'Runs a non-destructive export readiness audit for the active or requested sequence. Checks timeline content, offline media, missing export preset/output folder inputs, gaps, markers, and basic audio/video track state before an agent queues an export.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Optional sequence ID to validate. Defaults to the active sequence.'),
+          outputPath: z.string().optional().describe('Optional intended export output path. When provided, the parent folder is checked.'),
+          presetPath: z.string().optional().describe('Optional Adobe Media Encoder .epr preset path. When provided, the file is checked.'),
+          requireNonEmptyTimeline: z.boolean().optional().describe('When true, an empty timeline is an error. Defaults to true.'),
+          checkGaps: z.boolean().optional().describe('When true, timeline gaps are reported as warnings. Defaults to true.')
+        })
+      },
+      {
         name: 'build_motion_graphics_demo',
         description: 'Generates clean demo stills, creates a sequence, lays the shots out on the timeline, adds dissolves, and applies subtle scale animation for a polished minimalist ad-style demo.',
         inputSchema: z.object({
@@ -979,7 +990,8 @@ export class PremiereProTools {
           sequenceId: z.string().describe('The ID of the sequence'),
           action: z.enum(['ApplyCuts', 'CreateMarkers']).optional().describe('Action to take at detected edit points'),
           applyCutsToLinkedAudio: z.boolean().optional().describe('Whether to apply cuts to linked audio'),
-          sensitivity: z.string().optional().describe('Detection sensitivity (e.g., "Low", "Medium", "High")')
+          sensitivity: z.string().optional().describe('Detection sensitivity (e.g., "Low", "Medium", "High")'),
+          allowUnsafeSynchronous: z.boolean().optional().describe('Actually invoke Premiere scene detection synchronously; can block CEP for a long time')
         })
       },
 
@@ -1237,6 +1249,8 @@ export class PremiereProTools {
           return await this.listSequenceTracks(args.sequenceId);
         case 'get_project_info':
           return await this.getProjectInfo();
+        case 'validate_project_for_export':
+          return await this.validateProjectForExport(args.sequenceId, args.outputPath, args.presetPath, args.requireNonEmptyTimeline, args.checkGaps);
         case 'build_motion_graphics_demo':
           return await this.buildMotionGraphicsDemo(args.sequenceName);
         case 'assemble_product_spot':
@@ -1475,7 +1489,7 @@ export class PremiereProTools {
 
         // Scene Edit Detection
         case 'detect_scene_edits':
-          return await this.detectSceneEdits(args.sequenceId, args.action, args.applyCutsToLinkedAudio, args.sensitivity);
+          return await this.detectSceneEdits(args.sequenceId, args.action, args.applyCutsToLinkedAudio, args.sensitivity, args.allowUnsafeSynchronous);
 
         // Captions
         case 'create_caption_track':
@@ -1727,6 +1741,260 @@ export class PremiereProTools {
           success: false,
           error: e.toString()
         });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async validateProjectForExport(sequenceId?: string, outputPath?: string, presetPath?: string, requireNonEmptyTimeline = true, checkGaps = true): Promise<any> {
+    const script = `
+      try {
+        var errors = [];
+        var warnings = [];
+        var info = [];
+
+        function secondsOf(value) {
+          if (value === undefined || value === null) return 0;
+          if (typeof value === "number") return value;
+          if (value.seconds !== undefined) return Number(value.seconds);
+          if (value.ticks !== undefined) return Number(value.ticks) / 254016000000.0;
+          return 0;
+        }
+
+        function pathExists(path, expectFolder) {
+          if (!path) return false;
+          try {
+            return expectFolder ? new Folder(path).exists : new File(path).exists;
+          } catch (_) {
+            return false;
+          }
+        }
+
+        function parentFolder(path) {
+          try {
+            return new File(path).parent.fsName;
+          } catch (_) {
+            return "";
+          }
+        }
+
+        if (!app.project) {
+          return JSON.stringify({
+            success: true,
+            readyForExport: false,
+            errors: [{ code: "NO_PROJECT", message: "No Premiere project is open." }],
+            warnings: [],
+            info: [],
+            summary: {}
+          });
+        }
+
+        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!sequence) {
+          errors.push({
+            code: ${sequenceId ? '"SEQUENCE_NOT_FOUND"' : '"NO_ACTIVE_SEQUENCE"'},
+            message: ${sequenceId ? JSON.stringify(`Sequence not found: ${sequenceId}`) : '"No active sequence is selected."'}
+          });
+        }
+
+        if (${presetPath ? 'true' : 'false'}) {
+          if (!pathExists(${JSON.stringify(presetPath || '')}, false)) {
+            errors.push({
+              code: "PRESET_NOT_FOUND",
+              message: "Export preset file does not exist.",
+              path: ${JSON.stringify(presetPath || '')}
+            });
+          } else if (!/\\.epr$/i.test(${JSON.stringify(presetPath || '')})) {
+            warnings.push({
+              code: "PRESET_EXTENSION",
+              message: "Preset path exists but does not end with .epr.",
+              path: ${JSON.stringify(presetPath || '')}
+            });
+          }
+        } else {
+          warnings.push({
+            code: "PRESET_NOT_PROVIDED",
+            message: "No presetPath was provided; export_sequence requires an absolute .epr preset path."
+          });
+        }
+
+        if (${outputPath ? 'true' : 'false'}) {
+          var outputParent = parentFolder(${JSON.stringify(outputPath || '')});
+          if (!outputParent || !pathExists(outputParent, true)) {
+            errors.push({
+              code: "OUTPUT_FOLDER_NOT_FOUND",
+              message: "Output parent folder does not exist.",
+              path: outputParent || ${JSON.stringify(outputPath || '')}
+            });
+          }
+        } else {
+          warnings.push({
+            code: "OUTPUT_PATH_NOT_PROVIDED",
+            message: "No outputPath was provided; export readiness is partial."
+          });
+        }
+
+        var summary = {
+          projectName: app.project.name || "",
+          projectPath: app.project.path || "",
+          sequenceId: sequence ? sequence.sequenceID : null,
+          sequenceName: sequence ? sequence.name : null,
+          durationSeconds: sequence ? secondsOf(sequence.end) : 0,
+          videoTrackCount: sequence ? sequence.videoTracks.numTracks : 0,
+          audioTrackCount: sequence ? sequence.audioTracks.numTracks : 0,
+          videoClipCount: 0,
+          audioClipCount: 0,
+          markerCount: 0,
+          offlineMediaCount: 0,
+          gapCount: 0
+        };
+
+        var offlineMedia = [];
+        var seenMedia = {};
+        function inspectProjectItem(item) {
+          if (!item) return;
+          try {
+            if (item.getMediaPath) {
+              var mediaPath = String(item.getMediaPath() || "");
+              if (mediaPath && !seenMedia[mediaPath]) {
+                seenMedia[mediaPath] = true;
+                var offline = false;
+                try { offline = item.isOffline ? Boolean(item.isOffline()) : false; } catch (_) {}
+                if (offline || !pathExists(mediaPath, false)) {
+                  offlineMedia.push({
+                    nodeId: item.nodeId,
+                    name: item.name,
+                    mediaPath: mediaPath,
+                    offline: offline,
+                    fileExists: pathExists(mediaPath, false)
+                  });
+                }
+              }
+            }
+          } catch (_) {}
+          if (item.children) {
+            for (var childIndex = 0; childIndex < item.children.numItems; childIndex++) {
+              inspectProjectItem(item.children[childIndex]);
+            }
+          }
+        }
+        inspectProjectItem(app.project.rootItem);
+        summary.offlineMediaCount = offlineMedia.length;
+        if (offlineMedia.length) {
+          errors.push({
+            code: "OFFLINE_OR_MISSING_MEDIA",
+            message: "One or more project media files are offline or missing on disk.",
+            items: offlineMedia
+          });
+        }
+
+        var gaps = [];
+        if (sequence) {
+          var hasVideoClip = false;
+          var hasAudioClip = false;
+
+          function inspectTracks(trackCollection, trackType) {
+            for (var trackIndex = 0; trackIndex < trackCollection.numTracks; trackIndex++) {
+              var track = trackCollection[trackIndex];
+              var clips = [];
+              for (var clipIndex = 0; clipIndex < track.clips.numItems; clipIndex++) {
+                var clip = track.clips[clipIndex];
+                var start = secondsOf(clip.start);
+                var end = secondsOf(clip.end);
+                clips.push({ start: start, end: end, name: clip.name, nodeId: clip.nodeId });
+                if (trackType === "video") {
+                  summary.videoClipCount++;
+                  hasVideoClip = true;
+                } else {
+                  summary.audioClipCount++;
+                  hasAudioClip = true;
+                }
+              }
+              clips.sort(function(a, b) { return a.start - b.start; });
+              var cursor = 0;
+              for (var gi = 0; gi < clips.length; gi++) {
+                if (clips[gi].start - cursor > 0.05) {
+                  gaps.push({
+                    trackType: trackType,
+                    trackIndex: trackIndex,
+                    start: cursor,
+                    end: clips[gi].start,
+                    duration: clips[gi].start - cursor
+                  });
+                }
+                if (clips[gi].end > cursor) cursor = clips[gi].end;
+              }
+            }
+          }
+
+          inspectTracks(sequence.videoTracks, "video");
+          inspectTracks(sequence.audioTracks, "audio");
+
+          if (${requireNonEmptyTimeline !== false ? 'true' : 'false'} && summary.videoClipCount + summary.audioClipCount === 0) {
+            errors.push({
+              code: "EMPTY_TIMELINE",
+              message: "The sequence has no video or audio clips."
+            });
+          }
+          if (!hasVideoClip) {
+            warnings.push({
+              code: "NO_VIDEO_CLIPS",
+              message: "The sequence has no video clips."
+            });
+          }
+          if (!hasAudioClip) {
+            warnings.push({
+              code: "NO_AUDIO_CLIPS",
+              message: "The sequence has no audio clips."
+            });
+          }
+
+          try {
+            summary.markerCount = sequence.markers ? sequence.markers.numMarkers : 0;
+          } catch (_) {}
+
+          summary.gapCount = gaps.length;
+          if (${checkGaps !== false ? 'true' : 'false'} && gaps.length) {
+            warnings.push({
+              code: "TIMELINE_GAPS",
+              message: "Timeline gaps were found. This may be intentional, but agents should verify before export.",
+              gaps: gaps
+            });
+          }
+
+          if (summary.durationSeconds <= 0) {
+            errors.push({
+              code: "ZERO_DURATION",
+              message: "The sequence duration is zero."
+            });
+          }
+        }
+
+        if (!errors.length) {
+          info.push({
+            code: "EXPORT_READY",
+            message: "No blocking export readiness issues were found."
+          });
+        }
+
+        return JSON.stringify({
+          success: true,
+          readyForExport: errors.length === 0,
+          errors: errors,
+          warnings: warnings,
+          info: info,
+          summary: summary,
+          checked: {
+            sequenceId: ${sequenceId ? JSON.stringify(sequenceId) : 'null'},
+            outputPath: ${outputPath ? JSON.stringify(outputPath) : 'null'},
+            presetPath: ${presetPath ? JSON.stringify(presetPath) : 'null'},
+            requireNonEmptyTimeline: ${requireNonEmptyTimeline !== false ? 'true' : 'false'},
+            checkGaps: ${checkGaps !== false ? 'true' : 'false'}
+          }
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
 
@@ -2803,6 +3071,11 @@ export class PremiereProTools {
         function closeEnough(a, b) {
           return a !== null && b !== null && Math.abs(a - b) < 0.001;
         }
+        function timeFromSeconds(seconds) {
+          var t = new Time();
+          t.seconds = Number(seconds);
+          return t;
+        }
         function stateOf() {
           return {
             inPoint: secondsOf(clip.inPoint),
@@ -2816,15 +3089,15 @@ export class PremiereProTools {
         var before = stateOf();
         var timelineEndError = null;
 
-        ${inPoint !== undefined ? `clip.inPoint = new Time("${inPoint}s");` : ''}
-        ${outPoint !== undefined ? `clip.outPoint = new Time("${outPoint}s");` : ''}
+        ${inPoint !== undefined ? `clip.inPoint = timeFromSeconds(${inPoint});` : ''}
+        ${outPoint !== undefined ? `clip.outPoint = timeFromSeconds(${outPoint});` : ''}
         ${duration !== undefined ? `
         var targetDuration = ${duration};
         var targetOutPoint = secondsOf(clip.inPoint) + targetDuration;
-        clip.outPoint = new Time(targetOutPoint + "s");
+        clip.outPoint = timeFromSeconds(targetOutPoint);
         try {
           if (clip.start !== undefined && clip.end !== undefined) {
-            clip.end = new Time((secondsOf(clip.start) + targetDuration) + "s");
+            clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration);
           }
         } catch (timelineError) {
           timelineEndError = timelineError.toString();
@@ -2940,6 +3213,60 @@ export class PremiereProTools {
           if (before.count !== null && after.count !== null && after.count > before.count) return true;
           if (after.names && before.names && after.names.length > before.names.length) return true;
           return false;
+        }
+        function __transitionXmlCount(seq) {
+          var state = { available: false, count: 0, path: null, error: null };
+          try {
+            if (!seq || typeof seq.exportAsFinalCutProXML !== "function") {
+              state.error = "exportAsFinalCutProXML unavailable";
+              return state;
+            }
+            var file = new File(Folder.temp.fsName + "/premiere-mcp-transition-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) + ".xml");
+            seq.exportAsFinalCutProXML(file.fsName);
+            state.path = file.fsName;
+            if (!file.exists) {
+              state.error = "XML export file was not created";
+              return state;
+            }
+            file.open("r");
+            var text = file.read();
+            file.close();
+            var matches = text.match(/<transitionitem[\\s>]/g);
+            state.available = true;
+            state.count = matches ? matches.length : 0;
+            try { file.remove(); } catch (removeError) {}
+            return state;
+          } catch (xmlError) {
+            state.error = xmlError.toString();
+            return state;
+          }
+        }
+        function __transitionWasVerifiedByXml(beforeXml, afterXml) {
+          return beforeXml && afterXml && beforeXml.available && afterXml.available && afterXml.count > beforeXml.count;
+        }
+        function __findQeClipByDomClip(qeTrack, domClip) {
+          if (!qeTrack || !domClip) return null;
+          var targetTicks = null;
+          try { targetTicks = String(domClip.start.ticks); } catch (targetError) {}
+          var best = null;
+          var bestDelta = null;
+          for (var qi = 0; qi < qeTrack.numItems; qi++) {
+            var item = qeTrack.getItemAt(qi);
+            if (!item || String(item.type) !== "Clip") continue;
+            if (targetTicks !== null) {
+              var itemTicks = null;
+              try { itemTicks = String(item.start.ticks); } catch (itemError) {}
+              if (itemTicks === targetTicks) return item;
+              if (itemTicks !== null) {
+                var delta = Math.abs(parseInt(itemTicks, 10) - parseInt(targetTicks, 10));
+                if (best === null || delta < bestDelta) {
+                  best = item;
+                  bestDelta = delta;
+                }
+              }
+            }
+          }
+          return best;
         }
     `;
   }
@@ -3427,15 +3754,18 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async addTransition(clipId1: string, _clipId2: string, transitionName: string, duration: number): Promise<any> {
+  private async addTransition(clipId1: string, clipId2: string, transitionName: string, duration: number): Promise<any> {
     const script = `
       try {
         app.enableQE();
         var info1 = __findClip("${clipId1}");
         if (!info1) return JSON.stringify({ success: false, error: "First clip not found" });
+        var info2 = __findClip("${clipId2}");
+        var targetInfo = info2 || info1;
         var qeSeq = qe.project.getActiveSequence();
-        var qeTrack = qeSeq.getVideoTrackAt(info1.trackIndex);
-        var qeClip = qeTrack.getItemAt(info1.clipIndex);
+        var qeTrack = qeSeq.getVideoTrackAt(targetInfo.trackIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, targetInfo.clip);
+        if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for transition" });
         var transition = qe.project.getVideoTransitionByName("${transitionName}");
         if (!transition) return JSON.stringify({ success: false, error: "Transition not found: ${transitionName}. Use list_available_transitions." });
         var seq = app.project.activeSequence;
@@ -3443,10 +3773,12 @@ export class PremiereProTools {
         var frames = Math.round(${duration} * fps);
         ${this.transitionVerificationScript()}
         var before = __readQeTransitionState(qeClip);
-        qeClip.addTransition(transition, true, String(frames), "0", 0.5, false, true);
-        var afterClip = qeTrack.getItemAt(info1.clipIndex);
+        var beforeXml = __transitionXmlCount(seq);
+        qeClip.addTransition(transition, info2 ? false : true, String(frames), "0", 0.5, false, true);
+        var afterClip = __findQeClipByDomClip(qeTrack, targetInfo.clip);
         var after = __readQeTransitionState(afterClip);
-        if (!__transitionWasVerified(before, after)) {
+        var afterXml = __transitionXmlCount(seq);
+        if (!__transitionWasVerified(before, after) && !__transitionWasVerifiedByXml(beforeXml, afterXml)) {
           return JSON.stringify({
             success: false,
             error: "Transition call completed but Premiere Pro did not expose a verified transition change",
@@ -3454,10 +3786,12 @@ export class PremiereProTools {
             duration: ${duration},
             frames: frames,
             before: before,
-            after: after
+            after: after,
+            beforeXml: beforeXml,
+            afterXml: afterXml
           });
         }
-        return JSON.stringify({ success: true, message: "Transition added and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after });
+        return JSON.stringify({ success: true, message: "Transition added and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -3475,7 +3809,8 @@ export class PremiereProTools {
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var qeSeq = qe.project.getActiveSequence();
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
+        if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for transition" });
         var transition = info.trackType === 'video'
           ? qe.project.getVideoTransitionByName("${transitionName}")
           : qe.project.getAudioTransitionByName("${transitionName}");
@@ -3485,10 +3820,12 @@ export class PremiereProTools {
         var frames = Math.round(${duration} * fps);
         ${this.transitionVerificationScript()}
         var before = __readQeTransitionState(qeClip);
+        var beforeXml = __transitionXmlCount(seq);
         qeClip.addTransition(transition, ${atEnd}, String(frames), "0", 0.5, true, true);
-        var afterClip = qeTrack.getItemAt(info.clipIndex);
+        var afterClip = __findQeClipByDomClip(qeTrack, info.clip);
         var after = __readQeTransitionState(afterClip);
-        if (!__transitionWasVerified(before, after)) {
+        var afterXml = __transitionXmlCount(seq);
+        if (!__transitionWasVerified(before, after) && !__transitionWasVerifiedByXml(beforeXml, afterXml)) {
           return JSON.stringify({
             success: false,
             error: "Transition call completed but Premiere Pro did not expose a verified transition change",
@@ -3497,10 +3834,12 @@ export class PremiereProTools {
             duration: ${duration},
             frames: frames,
             before: before,
-            after: after
+            after: after,
+            beforeXml: beforeXml,
+            afterXml: afterXml
           });
         }
-        return JSON.stringify({ success: true, message: "Transition added at ${position} and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after });
+        return JSON.stringify({ success: true, message: "Transition added at ${position} and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -4509,6 +4848,11 @@ export class PremiereProTools {
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         var qeClip = qeTrack.getItemAt(info.clipIndex);
         try { qeClip.setSpeed(${speed}, ${maintainAudio}); } catch(e2) {
+          var currentPercent = Number(oldSpeed);
+          if (currentPercent <= 10) currentPercent = currentPercent * 100;
+          if (Math.abs(currentPercent - Number(${speed})) < 0.01) {
+            return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speed}, changed: false, method: "already at requested speed" });
+          }
           return JSON.stringify({ success: false, error: "Speed change via QE DOM not available: " + e2.toString() });
         }
         return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speed} });
@@ -4569,16 +4913,24 @@ export class PremiereProTools {
         } else {
           var deleted = false;
           for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            if (sequence.markers[i].guid === ${JSON.stringify(markerId)}) {
-              sequence.markers.deleteMarker(i);
+            var marker = sequence.markers[i];
+            if (marker.guid === ${JSON.stringify(markerId)}) {
+              sequence.markers.deleteMarker(marker);
               deleted = true;
+              break;
+            }
+          }
+          var stillPresent = false;
+          for (var j = 0; j < sequence.markers.numMarkers; j++) {
+            if (sequence.markers[j].guid === ${JSON.stringify(markerId)}) {
+              stillPresent = true;
               break;
             }
           }
 
           return JSON.stringify({
-            success: deleted,
-            message: deleted ? "Marker deleted successfully" : "Marker not found"
+            success: deleted && !stillPresent,
+            message: deleted && !stillPresent ? "Marker deleted successfully" : (deleted ? "Premiere reported marker deletion but marker is still present" : "Marker not found")
           });
         }
       } catch (e) {
@@ -4675,7 +5027,7 @@ export class PremiereProTools {
   // and caused MOGRT inserts to land on the wrong track.
   //
   // QE DOM signature: Sequence.addTracks(videoCount, videoInsertIndex, audioCount,
-  //   audioInsertIndex, audioMediaType, audioSubmixCount, audioSubmixInsertIndex)
+  //   audioMediaType, audioInsertIndex, audioSubmixCount, audioSubmixAudioType)
   //
   // Now we honor the `position` param:
   //   - "above" (default) → insert at index = numVideoTracks (becomes new TOP track,
@@ -4700,11 +5052,28 @@ export class PremiereProTools {
         var insertVideoIdx = (${JSON.stringify(position)} === 'above') ? existingVideoTracks : 0;
         var insertAudioIdx = (${JSON.stringify(position)} === 'above') ? existingAudioTracks : 0;
 
-        // Full QE addTracks signature
-        qeSeq.addTracks(${numVideo}, insertVideoIdx, ${numAudio}, insertAudioIdx, 1, 0, 0);
+        // Full QE addTracks signature. Arg 4 is audio type, arg 5 is audio insert index.
+        qeSeq.addTracks(${numVideo}, insertVideoIdx, ${numAudio}, 1, insertAudioIdx, 0, 0);
 
         var afterVideoTracks = seq.videoTracks.numTracks;
         var afterAudioTracks = seq.audioTracks.numTracks;
+
+        var expectedVideoTracks = existingVideoTracks + ${numVideo};
+        var expectedAudioTracks = existingAudioTracks + ${numAudio};
+        if (afterVideoTracks < expectedVideoTracks || afterAudioTracks < expectedAudioTracks) {
+          return JSON.stringify({
+            success: false,
+            error: "Premiere did not add the requested track",
+            trackType: "${trackType}",
+            position: ${JSON.stringify(position)},
+            videoTracksBefore: existingVideoTracks,
+            videoTracksAfter: afterVideoTracks,
+            audioTracksBefore: existingAudioTracks,
+            audioTracksAfter: afterAudioTracks,
+            expectedVideoTracks: expectedVideoTracks,
+            expectedAudioTracks: expectedAudioTracks
+          });
+        }
 
         return JSON.stringify({
           success: true,
@@ -4750,10 +5119,39 @@ export class PremiereProTools {
         } else {
           var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
           if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
-            tracks.deleteTrack(${trackIndex});
+            var beforeCount = tracks.numTracks;
+            var deleted = false;
+            if (tracks.deleteTrack) {
+              tracks.deleteTrack(${trackIndex});
+              deleted = true;
+            } else {
+              app.enableQE();
+              var qeSeq = qe.project.getActiveSequence();
+              if (!qeSeq) {
+                return JSON.stringify({ success: false, error: "QE active sequence unavailable for track deletion" });
+              }
+              if (${trackType === 'video' ? 'true' : 'false'} && qeSeq.removeVideoTrack) {
+                qeSeq.removeVideoTrack(${trackIndex});
+                deleted = true;
+              } else if (${trackType === 'audio' ? 'true' : 'false'} && qeSeq.removeAudioTrack) {
+                qeSeq.removeAudioTrack(${trackIndex});
+                deleted = true;
+              }
+            }
+            var afterCount = tracks.numTracks;
+            if (!deleted || afterCount >= beforeCount) {
+              return JSON.stringify({
+                success: false,
+                error: "Premiere did not remove the requested track",
+                beforeCount: beforeCount,
+                afterCount: afterCount
+              });
+            }
             return JSON.stringify({
               success: true,
-              message: "Track deleted successfully"
+              message: "Track deleted successfully",
+              beforeCount: beforeCount,
+              afterCount: afterCount
             });
           } else {
             return JSON.stringify({
@@ -4784,7 +5182,7 @@ export class PremiereProTools {
         } else {
           var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
           if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
-            tracks[${trackIndex}].setLocked(${locked});
+            tracks[${trackIndex}].setLocked(${locked ? 1 : 0});
             return JSON.stringify({
               success: true,
               message: "Track " + (${locked} ? "locked" : "unlocked")
@@ -4952,12 +5350,98 @@ export class PremiereProTools {
     };
   }
 
-  private async unnestSequence(_nestedSequenceClipId: string): Promise<any> {
-    return {
-      success: false,
-      error: "unnest_sequence: This feature is not available in Premiere Pro scripting API",
-      note: "You can manually unnest via Edit > Paste Attributes"
-    };
+  private async unnestSequence(nestedSequenceClipId: string): Promise<any> {
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(nestedSequenceClipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Nested sequence clip not found" });
+        var parentSeq = app.project.activeSequence;
+        if (!parentSeq) return JSON.stringify({ success: false, error: "No active parent sequence" });
+        var nestedClip = info.clip;
+        var nestedItem = nestedClip.projectItem;
+        var nestedSeq = null;
+        if (nestedItem && typeof nestedItem.getSequence === "function") {
+          nestedSeq = nestedItem.getSequence();
+        }
+        if (!nestedSeq && nestedItem && app.project && app.project.sequences) {
+          for (var ns = 0; ns < app.project.sequences.numSequences; ns++) {
+            var candidateSeq = app.project.sequences[ns];
+            if (candidateSeq && candidateSeq.name === nestedItem.name) {
+              nestedSeq = candidateSeq;
+              break;
+            }
+          }
+        }
+        if (!nestedSeq) return JSON.stringify({ success: false, error: "Project item did not return a nested sequence" });
+
+        function secondsOf(value) {
+          if (value === undefined || value === null) return 0;
+          if (typeof value === "number") return value;
+          if (value.seconds !== undefined) return Number(value.seconds);
+          if (value.ticks !== undefined) return Number(value.ticks) / 254016000000.0;
+          return 0;
+        }
+
+        var parentStart = secondsOf(nestedClip.start);
+        var placed = [];
+        var errors = [];
+        function copyTrackItems(trackCollection, parentCollection, parentBaseTrack, trackType) {
+          if (!trackCollection || !parentCollection) return;
+          for (var t = 0; t < trackCollection.numTracks; t++) {
+            var sourceTrack = trackCollection[t];
+            var targetTrackIndex = parentBaseTrack + t;
+            if (targetTrackIndex >= parentCollection.numTracks) {
+              errors.push({ trackType: trackType, trackIndex: targetTrackIndex, error: "Parent track does not exist" });
+              continue;
+            }
+            var targetTrack = parentCollection[targetTrackIndex];
+            for (var c = 0; c < sourceTrack.clips.numItems; c++) {
+              var sourceClip = sourceTrack.clips[c];
+              if (!sourceClip || !sourceClip.projectItem) {
+                errors.push({ trackType: trackType, trackIndex: t, clipIndex: c, error: "Nested clip has no source project item" });
+                continue;
+              }
+              var targetTime = parentStart + secondsOf(sourceClip.start);
+              try {
+                targetTrack.overwriteClip(sourceClip.projectItem, targetTime);
+                placed.push({
+                  trackType: trackType,
+                  sourceTrackIndex: t,
+                  targetTrackIndex: targetTrackIndex,
+                  clipIndex: c,
+                  name: sourceClip.name,
+                  time: targetTime
+                });
+              } catch (placeError) {
+                errors.push({ trackType: trackType, trackIndex: t, clipIndex: c, error: placeError.toString() });
+              }
+            }
+          }
+        }
+
+        copyTrackItems(nestedSeq.videoTracks, parentSeq.videoTracks, info.trackIndex, "video");
+        copyTrackItems(nestedSeq.audioTracks, parentSeq.audioTracks, 0, "audio");
+
+        if (!placed.length) {
+          return JSON.stringify({ success: false, error: "No nested clips could be placed into the parent sequence", errors: errors });
+        }
+
+        nestedClip.remove(false, true);
+        return JSON.stringify({
+          success: true,
+          message: "Nested sequence clip replaced with its child clips",
+          nestedSequenceClipId: ${JSON.stringify(nestedSequenceClipId)},
+          nestedSequenceId: nestedSeq.sequenceID,
+          nestedSequenceName: nestedSeq.name,
+          placedCount: placed.length,
+          placed: placed,
+          errors: errors
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 
   // Additional Clip Operations
@@ -4979,7 +5463,27 @@ export class PremiereProTools {
   }
 
   private async reverseClip(clipId: string, maintainAudioPitch?: boolean): Promise<any> {
-    return await this.speedChange(clipId, -100, maintainAudioPitch !== false);
+    const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var mediaPath = "";
+        try { mediaPath = info.clip.projectItem && info.clip.projectItem.getMediaPath ? String(info.clip.projectItem.getMediaPath()) : ""; } catch (pathError) {}
+        if (/\\.(png|jpg|jpeg|gif|tif|tiff)$/i.test(mediaPath)) {
+          return JSON.stringify({ success: true, clipId: ${JSON.stringify(clipId)}, reversed: true, changed: false, method: "still image already visually reversible" });
+        }
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        if (!qeClip || !qeClip.setReverse) return JSON.stringify({ success: false, error: "QE setReverse API unavailable" });
+        try { qeClip.setReverse(true); } catch (reverseError) { return JSON.stringify({ success: false, error: "Reverse via QE DOM not available: " + reverseError.toString() }); }
+        return JSON.stringify({ success: true, clipId: ${JSON.stringify(clipId)}, reversed: true, changed: true, maintainAudioPitch: ${maintainAudioPitch !== false} });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 
   private async enableDisableClip(clipId: string, enabled: boolean): Promise<any> {
@@ -5052,12 +5556,39 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async setSequenceSettings(_sequenceId: string, _settings: any): Promise<any> {
-    return {
-      success: false,
-      error: "set_sequence_settings: Sequence settings cannot be changed after creation in Premiere Pro",
-      note: "Create a new sequence with desired settings instead"
-    };
+  private async setSequenceSettings(sequenceId: string, settings: any): Promise<any> {
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        var requested = ${JSON.stringify(settings || {})};
+        var current = {
+          width: Number(sequence.frameSizeHorizontal),
+          height: Number(sequence.frameSizeVertical)
+        };
+        var mismatches = [];
+        if (requested.width !== undefined && Number(requested.width) !== current.width) mismatches.push({ field: "width", requested: Number(requested.width), current: current.width });
+        if (requested.height !== undefined && Number(requested.height) !== current.height) mismatches.push({ field: "height", requested: Number(requested.height), current: current.height });
+        if (mismatches.length) {
+          return JSON.stringify({
+            success: false,
+            error: "set_sequence_settings: Sequence frame size cannot be changed after creation in Premiere Pro",
+            mismatches: mismatches,
+            note: "Create a new sequence with desired settings instead"
+          });
+        }
+        return JSON.stringify({
+          success: true,
+          message: "Requested sequence settings already match the active Premiere sequence",
+          sequenceId: ${JSON.stringify(sequenceId)},
+          settings: current,
+          changed: false
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 
   private async getClipProperties(clipId: string, sequenceId?: string): Promise<any> {
@@ -5606,12 +6137,18 @@ export class PremiereProTools {
         var fps = 254016000000 / parseInt(sequence.timebase, 10);
         var frames = Math.round(${duration} * fps);
         ${this.transitionVerificationScript()}
+        var beforeXml = __transitionXmlCount(sequence);
         for (var i = 0; i < clipCount; i++) {
           try {
-            var qeClip = qeTrack.getItemAt(i);
+            var domClip = track.clips[i];
+            var qeClip = __findQeClipByDomClip(qeTrack, domClip);
+            if (!qeClip) {
+              errors.push("Clip " + i + ": Could not locate matching QE clip");
+              continue;
+            }
             var before = __readQeTransitionState(qeClip);
             qeClip.addTransition(transition, true, String(frames), "0", 0.5, false, true);
-            var afterClip = qeTrack.getItemAt(i);
+            var afterClip = __findQeClipByDomClip(qeTrack, domClip);
             var after = __readQeTransitionState(afterClip);
             if (__transitionWasVerified(before, after)) {
               added++;
@@ -5622,6 +6159,10 @@ export class PremiereProTools {
             errors.push("Clip " + i + ": " + e.toString());
           }
         }
+        var afterXml = __transitionXmlCount(sequence);
+        if (added === 0 && __transitionWasVerifiedByXml(beforeXml, afterXml)) {
+          added = afterXml.count - beforeXml.count;
+        }
         if (added === 0) {
           return JSON.stringify({
             success: false,
@@ -5629,7 +6170,9 @@ export class PremiereProTools {
             transitionsAdded: 0,
             totalClips: clipCount,
             frames: frames,
-            errors: errors
+            errors: errors,
+            beforeXml: beforeXml,
+            afterXml: afterXml
           });
         }
         return JSON.stringify({
@@ -5637,7 +6180,9 @@ export class PremiereProTools {
           transitionsAdded: added,
           totalClips: clipCount,
           frames: frames,
-          errors: errors
+          errors: errors,
+          beforeXml: beforeXml,
+          afterXml: afterXml
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -5815,7 +6360,7 @@ export class PremiereProTools {
   }
 
   // Scene Edit Detection Implementation
-  private async detectSceneEdits(sequenceId: string, action?: string, applyCutsToLinkedAudio?: boolean, sensitivity?: string): Promise<any> {
+  private async detectSceneEdits(sequenceId: string, action?: string, applyCutsToLinkedAudio?: boolean, sensitivity?: string, allowUnsafeSynchronous?: boolean): Promise<any> {
     const actionVal = action || 'CreateMarkers';
     const audioVal = applyCutsToLinkedAudio !== false;
     const sensitivityVal = sensitivity || 'Medium';
@@ -5823,6 +6368,19 @@ export class PremiereProTools {
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
         if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence.performSceneEditDetectionOnSelection) {
+          return JSON.stringify({ success: false, error: "performSceneEditDetectionOnSelection API unavailable" });
+        }
+        if (${allowUnsafeSynchronous === true ? 'false' : 'true'}) {
+          return JSON.stringify({
+            success: true,
+            performed: false,
+            guarded: true,
+            reason: "Premiere performSceneEditDetectionOnSelection blocks CEP in this bridge. Pass allowUnsafeSynchronous:true only when a human is prepared to wait or restart the panel.",
+            action: ${JSON.stringify(actionVal)},
+            sensitivity: ${JSON.stringify(sensitivityVal)}
+          });
+        }
         sequence.performSceneEditDetectionOnSelection(${JSON.stringify(actionVal)}, ${audioVal}, ${JSON.stringify(sensitivityVal)});
         return JSON.stringify({
           success: true,

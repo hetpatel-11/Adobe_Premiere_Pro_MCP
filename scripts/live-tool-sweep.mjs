@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { PremiereProBridge } from '../dist/bridge/index.js';
 import { PremiereProTools } from '../dist/tools/index.js';
@@ -10,14 +11,31 @@ process.env.PREMIERE_TEMP_DIR = process.env.PREMIERE_TEMP_DIR || '/tmp/premiere-
 const bridge = new PremiereProBridge();
 const tools = new PremiereProTools(bridge);
 const runId = Date.now();
+const outputDir = process.env.PREMIERE_TEMP_DIR || '/tmp/premiere-mcp-bridge';
+const outputPath = path.join(outputDir, 'live-tool-sweep.json');
 
 const results = [];
 const executed = new Map();
 
 const mutatingNoArgSkips = new Set([
   'save_project',
+  'close_project',
   'undo',
+  'redo',
+  'multiple_undo',
+  'remove_selected_clips',
+  'lift_selection',
+  'extract_selection',
+  'copy_effects_between_clips',
+  'copy_effect_values',
+  'close_sequence',
+  'nest_clips',
+  'unnest_sequence',
+  'delete_preview_files',
+  'scene_edit_detection',
+  'start_batch_encode',
   'consolidate_duplicates',
+  'consolidate_and_transfer',
 ]);
 
 const externalFixtureSkips = new Set([
@@ -124,6 +142,27 @@ function record(name, status, args, result, note) {
   results.push(entry);
   if (status === 'executed' || status === 'runtime_failure') {
     executed.set(name, result);
+  }
+
+  writeCheckpoint();
+}
+
+function currentCounts() {
+  return {
+    total: tools.getAvailableTools().length,
+    executed: results.filter((entry) => entry.status === 'executed').length,
+    schema_validated: results.filter((entry) => entry.status === 'schema_validated').length,
+    runtime_failure: results.filter((entry) => entry.status === 'runtime_failure').length,
+    skipped: results.filter((entry) => entry.status === 'skipped').length,
+  };
+}
+
+function writeCheckpoint() {
+  try {
+    fsSync.mkdirSync(outputDir, { recursive: true });
+    fsSync.writeFileSync(outputPath, JSON.stringify({ runId, counts: currentCounts(), results }, null, 2));
+  } catch {
+    // Best-effort live evidence checkpoint.
   }
 }
 
@@ -310,11 +349,6 @@ async function main() {
       sequenceId: demoSequenceId,
       newName: `Sweep Duplicate ${runId}`,
     });
-    if (manualSequenceId) {
-      finalArgs.set('delete_sequence', {
-        sequenceId: manualSequenceId,
-      });
-    }
     sampleArgs.set('get_clip_at_position', {
       sequenceId: demoSequenceId,
       trackType: 'video',
@@ -465,10 +499,6 @@ async function main() {
     sampleArgs.set('speed_change', { clipId: demoClipId, speed: 1, maintainAudio: true });
   }
 
-  if (manualClipId) {
-    finalArgs.set('remove_from_timeline', { clipId: manualClipId, sequenceId: manualSequenceId, deleteMode: 'lift' });
-  }
-
   if (demoProjectItemId) {
     sampleArgs.set('get_color_label', { projectItemId: demoProjectItemId });
     sampleArgs.set('get_metadata', { projectItemId: demoProjectItemId });
@@ -570,17 +600,9 @@ async function main() {
     await invoke(tool.name, {}, 'schema path validation with empty args');
   }
 
-  const counts = {
-    total: catalog.length,
-    executed: results.filter((entry) => entry.status === 'executed').length,
-    schema_validated: results.filter((entry) => entry.status === 'schema_validated').length,
-    runtime_failure: results.filter((entry) => entry.status === 'runtime_failure').length,
-    skipped: results.filter((entry) => entry.status === 'skipped').length,
-  };
+  const counts = currentCounts();
 
   const report = { runId, counts, results };
-  const outputDir = process.env.PREMIERE_TEMP_DIR || '/tmp/premiere-mcp-bridge';
-  const outputPath = path.join(outputDir, 'live-tool-sweep.json');
   await fs.mkdir(outputDir, { recursive: true });
   await fs.writeFile(outputPath, JSON.stringify(report, null, 2));
 

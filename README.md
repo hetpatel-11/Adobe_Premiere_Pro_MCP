@@ -43,17 +43,17 @@ This repository is currently validated for:
 - the included macOS installer path for Claude Desktop
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
 
-Current catalog status as of June 29, 2026:
+Current catalog status as of July 29, 2026:
 
-- `278` Premiere Pro MCP tools are exposed for AI-driven video editing
+- `281` Premiere Pro MCP tools are exposed for AI-driven video editing
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
-- the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, and linked audio/video operations
+- the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, export readiness validation, and linked audio/video operations
 
 Most recent completed local live validation:
 
-- `197` tools were live-executed against a real Premiere Pro 2026 session
-- `57` tools were schema-validated in the same sweep
-- `3` destructive no-arg tools were intentionally skipped (`save_project`, `undo`, `consolidate_duplicates`)
+- `281` active tools are exposed; `validate_project_for_export` replaces the removed AE comp import path with a non-destructive export readiness audit, and the merged main branch includes `detect_silence`
+- `0` known parked or placeholder tools are advertised
+- `import_ae_comps` is intentionally not advertised because Premiere returned `false` for real `.aep` fixtures in this environment and a generic `.aep` import can wedge the CEP bridge
 
 The full live sweep output is written to `/tmp/premiere-mcp-bridge/live-tool-sweep.json` when you run the verifier.
 
@@ -253,7 +253,7 @@ This creates temporary `Sweep ...` sequences in the currently open project so th
 
 ## Tool Coverage
 
-The `97` exposed tools are grouped roughly like this:
+The `281` exposed tools are grouped roughly like this:
 
 - Discovery and project inspection
 - Project and sequence management
