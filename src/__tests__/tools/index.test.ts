@@ -2,11 +2,35 @@
  * Unit tests for PremiereProTools
  */
 
+import { EventEmitter } from 'events';
+import { spawn } from 'child_process';
 import { PremiereProTools } from '../../tools/index.js';
 import { PremiereProBridge } from '../../bridge/index.js';
 import { executeExpandedTool, expandedToolNames, unimplementedExpandedToolNames } from '../../tools/expanded.js';
 
 jest.mock('../../bridge/index.js');
+jest.mock('child_process');
+
+const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
+
+/** Builds a fake child_process for a scripted ffmpeg run: emits stderr, then closes. */
+function fakeFfmpegProcess(stderrOutput: string, closeCode: number | null = 0): any {
+  const proc: any = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  process.nextTick(() => {
+    if (stderrOutput) proc.stderr.emit('data', Buffer.from(stderrOutput));
+    proc.emit('close', closeCode);
+  });
+  return proc;
+}
+
+/** Builds a fake child_process that immediately errors (e.g. ffmpeg not on PATH). */
+function fakeMissingFfmpegProcess(): any {
+  const proc: any = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  process.nextTick(() => proc.emit('error', new Error('ENOENT')));
+  return proc;
+}
 
 describe('PremiereProTools', () => {
   let tools: PremiereProTools;
@@ -16,6 +40,7 @@ describe('PremiereProTools', () => {
     mockBridge = new PremiereProBridge() as jest.Mocked<PremiereProBridge>;
     tools = new PremiereProTools(mockBridge);
     jest.clearAllMocks();
+    mockSpawn.mockReset();
   });
 
   describe('getAvailableTools()', () => {
@@ -33,6 +58,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('import_mogrt');
       expect(toolNames).toContain('setup_ducking');
       expect(toolNames).toContain('validate_project_for_export');
+      expect(toolNames).toContain('detect_silence');
       expect(toolNames).toContain('ping');
       expect(toolNames).toContain('get_full_project_overview');
       expect(toolNames).toContain('open_in_source');
@@ -42,7 +68,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('capture_frame');
       expect(toolNames).toContain('add_tracks');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(278);
+      expect(availableTools).toHaveLength(281);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -220,6 +246,18 @@ describe('PremiereProTools', () => {
       expect(result.error).toBe('Import failed');
     });
 
+    it('adds an actionable modal warning when import_media times out', async () => {
+      mockBridge.importMedia = jest.fn().mockRejectedValue(new Error('Bridge response timeout'));
+
+      const result = await tools.executeTool('import_media', {
+        filePath: '/path/to/captions.ass'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Bridge response timeout');
+      expect(result.warning).toContain('blocking modal dialog');
+    });
+
     it('passes through successful timeline placement', async () => {
       mockBridge.addToTimeline = jest.fn().mockResolvedValue({
         success: true,
@@ -253,6 +291,105 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('Track not found');
+    });
+  });
+
+  describe('detect_silence', () => {
+    it('rejects when neither mediaPath nor projectItemId is provided', async () => {
+      const result = await tools.executeTool('detect_silence', {});
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('returns an explicit error when ffmpeg is not on PATH, rather than a cryptic spawn failure', async () => {
+      mockSpawn.mockReturnValueOnce(fakeMissingFfmpegProcess());
+
+      const result = await tools.executeTool('detect_silence', {
+        mediaPath: '/tmp/some-clip.mp4'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('ffmpeg was not found on PATH');
+      // Only the version-check spawn should have happened -- never attempted the real analysis.
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('parses silence_start/silence_end pairs from ffmpeg stderr into intervals', async () => {
+      const ffmpegStderr = [
+        '[silencedetect @ 0x0] silence_start: 1.999977',
+        '[silencedetect @ 0x0] silence_end: 5.000045 | silence_duration: 3.000068',
+        '[silencedetect @ 0x0] silence_start: 6.999977',
+        '[silencedetect @ 0x0] silence_end: 10.000000 | silence_duration: 3.000023'
+      ].join('\n');
+
+      // Dispatch on the actual args ffmpeg was invoked with, rather than call order --
+      // more robust than chained mockReturnValueOnce for a two-spawn-call code path.
+      mockSpawn.mockImplementation((_cmd: any, spawnArgs: any) => {
+        const isVersionCheck = Array.isArray(spawnArgs) && spawnArgs.includes('-version');
+        return isVersionCheck ? fakeFfmpegProcess('', 0) : fakeFfmpegProcess(ffmpegStderr, 0);
+      });
+
+      const result = await tools.executeTool('detect_silence', {
+        mediaPath: '/tmp/some-clip.mp4',
+        noiseThresholdDb: -30,
+        minDurationSeconds: 1
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.silenceIntervals).toEqual([
+        { start: 1.999977, end: 5.000045, duration: 3 },
+        { start: 6.999977, end: 10, duration: 3 }
+      ]);
+      expect(result.note).toContain('Detection only');
+    });
+
+    it('resolves a projectItemId to a media path via the bridge before running ffmpeg', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({
+        success: true,
+        mediaPath: '/Volumes/Footage/session.mp4'
+      });
+      mockSpawn.mockImplementation(() => fakeFfmpegProcess('', 0));
+
+      const result = await tools.executeTool('detect_silence', {
+        projectItemId: 'item-789'
+      });
+
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(true);
+      expect(result.mediaPath).toBe('/Volumes/Footage/session.mp4');
+      expect(result.silenceIntervals).toEqual([]);
+    });
+
+    it('surfaces a clear error when the project item cannot be resolved to a media path', async () => {
+      mockBridge.executeScript.mockResolvedValueOnce({
+        success: false,
+        error: 'Project item has no media path (is it a sequence or bin?)'
+      });
+
+      const result = await tools.executeTool('detect_silence', {
+        projectItemId: 'item-a-bin'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('no media path');
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
+    it('reports a clear failure when ffmpeg cannot read the file at all', async () => {
+      mockSpawn.mockImplementation((_cmd: any, spawnArgs: any) => {
+        const isVersionCheck = Array.isArray(spawnArgs) && spawnArgs.includes('-version');
+        return isVersionCheck ? fakeFfmpegProcess('', 0) : fakeFfmpegProcess('Error opening input file', 254);
+      });
+
+      const result = await tools.executeTool('detect_silence', {
+        mediaPath: '/tmp/does-not-exist.mp4'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("couldn't be read");
     });
   });
 
@@ -318,6 +455,19 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('returns an explicit unsupported result for caption track deletion', async () => {
+      const result = await tools.executeTool('delete_track', {
+        sequenceId: 'seq-123',
+        trackType: 'caption',
+        trackIndex: 0
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.unsupportedByPremiereApi).toBe(true);
+      expect(result.error).toContain('Caption track deletion is not supported');
       expect(mockBridge.executeScript).not.toHaveBeenCalled();
     });
 
@@ -579,8 +729,8 @@ describe('PremiereProTools', () => {
       expect(result.message).toContain('directed clip plan');
       expect(result.transitions).toHaveLength(0);
       expect(result.animations).toHaveLength(0);
-      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5, true);
-      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6, true);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5, true, undefined, undefined);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6, true, undefined, undefined);
     });
 
     it('builds a brand spot from assets without requiring a mogrt', async () => {

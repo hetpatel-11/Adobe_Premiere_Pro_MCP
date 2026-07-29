@@ -31,16 +31,6 @@ I'm building **[Monet](https://github.com/Monet-AI-Editor/Monet)**, an AI-first 
 
 ![Current MCP Bridge (CEP) panel](images/demo.png)
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=hetpatel-11%2FAdobe_Premiere_Pro_MCP&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=hetpatel-11/Adobe_Premiere_Pro_MCP&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=hetpatel-11/Adobe_Premiere_Pro_MCP&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=hetpatel-11/Adobe_Premiere_Pro_MCP&type=date&legend=top-left" />
- </picture>
-</a>
-
 Current CEP panel UI inside Premiere Pro, using the refreshed bridge controls and status layout.
 
 ## Current Status
@@ -55,13 +45,13 @@ This repository is currently validated for:
 
 Current catalog status as of July 29, 2026:
 
-- `278` Premiere Pro MCP tools are exposed for AI-driven video editing
+- `281` Premiere Pro MCP tools are exposed for AI-driven video editing
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
 - the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, export readiness validation, and linked audio/video operations
 
 Most recent completed local live validation:
 
-- `278` active tools are exposed; the newly added `validate_project_for_export` tool replaces the removed AE comp import path with a non-destructive export readiness audit
+- `281` active tools are exposed; `validate_project_for_export` replaces the removed AE comp import path with a non-destructive export readiness audit, and the merged main branch includes `detect_silence`
 - `0` known parked or placeholder tools are advertised
 - `import_ae_comps` is intentionally not advertised because Premiere returned `false` for real `.aep` fixtures in this environment and a generic `.aep` import can wedge the CEP bridge
 
@@ -263,7 +253,7 @@ This creates temporary `Sweep ...` sequences in the currently open project so th
 
 ## Tool Coverage
 
-The `278` exposed tools are grouped roughly like this:
+The `281` exposed tools are grouped roughly like this:
 
 - Discovery and project inspection
 - Project and sequence management

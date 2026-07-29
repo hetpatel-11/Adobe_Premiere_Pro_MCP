@@ -8,10 +8,15 @@
 import { Logger } from '../utils/logger.js';
 import { ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 import type { PremiereProTransport } from './types.js';
+
+const UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS = new Set([
+  '.ass',
+  '.ssa'
+]);
 
 const EXTENDSCRIPT_HELPERS = `
 function __mcpEscapeString(value) {
@@ -250,7 +255,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return EXTENDSCRIPT_HELPERS + '(function(){\n' + script + '\n})();';
   }
 
-  async executeScript(script: string): Promise<any> {
+  async executeScript(script: string, timeoutMs?: number): Promise<any> {
     if (!this.isInitialized) {
       throw new Error('Bridge not initialized. Call initialize() first.');
     }
@@ -262,15 +267,20 @@ export class PremiereProBridge implements PremiereProTransport {
     try {
       const fullScript = this.buildExecutableScript(script);
 
-      // Write command to file
+      // Write command to file. Include timeoutMs so the CEP/UXP panel can extend its own
+      // execution watchdog to match — otherwise the panel's default (45s) kills long batch
+      // scripts well before the server's own timeout elapses.
       await fs.writeFile(commandFile, JSON.stringify({
         id: commandId,
         script: fullScript,
+        timeoutMs: timeoutMs,
         timestamp: new Date().toISOString()
       }));
 
-      // Wait for response (in a real implementation, this would be handled by the UXP plugin)
-      const response = await this.waitForResponse(responseFile);
+      // Wait for response (in a real implementation, this would be handled by the UXP plugin).
+      // Batch operations pass a larger timeout because a single round-trip does the work of
+      // dozens of individual calls inside one ExtendScript pass.
+      const response = await this.waitForResponse(responseFile, timeoutMs);
       
       // Clean up files
       await fs.unlink(commandFile).catch(() => {});
@@ -416,6 +426,16 @@ export class PremiereProBridge implements PremiereProTransport {
 
     // Use the normalized path from validation (don't double-escape)
     const safePath = pathValidation.normalized || filePath;
+    const ext = extname(safePath).toLowerCase();
+    if (UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS.has(ext)) {
+      return {
+        success: false,
+        error: `Unsupported import format "${ext}". Premiere Pro can show a blocking "File format not supported" modal for this file type, so the MCP server refused to import it before calling Premiere. Convert it to .srt or another Premiere-supported media format first.`,
+        filePath: safePath,
+        blockedBeforePremiere: true
+      } as any;
+    }
+
     const script = `
       try {
         function __walkItems(parent, output) {
@@ -574,7 +594,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true): Promise<PremiereProClip> {
+  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip> {
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
@@ -605,6 +625,41 @@ export class PremiereProBridge implements PremiereProTransport {
           track = sequence.videoTracks[${trackIndex}];
           if (!track) {
             return JSON.stringify({ success: false, error: "Video track not found at index ${trackIndex}", videoTrackCount: sequence.videoTracks.numTracks });
+          }
+        }
+
+        // Source in/out: replicate the Source-monitor "mark in / mark out then
+        // overwrite" move. overwriteClip(projectItem, time) places whatever range
+        // is currently marked on the projectItem, so set the marks first. Without
+        // this, an arbitrary interior sub-range of a source cannot be placed.
+        var srcIn = ${sourceInPoint === undefined ? 'null' : sourceInPoint};
+        var srcOut = ${sourceOutPoint === undefined ? 'null' : sourceOutPoint};
+        var appliedSourceInOut = false;
+        var sourceInOutError = "";
+        if (srcIn !== null && srcOut !== null) {
+          try {
+            // mediaType 4 = all streams (video + audio) in one call
+            projectItem.setInPoint(srcIn, 4);
+            projectItem.setOutPoint(srcOut, 4);
+            appliedSourceInOut = true;
+          } catch (eio) {
+            try {
+              // fall back to per-stream marks (video=1, audio=2)
+              projectItem.setInPoint(srcIn, 1);
+              projectItem.setOutPoint(srcOut, 1);
+              projectItem.setInPoint(srcIn, 2);
+              projectItem.setOutPoint(srcOut, 2);
+              appliedSourceInOut = true;
+            } catch (eio2) {
+              try {
+                // last resort: no mediaType arg
+                projectItem.setInPoint(srcIn);
+                projectItem.setOutPoint(srcOut);
+                appliedSourceInOut = true;
+              } catch (eio3) {
+                sourceInOutError = String(eio3);
+              }
+            }
           }
         }
 
@@ -667,7 +722,9 @@ export class PremiereProBridge implements PremiereProTransport {
           duration: placedClip.duration.seconds,
           mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : "",
           linkAudio: ${linkAudio},
-          unlinkedAudioRemoved: unlinkedAudioRemoved
+          unlinkedAudioRemoved: unlinkedAudioRemoved,
+          appliedSourceInOut: appliedSourceInOut,
+          sourceInOutError: sourceInOutError
         });
       } catch (e) {
         return JSON.stringify({
@@ -678,6 +735,138 @@ export class PremiereProBridge implements PremiereProTransport {
     `;
 
     return await this.executeScript(script);
+  }
+
+  // Batch variant of addToTimeline: place many clips in ONE ExtendScript round-trip.
+  // The per-call file/WS round-trip (~seconds each, 60s timeout) is the real bottleneck when
+  // placing a whole edit; looping inside one script collapses N round-trips into 1. Mirrors the
+  // single-clip logic: audio-only routing by extension, Source-monitor in/out marking (mediaType
+  // 4 with per-stream + no-arg fallbacks), overwriteClip. Returns a per-clip result array so a
+  // single bad clip never sinks the batch.
+  async addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; linkAudio?: boolean; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any> {
+    const specs = clips.map(c => ({
+      projectItemId: c.projectItemId,
+      trackIndex: c.trackIndex,
+      time: c.time,
+      // Mirror the single-call default (true = keep Premiere's native audio linking).
+      linkAudio: c.linkAudio === undefined ? true : c.linkAudio,
+      sourceInPoint: c.sourceInPoint === undefined ? null : c.sourceInPoint,
+      sourceOutPoint: c.sourceOutPoint === undefined ? null : c.sourceOutPoint,
+    }));
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) {
+          return JSON.stringify({ success: false, error: "Sequence not found" });
+        }
+        var specs = ${JSON.stringify(specs)};
+        var results = [];
+        for (var c = 0; c < specs.length; c++) {
+          var spec = specs[c];
+          var r = { index: c, time: spec.time, success: false };
+          try {
+            var projectItem = __findProjectItem(spec.projectItemId);
+            if (!projectItem) { r.error = "Project item not found"; results.push(r); continue; }
+
+            var mediaPath = projectItem.getMediaPath ? projectItem.getMediaPath() : "";
+            var isAudioOnly = /\\.(mp3|wav|aif|aiff|m4a|aac|flac|ogg|wma)$/i.test(mediaPath);
+            var track = isAudioOnly ? sequence.audioTracks[spec.trackIndex] : sequence.videoTracks[spec.trackIndex];
+            if (!track) { r.error = "Track not found at index " + spec.trackIndex; results.push(r); continue; }
+
+            if (spec.sourceInPoint !== null && spec.sourceOutPoint !== null) {
+              try {
+                projectItem.setInPoint(spec.sourceInPoint, 4);
+                projectItem.setOutPoint(spec.sourceOutPoint, 4);
+              } catch (eio) {
+                try {
+                  projectItem.setInPoint(spec.sourceInPoint, 1);
+                  projectItem.setOutPoint(spec.sourceOutPoint, 1);
+                  projectItem.setInPoint(spec.sourceInPoint, 2);
+                  projectItem.setOutPoint(spec.sourceOutPoint, 2);
+                } catch (eio2) {
+                  try {
+                    projectItem.setInPoint(spec.sourceInPoint);
+                    projectItem.setOutPoint(spec.sourceOutPoint);
+                  } catch (eio3) {}
+                }
+              }
+            }
+
+            track.overwriteClip(projectItem, spec.time);
+
+            var placedClip = null;
+            for (var i = 0; i < track.clips.numItems; i++) {
+              var candidate = track.clips[i];
+              if (candidate && candidate.projectItem && candidate.projectItem.nodeId === projectItem.nodeId && Math.abs(candidate.start.seconds - spec.time) < 0.1) {
+                placedClip = candidate;
+                break;
+              }
+            }
+            if (!placedClip && track.clips.numItems > 0) {
+              placedClip = track.clips[track.clips.numItems - 1];
+            }
+            if (!placedClip) { r.error = "Clip placement did not produce a track item"; results.push(r); continue; }
+
+            r.success = true;
+            r.id = placedClip.nodeId;
+            r.name = placedClip.name;
+            r.inPoint = placedClip.start.seconds;
+            r.outPoint = placedClip.end.seconds;
+
+            // linkAudio=false cleanup — mirror the single-call addToTimeline path so batch
+            // rebuild/overlay workflows don't reintroduce the silent embedded-audio overwrite
+            // bug. When a video-track clip's source carries an embedded audio stream, Premiere
+            // auto-links and overwrites its counterpart onto an audio track, which can DESTROY
+            // existing audio. When linkAudio is false, remove that counterpart at the same
+            // start time. The video on the target track is untouched.
+            r.linkAudio = spec.linkAudio;
+            r.unlinkedAudioRemoved = 0;
+            if (!isAudioOnly && spec.linkAudio === false) {
+              var videoStart = placedClip.start.seconds;
+              var tolerance = 0.1;
+              for (var at = 0; at < sequence.audioTracks.numTracks; at++) {
+                var audioTrack = sequence.audioTracks[at];
+                // iterate backwards because remove() may shift indices
+                for (var ai = audioTrack.clips.numItems - 1; ai >= 0; ai--) {
+                  var audioClip = audioTrack.clips[ai];
+                  if (audioClip && audioClip.projectItem &&
+                      audioClip.projectItem.nodeId === projectItem.nodeId &&
+                      Math.abs(audioClip.start.seconds - videoStart) < tolerance) {
+                    try {
+                      audioClip.remove(false, false); // ripple=false, alignToVideo=false
+                      r.unlinkedAudioRemoved++;
+                    } catch (rmErr) {
+                      // best effort — don't fail this clip over cleanup
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            r.error = e.toString();
+          }
+          results.push(r);
+        }
+        var placed = 0;
+        for (var k = 0; k < results.length; k++) { if (results[k].success) placed++; }
+        var failed = specs.length - placed;
+        // Aggregate status must reflect reality: success is true ONLY when every requested
+        // clip placed. placed===0 => failure; some-but-not-all => partial. Per-clip results[]
+        // still carry the detail. (PR #48 review: don't report success when placements failed.)
+        var allPlaced = (specs.length > 0 && placed === specs.length);
+        return JSON.stringify({
+          success: allPlaced,
+          status: (placed === 0 ? "failure" : (allPlaced ? "success" : "partial")),
+          placed: placed,
+          failed: failed,
+          total: specs.length,
+          results: results
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.executeScript(script, 300000);
   }
 
   async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<any> {
