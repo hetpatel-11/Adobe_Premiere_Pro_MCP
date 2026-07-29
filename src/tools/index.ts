@@ -2822,15 +2822,15 @@ export class PremiereProTools {
         var before = stateOf();
         var timelineEndError = null;
 
-        ${inPoint !== undefined ? `clip.inPoint = new Time("${inPoint}s");` : ''}
-        ${outPoint !== undefined ? `clip.outPoint = new Time("${outPoint}s");` : ''}
+        ${inPoint !== undefined ? `clip.inPoint = __time(${inPoint});` : ''}
+        ${outPoint !== undefined ? `clip.outPoint = __time(${outPoint});` : ''}
         ${duration !== undefined ? `
         var targetDuration = ${duration};
         var targetOutPoint = secondsOf(clip.inPoint) + targetDuration;
-        clip.outPoint = new Time(targetOutPoint + "s");
+        clip.outPoint = __time(targetOutPoint);
         try {
           if (clip.start !== undefined && clip.end !== undefined) {
-            clip.end = new Time((secondsOf(clip.start) + targetDuration) + "s");
+            clip.end = __time(secondsOf(clip.start) + targetDuration);
           }
         } catch (timelineError) {
           timelineEndError = timelineError.toString();

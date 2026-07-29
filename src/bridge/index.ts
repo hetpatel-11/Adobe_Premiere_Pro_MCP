@@ -140,6 +140,15 @@ function __activeSequence() {
   }
   return null;
 }
+function __time(seconds) {
+  // new Time("1.5s") silently yields 0 seconds / 0 ticks — the string form does not parse, and
+  // it does not throw either, so assignments built from it quietly write zero. Verified on
+  // Premiere Pro 26.0.2: new Time("0.5s").seconds === 0, while constructing empty and assigning
+  // .seconds gives 0.5 (127008000000 ticks). Always build Time values through this.
+  var t = new Time();
+  t.seconds = Number(seconds);
+  return t;
+}
 function __ticksToSeconds(ticks) {
   return parseInt(ticks, 10) / 254016000000;
 }
