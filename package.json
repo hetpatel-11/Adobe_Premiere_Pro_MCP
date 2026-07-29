@@ -11,6 +11,8 @@
     "setup:mac": "bash ./scripts/install-macos.sh",
     "setup:doctor": "bash ./scripts/doctor-macos.sh",
     "uninstall:mac": "bash ./scripts/uninstall-macos.sh",
+    "setup:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-windows.ps1",
+    "setup:doctor:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/doctor-windows.ps1",
     "test": "jest",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src/**/*.ts"

@@ -43,6 +43,11 @@ This repository is currently validated for:
 - the included macOS installer path for Claude Desktop
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
 
+Windows has an installer, a signer, and a doctor (`npm run setup:win`, `scripts/sign-windows.ps1`,
+`npm run setup:doctor:win`). The install and the full bridge round-trip were verified on Windows 11
+against Premiere Pro 26.0.2, where the extension **must be signed** — see
+"CEP signature verification on Premiere 26.x" below.
+
 Current catalog status as of June 29, 2026:
 
 - `278` Premiere Pro MCP tools are exposed for AI-driven video editing
@@ -142,6 +147,87 @@ If you need a visual reference for the developer mode toggle, it looks like this
 
 If the panel reports that Premiere is ready after `Start Bridge`, the bridge is live.
 
+## Fastest Install (Windows)
+
+**On Premiere Pro 26.x you must sign the extension.** Download Adobe's
+[ZXPSignCmd](https://github.com/Adobe-CEP/CEP-Resources/tree/master/ZXPSignCMD) first, then:
+
+```powershell
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm run setup:win -- -ZXPSignCmd C:\path\to\ZXPSignCmd.exe
+```
+
+Without `-ZXPSignCmd` the installer still runs, but on 26.x the panel will never appear under
+`Window > Extensions`. See the next section.
+
+That installer will:
+
+- install dependencies
+- build `dist\index.js`
+- sign the extension with a self-signed certificate when `-ZXPSignCmd` is supplied
+- install the `MCP Bridge (CEP)` extension into `%APPDATA%\Adobe\CEP\extensions\MCPBridgeCEP`
+- enable Adobe CEP debug mode (skippable, and unnecessary for a signed extension)
+- create `%TEMP%\premiere-mcp-bridge`
+- add the `premiere-pro` MCP entry to Claude Desktop
+
+Flags:
+
+- `-ZXPSignCmd <path>` sign before installing — required on Premiere 26.x
+- `-SkipDebugMode` do not write the `PlayerDebugMode` registry values
+- `-SkipClaudeDesktop` when you register the MCP server with Claude Code, Codex, or another client
+- `-TempDir <path>` use a bridge directory other than `%TEMP%\premiere-mcp-bridge`
+
+Then set `Temp Directory` in the panel to the path the installer printed, click
+`Save Configuration`, and click `Start Bridge`.
+
+Verify with:
+
+```powershell
+npm run setup:doctor:win
+```
+
+### CEP signature verification on Premiere 26.x
+
+The usual advice for loading an unsigned CEP extension is to set `PlayerDebugMode=1`. On
+Premiere Pro 26.x that advice does not hold. Verified on **26.0.2 (CEP 12), Windows 11**, one
+variable at a time:
+
+| Extension | `PlayerDebugMode` | Result |
+| --- | --- | --- |
+| unsigned | `REG_SZ` `1` on CSXS.9–14, written before launch | `ERROR Signature verification failed for extension com.mcp.premiere.cepbridge.panel` — panel absent from `Window > Extensions` |
+| self-signed | removed from every CSXS key | loads clean, no errors, bridge works end to end |
+
+Debug mode is not a workaround on that release. The extension has to carry a signature, and
+CEP is satisfied by a self-signed one — it only checks that the signature is intact.
+
+To sign an existing install:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\sign-windows.ps1 -ZXPSignCmd C:\path\to\ZXPSignCmd.exe
+```
+
+Then quit Premiere completely and reopen it.
+
+Two things to know about signing:
+
+- **Do not pass `-tsa` to ZXPSignCmd 4.1.103 on Windows.** Timestamping crashes the signer with
+  an access violation (`0xC0000005`). Signing without it works; the signature stops validating
+  when the certificate expires, so re-sign after that.
+- Once the extension is signed, `PlayerDebugMode` is dead weight and worth removing — it lets
+  **any** unsigned CEP extension load in **every** Adobe app on your account:
+
+  ```powershell
+  foreach ($n in 9..14) { Remove-ItemProperty "HKCU:\Software\Adobe\CSXS.$n" PlayerDebugMode -ErrorAction SilentlyContinue }
+  ```
+
+### Windows notes
+
+- Use a Windows path for `PREMIERE_TEMP_DIR`. The CEP panel deliberately rejects `/tmp/...` input
+  on Windows and falls back to its own default, so a copy-pasted macOS path leaves the server and
+  the panel watching two different directories and every call times out.
+- The MCP server and the panel must agree on that path exactly.
+
 ## Install By Client
 
 ### Claude Desktop
@@ -210,6 +296,8 @@ Run the built-in checks:
 ```bash
 npm run setup:doctor
 ```
+
+On Windows, run `npm run setup:doctor:win` instead.
 
 That validates:
 

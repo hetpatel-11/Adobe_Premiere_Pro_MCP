@@ -294,8 +294,8 @@ export class PremiereProResources {
       var project = app.project;
       var clips = [];
       
-      if (project.activeSequence) {
-        var sequence = project.activeSequence;
+      if (__activeSequence()) {
+        var sequence = __activeSequence();
         
         // Video tracks
         for (var v = 0; v < sequence.videoTracks.numTracks; v++) {
@@ -343,7 +343,7 @@ export class PremiereProResources {
       JSON.stringify({
         clips: clips,
         totalCount: clips.length,
-        activeSequence: project.activeSequence ? project.activeSequence.name : null
+        activeSequence: __activeSequence() ? __activeSequence().name : null
       });
     `;
     
@@ -355,8 +355,8 @@ export class PremiereProResources {
       var project = app.project;
       var tracks = [];
       
-      if (project.activeSequence) {
-        var sequence = project.activeSequence;
+      if (__activeSequence()) {
+        var sequence = __activeSequence();
         
         // Video tracks
         for (var v = 0; v < sequence.videoTracks.numTracks; v++) {
@@ -394,7 +394,7 @@ export class PremiereProResources {
       JSON.stringify({
         tracks: tracks,
         totalCount: tracks.length,
-        activeSequence: project.activeSequence ? project.activeSequence.name : null
+        activeSequence: __activeSequence() ? __activeSequence().name : null
       });
     `;
     
@@ -406,8 +406,8 @@ export class PremiereProResources {
       var project = app.project;
       var markers = [];
       
-      if (project.activeSequence) {
-        var sequence = project.activeSequence;
+      if (__activeSequence()) {
+        var sequence = __activeSequence();
         
         for (var i = 0; i < sequence.markers.numMarkers; i++) {
           var marker = sequence.markers[i];
@@ -427,7 +427,7 @@ export class PremiereProResources {
       JSON.stringify({
         markers: markers,
         totalCount: markers.length,
-        activeSequence: project.activeSequence ? project.activeSequence.name : null
+        activeSequence: __activeSequence() ? __activeSequence().name : null
       });
     `;
     
@@ -474,8 +474,8 @@ export class PremiereProResources {
       var project = app.project;
       var appliedEffects = [];
       
-      if (project.activeSequence) {
-        var sequence = project.activeSequence;
+      if (__activeSequence()) {
+        var sequence = __activeSequence();
         
         // Check video tracks
         for (var v = 0; v < sequence.videoTracks.numTracks; v++) {
@@ -593,8 +593,8 @@ export class PremiereProResources {
       var project = app.project;
       var metadata = {};
       
-      if (project.activeSequence) {
-        var sequence = project.activeSequence;
+      if (__activeSequence()) {
+        var sequence = __activeSequence();
         
         metadata = {
           project: {

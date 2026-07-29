@@ -82,7 +82,7 @@ function __findClip(nodeId, sequenceId) {
   if (!app.project) return null;
   if (sequenceId) return __findClipInSequence(__findSequence(sequenceId), nodeId);
 
-  var found = __findClipInSequence(app.project.activeSequence, nodeId);
+  var found = __findClipInSequence(__activeSequence(), nodeId);
   if (found) return found;
 
   if (!app.project.sequences) return null;
@@ -111,6 +111,43 @@ function __findProjectItem(nodeId) {
     return null;
   }
   return walk(app.project.rootItem);
+}
+function __activeSequence() {
+  // app.project.activeSequence keeps returning a sequence from a previously open project after
+  // a project switch. Reproduced on Premiere Pro 26.0.2: a freshly created empty project
+  // reported sequenceCount 0 while activeSequence still named a sequence from the project
+  // before it, and that stale object stayed readable rather than throwing. Anything built on
+  // it is operating on a sequence that is not in the open project.
+  //
+  // The stale value is detectable — its sequenceID is absent from app.project.sequences — so
+  // check membership and return null instead of handing back a phantom.
+  //
+  // This is the one place that reads the raw property; everywhere else calls this.
+  if (!app.project) return null;
+
+  var active = null;
+  try { active = app.project.activeSequence; } catch (e) { return null; }
+  if (!active) return null;
+
+  var activeId = null;
+  try { activeId = String(active.sequenceID); } catch (e) { return null; }
+  if (!activeId || !app.project.sequences) return null;
+
+  for (var i = 0; i < app.project.sequences.numSequences; i++) {
+    try {
+      if (String(app.project.sequences[i].sequenceID) === activeId) return active;
+    } catch (e) {}
+  }
+  return null;
+}
+function __time(seconds) {
+  // new Time("1.5s") silently yields 0 seconds / 0 ticks — the string form does not parse, and
+  // it does not throw either, so assignments built from it quietly write zero. Verified on
+  // Premiere Pro 26.0.2: new Time("0.5s").seconds === 0, while constructing empty and assigning
+  // .seconds gives 0.5 (127008000000 ticks). Always build Time values through this.
+  var t = new Time();
+  t.seconds = Number(seconds);
+  return t;
 }
 function __ticksToSeconds(ticks) {
   return parseInt(ticks, 10) / 254016000000;
@@ -186,7 +223,9 @@ export class PremiereProBridge implements PremiereProTransport {
     // Use PREMIERE_TEMP_DIR if set (same path as UXP plugin "Temp Directory"), else session-specific
     const envDir = process.env.PREMIERE_TEMP_DIR;
     this.usesExternalTempDir = Boolean(envDir);
-    this.tempDir = envDir ? envDir.replace(/\/$/, '') : createSecureTempDir(this.sessionId);
+    // Strip a trailing separator in either flavour: on Windows PREMIERE_TEMP_DIR is a
+    // backslash path, and only stripping "/" left the separator in place.
+    this.tempDir = envDir ? envDir.replace(/[\\/]$/, '') : createSecureTempDir(this.sessionId);
   }
 
   async initialize(): Promise<void> {
@@ -213,25 +252,33 @@ export class PremiereProBridge implements PremiereProTransport {
   }
 
   private async detectPremiereProInstallation(): Promise<void> {
-    // Check for common Premiere Pro installation paths
-    const commonPaths = [
-      '/Applications/Adobe Premiere Pro 2024/Adobe Premiere Pro 2024.app',
-      '/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app',
-      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2024\\Adobe Premiere Pro.exe',
-      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2023\\Adobe Premiere Pro.exe'
-    ];
+    // Scan the install root rather than testing a hardcoded list of year-stamped paths.
+    // The old list only knew about 2023 and 2024, so a machine running Premiere Pro 2026
+    // logged "installation not found" and sent people chasing a problem they did not have.
+    // This is advisory only — the bridge talks to the CEP panel, not to the binary.
+    const installRoots = process.platform === 'win32'
+      ? [
+          `${process.env['ProgramFiles'] || 'C:\\Program Files'}\\Adobe`,
+          `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Adobe`
+        ]
+      : ['/Applications'];
 
-    for (const path of commonPaths) {
+    for (const root of installRoots) {
+      let entries: string[];
       try {
-        await fs.access(path);
-        this.logger.info(`Found Adobe Premiere Pro at: ${path}`);
-        return;
+        entries = await fs.readdir(root);
       } catch (error) {
-        // Continue checking other paths
+        continue; // Root does not exist on this machine.
+      }
+
+      const matches = entries.filter(entry => /^Adobe Premiere Pro/i.test(entry));
+      if (matches.length > 0) {
+        this.logger.info(`Found Adobe Premiere Pro: ${matches.map(m => join(root, m)).join(', ')}`);
+        return;
       }
     }
 
-    this.logger.warn('Adobe Premiere Pro installation not found in common paths');
+    this.logger.warn(`Adobe Premiere Pro installation not found under: ${installRoots.join(', ')}`);
   }
 
   private async initializeCommunication(): Promise<void> {
@@ -384,9 +431,16 @@ export class PremiereProBridge implements PremiereProTransport {
       var actualPath = project && project.path ? String(project.path) : "";
 
       if (!project || !__samePath(actualPath, projectPath)) {
+        // app.openDocument can silently fail to switch: no prompt, no throw, nothing opened,
+        // Premiere just stays where it was. Observed once on Premiere Pro 26.0.2; a retry after
+        // save_project then succeeded, but a later attempt with an equally dirty project
+        // switched fine, so unsaved state is NOT an established cause. Whatever the trigger,
+        // the path comparison above is what stops this being reported as a success.
         return JSON.stringify({
           success: false,
-          error: "Premiere Pro did not activate the requested project",
+          error: "Premiere Pro did not activate the requested project. It stayed on \\"" +
+            actualPath + "\\". This has been seen to clear on retry, sometimes after saving the " +
+            "current project first; the underlying trigger is not established.",
           projectPath: projectPath,
           actualPath: actualPath,
           openResult: openResult
@@ -534,10 +588,39 @@ export class PremiereProBridge implements PremiereProTransport {
 
         var sequence = null;
         var createError = null;
+        var createdVia = null;
+
+        // Prefer the QE path. app.project.createNewSequence opens Premiere's modal
+        // "New Sequence" dialog and blocks until a human clicks it — with or without a
+        // presetPath — which makes it unusable unattended. qe.project.newSequence takes the
+        // same two arguments, prompts for nothing, and returns in well under a second.
+        // Measured on Premiere Pro 26.0.2 / Windows: 0.5s with an explicit .sqpreset, 0.3s
+        // with an empty preset string, no dialog in either case.
+        //
+        // It returns a boolean rather than the sequence, so the new sequence is located by
+        // name below, which this function already did as a fallback.
         try {
-          sequence = app.project.createNewSequence(sequenceName, presetPath || "");
-        } catch (createException) {
-          createError = createException;
+          if (typeof app.enableQE === "function") {
+            app.enableQE();
+          }
+          if (typeof qe !== "undefined" && qe.project && typeof qe.project.newSequence === "function") {
+            if (qe.project.newSequence(sequenceName, presetPath || "")) {
+              createdVia = "qe";
+            }
+          }
+        } catch (qeException) {
+          createError = qeException;
+        }
+
+        // Fall back to the DOM API only when QE is unavailable. This path prompts, so an
+        // unattended caller will hang here until the bridge times out.
+        if (!createdVia) {
+          try {
+            sequence = app.project.createNewSequence(sequenceName, presetPath || "");
+            createdVia = "dom";
+          } catch (createException) {
+            createError = createException;
+          }
         }
 
         var created = sequence || null;
@@ -580,7 +663,10 @@ export class PremiereProBridge implements PremiereProTransport {
           videoTrackCount: created.videoTracks ? created.videoTracks.numTracks : 0,
           audioTrackCount: created.audioTracks ? created.audioTracks.numTracks : 0,
           videoTracks: [],
-          audioTracks: []
+          audioTracks: [],
+          // "qe" means no dialog was shown. "dom" means Premiere prompted and a human clicked,
+          // so an unattended caller seeing "dom" should expect this call to hang next time.
+          createdVia: createdVia
         });
       } catch (e) {
         return JSON.stringify({
@@ -590,8 +676,14 @@ export class PremiereProBridge implements PremiereProTransport {
         });
       }
     `;
-    
-    return await this.executeScript(script);
+
+    // The QE path above returns in well under a second, so this timeout only matters when QE
+    // is unavailable and the DOM fallback runs. That fallback opens Premiere's modal "New
+    // Sequence" dialog and blocks until a human clicks it, so 180s buys an attended caller
+    // enough room to succeed rather than reporting a failure for a sequence Premiere did
+    // create — the false negative reported upstream as issue #25. Unattended, no timeout value
+    // helps that path. See KNOWN_ISSUES.md.
+    return await this.executeScript(script, 180000);
   }
 
   async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip> {
@@ -876,7 +968,7 @@ export class PremiereProBridge implements PremiereProTransport {
       try {
         // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper.
         // Fail hard if the requested sequence isn't found — silently falling back to
-        // app.project.activeSequence would queue/render the wrong timeline while still
+        // __activeSequence() would queue/render the wrong timeline while still
         // reporting success, masking caller bugs (stale IDs, etc.).
         var sequence = __findSequence("${sequenceId}");
         if (!sequence) {
