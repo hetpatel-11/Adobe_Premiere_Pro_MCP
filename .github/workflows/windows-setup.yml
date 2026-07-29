@@ -1,0 +1,52 @@
+name: Windows setup smoke
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'package*.json'
+      - 'src/**'
+      - '.github/workflows/windows-setup.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/**'
+      - 'package*.json'
+      - 'src/**'
+      - '.github/workflows/windows-setup.yml'
+
+jobs:
+  windows-setup:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test -- --runInBand --silent --testTimeout=60000
+
+      - name: Run Windows installer smoke
+        shell: powershell
+        run: >
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-windows.ps1
+          -SkipBuild
+          -SkipAdobeDebugMode
+          -TempDir "$env:TEMP\premiere-mcp-bridge"
+
+      - name: Run Windows doctor
+        shell: powershell
+        run: >
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/doctor-windows.ps1
+          -TempDir "$env:TEMP\premiere-mcp-bridge"

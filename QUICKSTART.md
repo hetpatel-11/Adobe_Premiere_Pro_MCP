@@ -33,6 +33,24 @@ What's my current Premiere Pro project info?
 
 For better editing behavior, attach `premiere://config/get_instructions` before asking the model to change a project.
 
+## GitHub Copilot / Claude Desktop (Windows)
+
+```powershell
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm run setup:win
+```
+
+Then do this once inside Premiere Pro:
+
+1. Open `Window > Extensions > MCP Bridge (CEP)`.
+2. Set `Temp Directory` to `%TEMP%\premiere-mcp-bridge`.
+3. Click `Save Configuration`.
+4. Click `Start Bridge`.
+5. Click `Test Connection`.
+
+Then restart VS Code and/or Claude Desktop. The Windows installer writes MCP config for GitHub Copilot in VS Code and Claude Desktop.
+
 ## Codex / Claude Code
 
 Build the server:
@@ -61,6 +79,12 @@ Run:
 
 ```bash
 npm run setup:doctor
+```
+
+On Windows, run:
+
+```powershell
+npm run setup:doctor:win
 ```
 
 For a real end-to-end verification, use a scratch project and run:
