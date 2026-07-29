@@ -585,6 +585,47 @@ describe('PremiereProTools', () => {
       expect(script).toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
     });
 
+    it('distinguishes verified, accepted-unverified, and failed add_transition_to_clip results', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        status: 'accepted_unverified',
+        verified: false
+      });
+
+      const result = await tools.executeTool('add_transition_to_clip', {
+        clipId: 'clip-1',
+        transitionName: 'Cross Dissolve',
+        position: 'start',
+        duration: 0.5
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        status: 'accepted_unverified',
+        verified: false
+      });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('var qeVerified = __transitionWasVerified(before, after)');
+      expect(script).toContain('var xmlVerified = __transitionWasVerifiedByXml(beforeXml, afterXml)');
+      expect(script).toContain('if (!qeVerified && !xmlVerified)');
+      expect(script).toContain('status: "accepted_unverified"');
+      expect(script).toContain('verified: false');
+      expect(script).toContain('status: "applied_verified"');
+      expect(script).toContain('verified: true');
+      expect(script).toContain('transitionEnumeration: {');
+      expect(script).toContain('finalCutProXml: {');
+      expect(script).toContain('beforeError: beforeXml.error');
+      expect(script).toContain('warning: "Transition command accepted; result could not be independently verified."');
+      expect(script).toContain('status: "failed"');
+      expect(script).not.toContain('applied: true');
+      expect(script).not.toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
+      expect(script).toContain('new Date().getTime()');
+      expect(script).not.toContain('Date.now()');
+
+      const tool = tools.getAvailableTools().find((candidate) => candidate.name === 'add_transition_to_clip');
+      expect(tool?.description).toContain('do not retry automatically');
+    });
+
     it('fails batch_add_transitions when no transition is verifiably added', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: false,
