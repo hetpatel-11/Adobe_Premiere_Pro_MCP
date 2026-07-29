@@ -2240,7 +2240,11 @@ export class PremiereProTools {
           // Attempt 1: project.importFiles (modern Premiere 2026 preferred)
           if (typeof app.project !== 'undefined' && typeof app.project.importFiles === 'function') {
             try {
-              var ok = app.project.importFiles(["${escapedPath}"], false, app.project.rootItem, false);
+              // suppressUI=true. importFiles' second argument controls whether Premiere may show
+              // import UI, and a dialog here blocks the whole ExtendScript host until somebody
+              // clicks it — fatal for an unattended agent. import_media already passes true; these
+              // paths passed false, which is almost certainly an oversight rather than intent.
+              var ok = app.project.importFiles(["${escapedPath}"], true, app.project.rootItem, false);
               attempts.push({ method: "importFiles", ok: ok });
               if (ok) return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "importFiles", attempts: attempts });
             } catch (e1) { attempts.push({ method: "importFiles", error: e1.toString() }); }
@@ -2306,7 +2310,9 @@ export class PremiereProTools {
             return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", mode: "importEDL" });
           } else {
             // Fallback: try app.openDocument or app.project.importFiles
-            var imported = app.project.importFiles(["${escapedPath}"], false, app.project.rootItem, false);
+            // suppressUI=true — see the note in importFcpXml. A blocking import dialog here
+            // takes down the whole ExtendScript host, not just this call.
+            var imported = app.project.importFiles(["${escapedPath}"], true, app.project.rootItem, false);
             return JSON.stringify({ success: !!imported, imported: !!imported, path: "${escapedPath}", mode: "importFiles_fallback" });
           }
         } catch (e) {

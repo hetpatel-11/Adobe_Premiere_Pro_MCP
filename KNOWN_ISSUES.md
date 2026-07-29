@@ -116,6 +116,35 @@ Anyone who knows a Premiere scripting path that creates a sequence without promp
 `createNewSequenceFromClips`, a QE call, or a preset form that suppresses the dialog — that is
 the real fix and is very welcome.
 
+## Modal-dialog audit
+
+`create_sequence` blocked on a modal dialog (fixed above), so the rest of the catalog's DOM
+calls were audited for the same failure mode. A blocking dialog does not just fail its own
+call — it freezes the entire ExtendScript host, so unrelated tools start timing out too, and
+Premiere still reports `Responding=True` to the OS throughout.
+
+| Call | Tool | Status |
+| --- | --- | --- |
+| `app.project.createNewSequence` | `create_sequence` | **fixed** — now uses `qe.project.newSequence` |
+| `app.project.importFiles(..., false, ...)` | `import_fcp_xml`, `import_edl` fallback | **fixed** — `suppressUI` now `true`, matching `import_media` |
+| `app.importEDL` | `import_edl` | **known to prompt.** Premiere shows an interactive sequence-settings dialog and the API takes no argument to suppress it. Cannot run unattended. |
+| `app.newProject` | `create_project` | **suspected, untested.** Directly analogous to `createNewSequence` |
+| `app.openDocument` | `open_project` | **suspected, untested.** May prompt to save a dirty project |
+| `app.project.saveAs` | `save_project_as` | **suspected, untested.** May prompt to confirm overwrite |
+| `app.project.exportAAF` | `export_aaf` | **suspected, untested.** Export settings dialogs are typical |
+| `app.project.consolidateDuplicates` | `consolidate_duplicates` | **suspected, untested.** Already skipped by the live sweep as destructive |
+| `app.executeCommand` | `undo`, `redo`, `lift_selection`, `extract_selection`, `match_frame` | **varies by command.** Menu commands can open dialogs; the ones wired up here do not |
+| `app.project.importFiles(..., true, ...)` | `import_media` | fine |
+| `qe.project.*` | effects, transitions, playback | fine — QE calls do not prompt |
+
+The "suspected" rows are static analysis, **not** verified against a live host. Each needs the
+same treatment `create_sequence` got: fire the call, enumerate the host's windows mid-flight,
+and look for an owned window of class `#32770` alongside a disabled main window. Testing them
+is destructive (they create, open, close, or overwrite projects), so it was not done here.
+
+If one of them does prompt, check for a `qe.project` equivalent first — that is what solved
+`create_sequence`.
+
 ## Confirmed Runtime Limitation
 
 ### `detect_silence` requires ffmpeg on PATH, and does not use Premiere's scripting API at all
