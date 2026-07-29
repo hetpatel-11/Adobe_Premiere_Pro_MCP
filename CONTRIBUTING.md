@@ -17,6 +17,14 @@ npm run setup:mac
 
 That installs the CEP extension, builds the server, enables CEP debug mode, and updates Claude Desktop config.
 
+For a full local install on Windows:
+
+```powershell
+npm run setup:win
+```
+
+That installs the CEP extension, builds the server, enables CEP debug mode, and updates GitHub Copilot in VS Code plus Claude Desktop config.
+
 ## Core Development Loop
 
 Use this order:
@@ -48,7 +56,9 @@ cep-plugin/
 
 scripts/
   install-macos.sh        macOS installer
+  install-windows.ps1     Windows installer for GitHub Copilot and Claude Desktop
   doctor-macos.sh         local installation verifier
+  doctor-windows.ps1      Windows installation verifier
   uninstall-macos.sh      macOS uninstall helper
   live-tool-sweep.mjs     end-to-end live tool verifier
 ```

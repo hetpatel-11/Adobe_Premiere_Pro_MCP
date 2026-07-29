@@ -38,9 +38,11 @@ Current CEP panel UI inside Premiere Pro, using the refreshed bridge controls an
 This repository is currently validated for:
 
 - macOS
+- Windows installer/config smoke checks through GitHub Actions
 - Adobe Premiere Pro 2020+ (actively used and tested on Premiere Pro 26.0)
 - Node.js 18+
 - the included macOS installer path for Claude Desktop
+- the included Windows installer path for GitHub Copilot in VS Code and Claude Desktop config
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
 
 Current catalog status as of July 29, 2026:
@@ -142,6 +144,44 @@ If you need a visual reference for the developer mode toggle, it looks like this
 
 If the panel reports that Premiere is ready after `Start Bridge`, the bridge is live.
 
+## Fastest Install (Windows)
+
+```powershell
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm run setup:win
+```
+
+That installer will:
+
+- install dependencies
+- build `dist\index.js`
+- enable Adobe CEP debug mode under `HKCU:\Software\Adobe\CSXS.9` through `CSXS.15`
+- install the `MCP Bridge (CEP)` extension into `%APPDATA%\Adobe\CEP\extensions\MCPBridgeCEP`
+- create `%TEMP%\premiere-mcp-bridge`
+- add the `premiere-pro` MCP entry to GitHub Copilot in VS Code at `%APPDATA%\Code\User\mcp.json`
+- add the `premiere-pro` MCP entry to Claude Desktop at `%APPDATA%\Claude\claude_desktop_config.json`
+
+Optional flags:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -SkipCopilotConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -SkipClaudeDesktopConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -SkipAdobeDebugMode
+```
+
+After the installer finishes:
+
+1. Quit and reopen VS Code and/or Claude Desktop.
+2. Quit and reopen Premiere Pro.
+3. Open `Window > Extensions > MCP Bridge (CEP)`.
+4. Set `Temp Directory` to `%TEMP%\premiere-mcp-bridge`.
+5. Click `Save Configuration`.
+6. Click `Start Bridge`.
+7. Click `Test Connection`.
+
+Windows note: the installer and config path are smoke-tested on GitHub Actions Windows runners. A full Windows Premiere validation still requires a real Windows machine with Premiere Pro installed, the CEP panel visible in Premiere, and a live bridge round trip.
+
 ## Install By Client
 
 ### Claude Desktop
@@ -152,7 +192,23 @@ On macOS, use:
 npm run setup:mac
 ```
 
-That is the only path in this repo that automatically writes the MCP entry for you.
+On Windows, use:
+
+```powershell
+npm run setup:win
+```
+
+Both installers automatically write the MCP entry for Claude Desktop.
+
+### GitHub Copilot in VS Code
+
+On Windows, use:
+
+```powershell
+npm run setup:win
+```
+
+The installer writes this server to VS Code's MCP config at `%APPDATA%\Code\User\mcp.json`. Restart VS Code after the installer finishes, then use VS Code's MCP server list to confirm `premiere-pro` is available.
 
 ### Codex
 
@@ -232,6 +288,14 @@ That validates:
 - Adobe CEP debug mode
 - the Claude Desktop config entry when you use the installer path
 - CEP panel diagnostics written to `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`
+
+On Windows, run:
+
+```powershell
+npm run setup:doctor:win
+```
+
+That validates the built server, CEP extension install, `%TEMP%\premiere-mcp-bridge`, Adobe CEP debug mode, the GitHub Copilot VS Code MCP config, and the Claude Desktop MCP config.
 
 For a deeper end-to-end check, use a disposable Premiere project and run:
 
