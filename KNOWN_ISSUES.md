@@ -128,22 +128,68 @@ Premiere still reports `Responding=True` to the OS throughout.
 | `app.project.createNewSequence` | `create_sequence` | **fixed** — now uses `qe.project.newSequence` |
 | `app.project.importFiles(..., false, ...)` | `import_fcp_xml`, `import_edl` fallback | **fixed** — `suppressUI` now `true`, matching `import_media` |
 | `app.importEDL` | `import_edl` | **known to prompt.** Premiere shows an interactive sequence-settings dialog and the API takes no argument to suppress it. Cannot run unattended. |
-| `app.newProject` | `create_project` | **suspected, untested.** Directly analogous to `createNewSequence` |
-| `app.openDocument` | `open_project` | **suspected, untested.** May prompt to save a dirty project |
-| `app.project.saveAs` | `save_project_as` | **suspected, untested.** May prompt to confirm overwrite |
-| `app.project.exportAAF` | `export_aaf` | **suspected, untested.** Export settings dialogs are typical |
-| `app.project.consolidateDuplicates` | `consolidate_duplicates` | **suspected, untested.** Already skipped by the live sweep as destructive |
+| `app.newProject` | `create_project` | **verified clean** — 0.7–2.2s, no dialog |
+| `app.openDocument` | `open_project` | **verified clean** for modals, but see the separate defect below |
+| `app.project.saveAs` | `save_project_as` | **verified clean** — 0.7s, no dialog |
+| `app.project.exportAAF` | `export_aaf` | **verified clean** — 0.7s, no dialog |
+| `app.project.consolidateDuplicates` | `consolidate_duplicates` | **verified clean** — 0.7s, no dialog |
+| `app.project.save` | `save_project` | **verified clean** — 0.7s, no dialog |
 | `app.executeCommand` | `undo`, `redo`, `lift_selection`, `extract_selection`, `match_frame` | **varies by command.** Menu commands can open dialogs; the ones wired up here do not |
 | `app.project.importFiles(..., true, ...)` | `import_media` | fine |
 | `qe.project.*` | effects, transitions, playback | fine — QE calls do not prompt |
 
-The "suspected" rows are static analysis, **not** verified against a live host. Each needs the
-same treatment `create_sequence` got: fire the call, enumerate the host's windows mid-flight,
-and look for an owned window of class `#32770` alongside a disabled main window. Testing them
-is destructive (they create, open, close, or overwrite projects), so it was not done here.
+Verified on Premiere Pro 26.0.2 / Windows by firing each call while polling the host's window
+list for an owned `#32770` window alongside a disabled main window. Run in both states: with a
+clean project, and with unsaved changes pending — the case that would most plausibly raise a
+save-changes prompt. Nothing prompted in either.
 
-If one of them does prompt, check for a `qe.project` equivalent first — that is what solved
-`create_sequence`.
+`create_sequence` appears to be the only modal-prone call in the catalog.
+
+## Observed: open_project can silently fail to switch, trigger unknown
+
+Status: detected and reported honestly. **Cause not established — do not treat this as diagnosed.**
+
+`app.openDocument` was seen once to not switch projects at all: no prompt, no throw, nothing
+opened, Premiere simply stayed where it was.
+
+`openProject` catches it, because it compares `app.project.path` against the requested path
+afterwards and refuses to claim success on a mismatch. That check is the only reason this did
+not surface as a phantom success.
+
+```
+"Premiere Pro did not activate the requested project"
+actualPath: "C:\\Users\\Admin\\...\\switch-probe.prproj"
+```
+
+A `save_project` followed by the identical call then succeeded, which suggested unsaved changes
+as the cause — but a later deliberate test, opening a different project with unsaved changes
+pending, switched without complaint. So that theory does not hold and the real trigger is
+unknown. It is recorded here as an observation, not a diagnosis.
+
+If you can reproduce it, the useful details are what the previous project was, how it was
+created, and whether it had ever been saved.
+
+## Confirmed: activeSequence goes stale after a project switch
+
+Status: open — no fix here
+
+`app.project.activeSequence` keeps returning a sequence from a previously open project. Observed
+directly in one `get_project_info` response:
+
+```json
+{
+  "name": "switch-probe.prproj",
+  "sequenceCount": 0,
+  "activeSequence": { "id": "a767a860-...", "name": "Dirty2 1825" }
+}
+```
+
+A project containing zero sequences cannot have an active one, and `Dirty2 1825` belonged to a
+project that was no longer open. Any tool reading project state gets a phantom sequence, and an
+agent that then targets `activeSequence` is operating on something that does not exist.
+
+Callers should cross-check `activeSequence` against `list_sequences` rather than trusting it
+after any project switch.
 
 ## Confirmed Runtime Limitation
 

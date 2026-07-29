@@ -394,9 +394,16 @@ export class PremiereProBridge implements PremiereProTransport {
       var actualPath = project && project.path ? String(project.path) : "";
 
       if (!project || !__samePath(actualPath, projectPath)) {
+        // app.openDocument can silently fail to switch: no prompt, no throw, nothing opened,
+        // Premiere just stays where it was. Observed once on Premiere Pro 26.0.2; a retry after
+        // save_project then succeeded, but a later attempt with an equally dirty project
+        // switched fine, so unsaved state is NOT an established cause. Whatever the trigger,
+        // the path comparison above is what stops this being reported as a success.
         return JSON.stringify({
           success: false,
-          error: "Premiere Pro did not activate the requested project",
+          error: "Premiere Pro did not activate the requested project. It stayed on \\"" +
+            actualPath + "\\". This has been seen to clear on retry, sometimes after saving the " +
+            "current project first; the underlying trigger is not established.",
           projectPath: projectPath,
           actualPath: actualPath,
           openResult: openResult
