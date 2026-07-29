@@ -601,11 +601,15 @@ export class PremiereProBridge implements PremiereProTransport {
       }
     `;
 
-    // createNewSequence is far slower than a normal bridge round-trip: measured at 39.2s on
-    // Premiere Pro 26.0.2 / Windows against an empty project, which is 65% of the 60s default.
-    // A busier project or slower machine pushes it past the limit, and the caller then gets a
-    // timeout failure for a sequence Premiere actually created — the false negative reported
-    // upstream as issue #25. Give it real headroom instead.
+    // createNewSequence is far slower than a normal bridge round-trip, and the cost is wildly
+    // variable. Three runs on Premiere Pro 26.0.2 / Windows against the same empty project:
+    // 29.3s, 39.2s, and once it never returned at all (the scripting host stopped answering
+    // and recovered on its own minutes later). Even the fast run is half the 60s default.
+    //
+    // When it overruns, the caller gets a timeout failure for a sequence Premiere actually
+    // created — the false negative reported upstream as issue #25 — and an agent that retries
+    // then stacks up duplicates. 180s covers the observed range; it cannot cover a host that
+    // has stopped responding, which no timeout can.
     return await this.executeScript(script, 180000);
   }
 

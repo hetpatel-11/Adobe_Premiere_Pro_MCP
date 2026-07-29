@@ -44,18 +44,35 @@ Notes:
 - A signed extension does not need `PlayerDebugMode`. Leaving it on lets any unsigned CEP
   extension load in every Adobe app on that account.
 
-## Confirmed: create_sequence is slow enough to trip the bridge timeout
+## Confirmed: create_sequence is slow, and its cost is wildly variable
 
-Status: mitigated
+Status: mitigated, not solved
 
-`createNewSequence` measured at **39.2s** on Premiere Pro 26.0.2 / Windows against an empty
-project — 65% of the 60s default bridge timeout. A busier project or a slower machine pushes
-it past the limit, and the caller gets a timeout failure for a sequence Premiere actually
-created. That is the false negative recorded below as a fixed issue, which was mitigated rather
-than eliminated.
+Three `create_sequence` runs on Premiere Pro 26.0.2 / Windows, same empty project, no other
+load:
 
-`createSequence` now passes an explicit 180s timeout. The underlying slowness is Premiere's,
-not the bridge's.
+| Run | Elapsed | Result |
+| --- | --- | --- |
+| 1 | 39.2s | success |
+| 2 | >180s | never returned |
+| 3 | 29.3s | success |
+
+Even the fastest run is half the 60s default bridge timeout. When it overruns, the caller gets
+a timeout failure for a sequence Premiere actually created — the false negative recorded below
+as a fixed issue — and an agent that retries on failure then stacks up duplicate sequences.
+
+`createSequence` now passes an explicit 180s timeout, which covers the observed successful
+range. It cannot cover run 2.
+
+In run 2 the ExtendScript host stopped answering entirely: subsequent unrelated calls
+(`list_sequences`, `get_premiere_state`) hit the CEP panel's own 45s watchdog with
+`ExtendScript execution timed out after 45000ms`. Premiere reported `Responding=True` at the OS
+level, had no modal dialog open (window enumeration confirmed a single enabled top-level
+window), and the panel was still consuming command files — so the bridge was healthy and
+Premiere's scripting engine was not. It recovered on its own without intervention.
+
+No timeout value fixes that. Callers should treat a `create_sequence` timeout as *unknown*
+rather than *failed*, and read the sequence list back before retrying.
 
 ## Confirmed Runtime Limitation
 
