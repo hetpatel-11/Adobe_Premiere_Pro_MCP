@@ -16,6 +16,47 @@ The last broad live sweep in this repository was run on March 4, 2026:
 
 Run `node scripts/live-tool-sweep.mjs` against a scratch Premiere project before making a new release-level validation claim.
 
+## Confirmed: Premiere 26.x rejects unsigned CEP extensions regardless of PlayerDebugMode
+
+Status: confirmed on Premiere Pro 26.0.2 (CEP 12), Windows 11
+
+The standard way to load an unsigned CEP extension is `PlayerDebugMode=1`. That does not work
+on Premiere 26.x. Both halves were tested on the same machine, one variable at a time:
+
+| Extension | `PlayerDebugMode` | Result |
+| --- | --- | --- |
+| unsigned | `REG_SZ` `1` on CSXS.9–14, written 10 min before launch | `ERROR Signature verification failed for extension com.mcp.premiere.cepbridge.panel` in `%TEMP%\CEP12-PPRO.log`; panel absent from `Window > Extensions` |
+| self-signed | removed from every CSXS key | loads clean, zero errors, bridge round-trip verified |
+
+Every other CEP extension on that machine that loaded successfully carried `META-INF`.
+
+Fix: sign the extension. `scripts/sign-windows.ps1` generates a self-signed certificate, signs
+`cep-plugin/`, and installs the result. CEP accepts self-signed certificates; it only requires
+that the signature be intact.
+
+Notes:
+
+- `-tsa` crashes ZXPSignCmd 4.1.103 on Windows with an access violation (`0xC0000005`). Sign
+  without a timestamp. The signature then expires with the certificate, so re-sign after that.
+- The signed `.zxp` is extracted straight into the extensions folder rather than installed
+  through UPIA. Adobe's own [known-issue note](https://github.com/Adobe-CEP/CEP-Resources/blob/master/ZXPSignCMD/KnownIssue2024.md)
+  records that UPIA installs can break signature verification by extracting symlinks as text.
+- A signed extension does not need `PlayerDebugMode`. Leaving it on lets any unsigned CEP
+  extension load in every Adobe app on that account.
+
+## Confirmed: create_sequence is slow enough to trip the bridge timeout
+
+Status: mitigated
+
+`createNewSequence` measured at **39.2s** on Premiere Pro 26.0.2 / Windows against an empty
+project — 65% of the 60s default bridge timeout. A busier project or a slower machine pushes
+it past the limit, and the caller gets a timeout failure for a sequence Premiere actually
+created. That is the false negative recorded below as a fixed issue, which was mitigated rather
+than eliminated.
+
+`createSequence` now passes an explicit 180s timeout. The underlying slowness is Premiere's,
+not the bridge's.
+
 ## Confirmed Runtime Limitation
 
 ### `detect_silence` requires ffmpeg on PATH, and does not use Premiere's scripting API at all

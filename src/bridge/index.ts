@@ -186,7 +186,9 @@ export class PremiereProBridge implements PremiereProTransport {
     // Use PREMIERE_TEMP_DIR if set (same path as UXP plugin "Temp Directory"), else session-specific
     const envDir = process.env.PREMIERE_TEMP_DIR;
     this.usesExternalTempDir = Boolean(envDir);
-    this.tempDir = envDir ? envDir.replace(/\/$/, '') : createSecureTempDir(this.sessionId);
+    // Strip a trailing separator in either flavour: on Windows PREMIERE_TEMP_DIR is a
+    // backslash path, and only stripping "/" left the separator in place.
+    this.tempDir = envDir ? envDir.replace(/[\\/]$/, '') : createSecureTempDir(this.sessionId);
   }
 
   async initialize(): Promise<void> {
@@ -213,25 +215,33 @@ export class PremiereProBridge implements PremiereProTransport {
   }
 
   private async detectPremiereProInstallation(): Promise<void> {
-    // Check for common Premiere Pro installation paths
-    const commonPaths = [
-      '/Applications/Adobe Premiere Pro 2024/Adobe Premiere Pro 2024.app',
-      '/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app',
-      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2024\\Adobe Premiere Pro.exe',
-      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2023\\Adobe Premiere Pro.exe'
-    ];
+    // Scan the install root rather than testing a hardcoded list of year-stamped paths.
+    // The old list only knew about 2023 and 2024, so a machine running Premiere Pro 2026
+    // logged "installation not found" and sent people chasing a problem they did not have.
+    // This is advisory only — the bridge talks to the CEP panel, not to the binary.
+    const installRoots = process.platform === 'win32'
+      ? [
+          `${process.env['ProgramFiles'] || 'C:\\Program Files'}\\Adobe`,
+          `${process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'}\\Adobe`
+        ]
+      : ['/Applications'];
 
-    for (const path of commonPaths) {
+    for (const root of installRoots) {
+      let entries: string[];
       try {
-        await fs.access(path);
-        this.logger.info(`Found Adobe Premiere Pro at: ${path}`);
-        return;
+        entries = await fs.readdir(root);
       } catch (error) {
-        // Continue checking other paths
+        continue; // Root does not exist on this machine.
+      }
+
+      const matches = entries.filter(entry => /^Adobe Premiere Pro/i.test(entry));
+      if (matches.length > 0) {
+        this.logger.info(`Found Adobe Premiere Pro: ${matches.map(m => join(root, m)).join(', ')}`);
+        return;
       }
     }
 
-    this.logger.warn('Adobe Premiere Pro installation not found in common paths');
+    this.logger.warn(`Adobe Premiere Pro installation not found under: ${installRoots.join(', ')}`);
   }
 
   private async initializeCommunication(): Promise<void> {
@@ -590,8 +600,13 @@ export class PremiereProBridge implements PremiereProTransport {
         });
       }
     `;
-    
-    return await this.executeScript(script);
+
+    // createNewSequence is far slower than a normal bridge round-trip: measured at 39.2s on
+    // Premiere Pro 26.0.2 / Windows against an empty project, which is 65% of the 60s default.
+    // A busier project or slower machine pushes it past the limit, and the caller then gets a
+    // timeout failure for a sequence Premiere actually created — the false negative reported
+    // upstream as issue #25. Give it real headroom instead.
+    return await this.executeScript(script, 180000);
   }
 
   async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip> {
