@@ -44,9 +44,33 @@ Notes:
 - A signed extension does not need `PlayerDebugMode`. Leaving it on lets any unsigned CEP
   extension load in every Adobe app on that account.
 
-## Confirmed: create_sequence requires a human click and cannot run unattended
+## Fixed: create_sequence opened a modal and could not run unattended
 
-Status: **not fixable from this side.** Documented, partially mitigated.
+Status: **fixed** — `createSequence` now uses `qe.project.newSequence`.
+
+`app.project.createNewSequence` opens Premiere's modal **New Sequence** dialog and blocks until
+somebody clicks it, which made the tool unusable in unattended agent workflows.
+`qe.project.newSequence` takes the same two arguments, prompts for nothing, and returns
+immediately. Measured on Premiere Pro 26.0.2 / Windows:
+
+| Path | Preset | Elapsed | Dialog |
+| --- | --- | --- | --- |
+| `app.project.createNewSequence` | explicit `.sqpreset` | blocks indefinitely | yes |
+| `app.project.createNewSequence` | none | blocks indefinitely | yes |
+| `qe.project.newSequence` | explicit `.sqpreset` | **0.5s** | no |
+| `qe.project.newSequence` | none | **0.3s** | no |
+
+End to end through the MCP tool, unattended: **0.3s**, no dialog.
+
+`qe.project.newSequence` returns a boolean rather than the sequence object, so the new sequence
+is located by name afterwards — logic this function already had as a fallback. The response now
+carries `createdVia`: `"qe"` means nothing prompted, `"dom"` means the fallback ran and a human
+clicked, so an unattended caller seeing `"dom"` should expect the next call to hang.
+
+The DOM call is kept as a fallback for hosts without QE. Everything below documents the
+original behaviour, which is what that fallback still does.
+
+### Original diagnosis
 
 `create_sequence` opens Premiere's modal **New Sequence** dialog and blocks until somebody
 clicks it. Confirmed on Premiere Pro 26.0.2 / Windows by enumerating the host's windows while

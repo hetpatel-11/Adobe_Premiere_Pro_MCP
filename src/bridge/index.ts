@@ -544,10 +544,39 @@ export class PremiereProBridge implements PremiereProTransport {
 
         var sequence = null;
         var createError = null;
+        var createdVia = null;
+
+        // Prefer the QE path. app.project.createNewSequence opens Premiere's modal
+        // "New Sequence" dialog and blocks until a human clicks it — with or without a
+        // presetPath — which makes it unusable unattended. qe.project.newSequence takes the
+        // same two arguments, prompts for nothing, and returns in well under a second.
+        // Measured on Premiere Pro 26.0.2 / Windows: 0.5s with an explicit .sqpreset, 0.3s
+        // with an empty preset string, no dialog in either case.
+        //
+        // It returns a boolean rather than the sequence, so the new sequence is located by
+        // name below, which this function already did as a fallback.
         try {
-          sequence = app.project.createNewSequence(sequenceName, presetPath || "");
-        } catch (createException) {
-          createError = createException;
+          if (typeof app.enableQE === "function") {
+            app.enableQE();
+          }
+          if (typeof qe !== "undefined" && qe.project && typeof qe.project.newSequence === "function") {
+            if (qe.project.newSequence(sequenceName, presetPath || "")) {
+              createdVia = "qe";
+            }
+          }
+        } catch (qeException) {
+          createError = qeException;
+        }
+
+        // Fall back to the DOM API only when QE is unavailable. This path prompts, so an
+        // unattended caller will hang here until the bridge times out.
+        if (!createdVia) {
+          try {
+            sequence = app.project.createNewSequence(sequenceName, presetPath || "");
+            createdVia = "dom";
+          } catch (createException) {
+            createError = createException;
+          }
         }
 
         var created = sequence || null;
@@ -590,7 +619,10 @@ export class PremiereProBridge implements PremiereProTransport {
           videoTrackCount: created.videoTracks ? created.videoTracks.numTracks : 0,
           audioTrackCount: created.audioTracks ? created.audioTracks.numTracks : 0,
           videoTracks: [],
-          audioTracks: []
+          audioTracks: [],
+          // "qe" means no dialog was shown. "dom" means Premiere prompted and a human clicked,
+          // so an unattended caller seeing "dom" should expect this call to hang next time.
+          createdVia: createdVia
         });
       } catch (e) {
         return JSON.stringify({
@@ -601,21 +633,12 @@ export class PremiereProBridge implements PremiereProTransport {
       }
     `;
 
-    // createNewSequence opens Premiere's modal "New Sequence" dialog and blocks until a human
-    // clicks it. Confirmed on Premiere Pro 26.0.2 / Windows by enumerating the host's windows
-    // while a call was in flight: an owned window of class #32770 titled "New Sequence", with
-    // the main Premiere window DISABLED — the signature of an application-modal dialog. It
-    // appears whether or not presetPath is supplied.
-    //
-    // So the elapsed time of this call is human reaction time, not Premiere's. Timings that
-    // look like variable performance (29.3s, 39.2s, >180s across three runs here) are just how
-    // long someone took to notice the dialog. With nobody at the keyboard it never returns,
-    // which makes this tool unusable in the unattended agent workflows this server exists to
-    // support. Issue #25's "false negative" is the same root cause.
-    //
-    // No timeout value fixes that — a longer one only waits longer for a click. 180s is enough
-    // for an attended run to succeed rather than reporting a failure for a sequence that
-    // Premiere did create. See KNOWN_ISSUES.md.
+    // The QE path above returns in well under a second, so this timeout only matters when QE
+    // is unavailable and the DOM fallback runs. That fallback opens Premiere's modal "New
+    // Sequence" dialog and blocks until a human clicks it, so 180s buys an attended caller
+    // enough room to succeed rather than reporting a failure for a sequence Premiere did
+    // create — the false negative reported upstream as issue #25. Unattended, no timeout value
+    // helps that path. See KNOWN_ISSUES.md.
     return await this.executeScript(script, 180000);
   }
 
