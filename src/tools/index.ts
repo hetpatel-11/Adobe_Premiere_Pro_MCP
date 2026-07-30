@@ -83,6 +83,72 @@ interface BuildBrandSpotArgs extends AssembleProductSpotArgs {
   applyDefaultPolish?: boolean;
 }
 
+interface TextInjectionEntry {
+  textIndex?: number;
+  ok?: boolean;
+  [key: string]: any;
+}
+
+export function evaluateTextInjectionResult(result: any): any {
+  if (!result || result.success === false) return result;
+
+  const requestedCount = Number(result.textRequestedCount || 0);
+  if (requestedCount === 0) {
+    return {
+      ...result,
+      textInjectionStatus: 'not_requested',
+      textInjectionSummary: { requested: 0, succeeded: 0, failed: 0 }
+    };
+  }
+
+  const attempts = Array.isArray(result.textInjectionResults)
+    ? result.textInjectionResults.filter(
+        (entry: TextInjectionEntry) => typeof entry.textIndex === 'number'
+      )
+    : [];
+  const succeededCount = attempts.filter((entry: TextInjectionEntry) => entry.ok === true).length;
+  const failedCount = requestedCount - succeededCount;
+  const summary = {
+    requested: requestedCount,
+    succeeded: succeededCount,
+    failed: failedCount
+  };
+
+  if (succeededCount === 0) {
+    const version = result.premiereVersion || 'unknown';
+    const build = result.premiereBuild ? ` (build ${result.premiereBuild})` : '';
+    return {
+      ...result,
+      success: false,
+      message: 'MOGRT imported, but requested text was not written',
+      error:
+        `Text injection failed for all ${requestedCount} requested field(s) in ` +
+        `Premiere Pro ${version}${build}.`,
+      textInjectionStatus: 'failed',
+      textInjectionSummary: summary
+    };
+  }
+
+  if (succeededCount < requestedCount) {
+    return {
+      ...result,
+      success: true,
+      message: 'MOGRT imported; some requested text was written and read back',
+      warning: `${failedCount} of ${requestedCount} requested text field(s) could not be written`,
+      textInjectionStatus: 'partial',
+      textInjectionSummary: summary
+    };
+  }
+
+  return {
+    ...result,
+    success: true,
+    message: 'MOGRT imported; all requested text was written and read back',
+    textInjectionStatus: 'complete',
+    textInjectionSummary: summary
+  };
+}
+
 const motionStyleSchema = z.enum(['push_in', 'pull_out', 'alternate', 'none']);
 
 const clipPlanSchema = z.object({
@@ -521,7 +587,8 @@ export class PremiereProTools {
           startTime: z.number().describe('The time in seconds when the text should appear'),
           duration: z.number().describe('How long the text should remain on screen in seconds (best-effort; the MOGRT\'s natural duration may take precedence)'),
           mogrtPath: z.string().optional().describe('Absolute path to a .mogrt template file (required for text overlays)'),
-          textPropertyName: z.string().optional().describe('Override: explicit displayName of the property to write into. When set, only `text` is written (text2/text3/text4 are ignored) and the call fails if no property with that displayName exists. Use only when auto-detection picks the wrong field.')
+          textPropertyName: z.string().optional().describe('Override: explicit displayName of the property to write into. When set, only `text` is written (text2/text3/text4 are ignored) and the call fails if no property with that displayName exists. Use only when auto-detection picks the wrong field.'),
+          rollbackOnTextFailure: z.boolean().optional().describe('If true, remove the imported timeline Graphic when every requested text write fails. Defaults to false; the imported project item may remain in the Project panel.')
         })
       },
 
@@ -4435,6 +4502,14 @@ export class PremiereProTools {
 
           // First, probe ALL plausible MGT-access APIs (so we know what's available)
           var apiProbe = {};
+          var premiereVersion = "unknown";
+          var premiereBuild = "";
+          try {
+            if (typeof app.version !== "undefined" && app.version !== null) premiereVersion = String(app.version);
+          } catch (eVersion) {}
+          try {
+            if (typeof app.build !== "undefined" && app.build !== null) premiereBuild = String(app.build);
+          } catch (eBuild) {}
           apiProbe.hasGetMGTComponent = (typeof trackItem.getMGTComponent === "function");
           apiProbe.hasGetMGT = (typeof trackItem.getMGT === "function");
           apiProbe.hasGetMogrtComponent = (typeof trackItem.getMogrtComponent === "function");
@@ -4631,7 +4706,7 @@ export class PremiereProTools {
                     parseStrategy = "pure_json";
                   } catch (eP2) {
                     setResults.push({
-                      textIndex: ti2, compIndex: tc.compIndex, requestedText: newText,
+                      textIndex: ti2, compIndex: tc.compIndex, propIndex: tc.propIndex, requestedText: newText,
                       ok: false,
                       error: "Both JSON parse strategies failed",
                       rawValLength: rawValLen,
@@ -4656,7 +4731,7 @@ export class PremiereProTools {
                 }
                 if (mutated.length === 0) {
                   setResults.push({
-                    textIndex: ti2, compIndex: tc.compIndex, requestedText: newText,
+                    textIndex: ti2, compIndex: tc.compIndex, propIndex: tc.propIndex, requestedText: newText,
                     ok: false,
                     error: "Parsed JSON but no known text field found",
                     parseStrategy: parseStrategy,
@@ -4685,6 +4760,7 @@ export class PremiereProTools {
                 setResults.push({
                   textIndex: ti2,
                   compIndex: tc.compIndex,
+                  propIndex: tc.propIndex,
                   requestedText: newText,
                   parseStrategy: parseStrategy,
                   fieldsMutated: mutated,
@@ -4695,7 +4771,7 @@ export class PremiereProTools {
                   ok: (afterText === newText)
                 });
               } catch (eS) {
-                setResults.push({ textIndex: ti2, compIndex: tc.compIndex, requestedText: newText, ok: false, error: eS.toString() });
+                setResults.push({ textIndex: ti2, compIndex: tc.compIndex, propIndex: tc.propIndex, requestedText: newText, ok: false, error: eS.toString() });
               }
             }
             if (textComps.length === 0) {
@@ -4709,17 +4785,69 @@ export class PremiereProTools {
             success: true,
             message: "MOGRT imported as text overlay",
             clipId: trackItem.nodeId,
+            premiereVersion: premiereVersion,
+            premiereBuild: premiereBuild,
             apiProbe: apiProbe,
             componentCount: componentsDump.length,
             components: componentsDump,
             textPropsAutoDetected: textPropsFound,
+            textRequestedCount: textsByIndex.length,
             textInjectionResults: setResults
           });
         } catch (e) {
-          return JSON.stringify({ success: false, error: e.toString() });
+          var failedClipId = null;
+          try {
+            if (typeof trackItem !== "undefined" && trackItem) failedClipId = trackItem.nodeId;
+          } catch (eClipId) {}
+          return JSON.stringify({ success: false, error: e.toString(), clipId: failedClipId });
         }
       `;
-      return await this.bridge.executeScript(script);
+      const bridgeResult = await this.bridge.executeScript(script);
+      const evaluatedResult = evaluateTextInjectionResult(bridgeResult);
+      if (
+        (evaluatedResult?.textInjectionStatus === 'failed' ||
+          (evaluatedResult?.success === false && evaluatedResult?.clipId)) &&
+        args.rollbackOnTextFailure === true &&
+        evaluatedResult.clipId
+      ) {
+        const rollbackScript = `
+          try {
+            var info = __findClip(${JSON.stringify(evaluatedResult.clipId)}, ${JSON.stringify(args.sequenceId)});
+            if (!info) return JSON.stringify({ success: false, error: "Imported Graphic was not found for rollback" });
+            info.clip.remove(false, true);
+            return JSON.stringify({
+              success: true,
+              timelineGraphicRemoved: true,
+              note: "The timeline Graphic was removed; the imported project item may remain in the Project panel."
+            });
+          } catch (e) {
+            return JSON.stringify({ success: false, timelineGraphicRemoved: false, error: e.toString() });
+          }
+        `;
+        const rollback = await this.bridge.executeScript(rollbackScript);
+        const rollbackSucceeded = rollback?.success === true;
+        if (rollbackSucceeded) {
+          const { clipId: removedClipId, ...failureResult } = evaluatedResult;
+          return {
+            ...failureResult,
+            error: `${evaluatedResult.error} The imported timeline Graphic was removed.`,
+            removedClipId,
+            rollback
+          };
+        }
+        return {
+          ...evaluatedResult,
+          error: `${evaluatedResult.error} Rollback of the imported timeline Graphic also failed.`,
+          rollback
+        };
+      }
+      if (evaluatedResult?.textInjectionStatus === 'failed') {
+        return {
+          ...evaluatedResult,
+          error: `${evaluatedResult.error} The imported Graphic remains on the timeline.`
+        };
+      }
+      return evaluatedResult;
     }
 
     // Fallback: try legacy title approach
