@@ -14,12 +14,21 @@ export interface PremiereProTransport {
   createSequence(name: string, presetPath?: string): Promise<PremiereProSequence>;
   addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio?: boolean, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip>;
   addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; linkAudio?: boolean; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any>;
-  renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<{
+  renderSequence(sequenceId: string, outputPath: string, presetPath: string, options?: {
+    sourceRange?: 'entire' | 'in_out' | 'work_area';
+    removeOnCompletion?: boolean;
+  }): Promise<{
     success: boolean;
+    status?: string;
     queued?: boolean;
+    queueStarted?: boolean;
     jobID?: string;
     outputPath?: string;
     presetPath?: string;
+    sourceRange?: string;
+    resolvedRange?: unknown;
+    encoderRangeConstant?: string;
+    warnings?: Array<{ code: string; message: string }>;
     error?: string;
   }>;
 }
