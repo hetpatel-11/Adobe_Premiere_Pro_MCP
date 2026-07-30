@@ -390,7 +390,7 @@ export class PremiereProTools {
       // Effects and Transitions
       {
         name: 'apply_effect',
-        description: 'Applies a visual or audio effect to a specific clip on the timeline.',
+        description: 'Applies a visual or audio effect to a clip, identifies the exact newly created component, and verifies parameter readbacks.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to apply the effect to'),
           effectName: z.string().describe('The name of the effect to apply (e.g., "Gaussian Blur", "Lumetri Color")'),
@@ -3403,7 +3403,7 @@ export class PremiereProTools {
   // FIX vs upstream: upstream silently ignored `parameters` (typed as `_parameters`).
   // This version:
   //   1. Adds the effect (current behavior)
-  //   2. Locates the newly added component (matched by index = before+0; effects append)
+  //   2. Locates the newly added component by diffing the ordered component snapshots
   //   3. Dumps that component's properties (displayName + current value) so callers can see
   //      exactly which params are settable via flat property access (some effects hide their
   //      real params behind "Custom Setup / Editar..." dialogs and won't be settable this way)
@@ -3412,23 +3412,78 @@ export class PremiereProTools {
   //   5. Returns dump + per-param result so debugging is one round-trip
   private async applyEffect(clipId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
     const paramJson = JSON.stringify(parameters || {});
+    const clipIdJson = JSON.stringify(clipId);
+    const effectNameJson = JSON.stringify(effectName);
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${clipIdJson});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
-        var beforeCount = clip.components.numItems;
+        function stableValue(value) {
+          try {
+            var encoded = JSON.stringify(value);
+            return encoded === undefined ? String(value) : encoded;
+          } catch (e) {
+            try { return String(value); } catch (e2) { return "<unreadable>"; }
+          }
+        }
+        function snapshotComponent(component) {
+          var propertyParts = [];
+          var propertyCount = -1;
+          var componentProperties = null;
+          try {
+            componentProperties = component.properties;
+            propertyCount = componentProperties.numItems;
+          } catch (e3) {
+            propertyParts.push("<properties unreadable>");
+          }
+          for (var si = 0; si < propertyCount; si++) {
+            try {
+              var snapshotProperty = componentProperties[si];
+              var snapshotValue = "<getValue failed>";
+              try { snapshotValue = stableValue(snapshotProperty.getValue()); } catch (e4) {}
+              propertyParts.push(String(snapshotProperty.displayName) + "=" + snapshotValue);
+            } catch (e5) {
+              propertyParts.push("<property " + si + " unreadable>");
+            }
+          }
+          var matchName = "";
+          try { matchName = String(component.matchName || ""); } catch (e6) {}
+          var displayName = String(component.displayName);
+          return {
+            displayName: displayName,
+            matchName: matchName,
+            propertyCount: propertyCount,
+            fingerprint: displayName + "|" + matchName + "|" + propertyParts.join("|")
+          };
+        }
+        function snapshotComponents(targetClip) {
+          var snapshots = [];
+          for (var sci = 0; sci < targetClip.components.numItems; sci++) {
+            snapshots.push(snapshotComponent(targetClip.components[sci]));
+          }
+          return snapshots;
+        }
+        function fingerprintsEqual(left, right) {
+          if (left.length !== right.length) return false;
+          for (var fei = 0; fei < left.length; fei++) {
+            if (left[fei].fingerprint !== right[fei].fingerprint) return false;
+          }
+          return true;
+        }
+        var beforeComponents = snapshotComponents(clip);
+        var beforeCount = beforeComponents.length;
         var qeSeq = qe.project.getActiveSequence();
         var qeTrack, effect;
         if (info.trackType === 'video') {
           qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-          effect = qe.project.getVideoEffectByName("${effectName}");
+          effect = qe.project.getVideoEffectByName(${effectNameJson});
         } else {
           qeTrack = qeSeq.getAudioTrackAt(info.trackIndex);
-          effect = qe.project.getAudioEffectByName("${effectName}");
+          effect = qe.project.getAudioEffectByName(${effectNameJson});
         }
-        if (!effect) return JSON.stringify({ success: false, error: "Effect not found: ${effectName}. Use list_available_effects to see available effects." });
+        if (!effect) return JSON.stringify({ success: false, error: "Effect not found: " + ${effectNameJson} + ". Use list_available_effects to see available effects." });
         function findQeClipByTime() {
           var targetTicks = String(info.clip.start.ticks);
           var best = null;
@@ -3450,19 +3505,59 @@ export class PremiereProTools {
         if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for effect application" });
         if (info.trackType === 'video') { qeClip.addVideoEffect(effect); } else { qeClip.addAudioEffect(effect); }
 
-        // Find the newly added component (last in the array)
-        var afterCount = clip.components.numItems;
+        // Re-resolve after the QE mutation, then locate the unique inserted component by
+        // finding the index whose removal restores the complete pre-add fingerprint sequence.
+        var afterInfo = __findClip(${clipIdJson});
+        if (!afterInfo) return JSON.stringify({ success: false, error: "Clip could not be re-resolved after effect add" });
+        clip = afterInfo.clip;
+        var afterComponents = snapshotComponents(clip);
+        var afterCount = afterComponents.length;
         if (afterCount <= beforeCount) {
           return JSON.stringify({
             success: false,
             error: "Effect add did not create a new component on the target clip",
-            clipId: "${clipId}",
-            effectName: "${effectName}",
+            clipId: ${clipIdJson},
+            effectName: ${effectNameJson},
             beforeComponentCount: beforeCount,
             afterComponentCount: afterCount
           });
         }
-        var newCompIdx = afterCount - 1;
+        var candidateIndices = [];
+        if (afterCount === beforeCount + 1) {
+          for (var candidateIndex = 0; candidateIndex < afterCount; candidateIndex++) {
+            var withoutCandidate = [];
+            for (var afterIndex = 0; afterIndex < afterCount; afterIndex++) {
+              if (afterIndex !== candidateIndex) withoutCandidate.push(afterComponents[afterIndex]);
+            }
+            if (fingerprintsEqual(beforeComponents, withoutCandidate)) candidateIndices.push(candidateIndex);
+          }
+        }
+        if (candidateIndices.length !== 1) {
+          function componentDiagnostics(snapshots) {
+            var diagnostics = [];
+            for (var di = 0; di < snapshots.length; di++) {
+              diagnostics.push({
+                componentIndex: di,
+                displayName: snapshots[di].displayName,
+                matchName: snapshots[di].matchName,
+                propertyCount: snapshots[di].propertyCount
+              });
+            }
+            return diagnostics;
+          }
+          return JSON.stringify({
+            success: false,
+            error: "Effect was added, but its component could not be uniquely identified; no parameters were written and an automatic retry is unsafe",
+            effectAdded: true,
+            retryUnsafe: true,
+            clipId: ${clipIdJson},
+            effectName: ${effectNameJson},
+            beforeComponents: componentDiagnostics(beforeComponents),
+            afterComponents: componentDiagnostics(afterComponents),
+            candidateComponentIndices: candidateIndices
+          });
+        }
+        var newCompIdx = candidateIndices[0];
         var newComp = clip.components[newCompIdx];
 
         // Dump every property name + current value
@@ -3479,6 +3574,27 @@ export class PremiereProTools {
         var requestedParams = ${paramJson};
         var paramResults = [];
         function normalize(s) { return String(s).toLowerCase().replace(/[\\s_-]+/g, ''); }
+        function valuesEquivalent(actual, requested) {
+          var actualIsArray = Object.prototype.toString.call(actual) === "[object Array]";
+          var requestedIsArray = Object.prototype.toString.call(requested) === "[object Array]";
+          if (actualIsArray || requestedIsArray) {
+            if (!actualIsArray || !requestedIsArray || actual.length !== requested.length) return false;
+            for (var vai = 0; vai < actual.length; vai++) {
+              if (!valuesEquivalent(actual[vai], requested[vai])) return false;
+            }
+            return true;
+          }
+          if (typeof actual === "number" && typeof requested === "number") {
+            return Math.abs(actual - requested) <= 0.0001;
+          }
+          if (typeof requested === "boolean" && typeof actual === "number" && (actual === 0 || actual === 1)) {
+            return Boolean(actual) === requested;
+          }
+          if (typeof actual === "boolean" && typeof requested === "number" && (requested === 0 || requested === 1)) {
+            return actual === Boolean(requested);
+          }
+          return stableValue(actual) === stableValue(requested);
+        }
         for (var pName in requestedParams) {
           if (requestedParams.hasOwnProperty && !requestedParams.hasOwnProperty(pName)) continue;
           var requestedVal = requestedParams[pName];
@@ -3503,11 +3619,17 @@ export class PremiereProTools {
           if (matched) {
             try {
               var valueBefore = null;
-              try { valueBefore = matched.prop.getValue(); } catch (eB) {}
+              var beforeReadable = true;
+              try { valueBefore = matched.prop.getValue(); } catch (eB) { beforeReadable = false; }
               matched.prop.setValue(requestedVal, true);
               var valueAfter = null;
-              try { valueAfter = matched.prop.getValue(); } catch (eA) {}
-              var clamped = (valueAfter !== null && Math.abs(valueAfter - requestedVal) > 0.0001);
+              var afterReadable = true;
+              try { valueAfter = matched.prop.getValue(); } catch (eA) { afterReadable = false; }
+              var verified = afterReadable && valuesEquivalent(valueAfter, requestedVal);
+              var changed = beforeReadable && afterReadable && !valuesEquivalent(valueAfter, valueBefore);
+              var acceptedWithWarning = !verified && changed;
+              var unverifiable = !afterReadable;
+              var resultOk = verified || acceptedWithWarning;
               paramResults.push({
                 requestedName: pName,
                 matchedDisplayName: String(matched.prop.displayName),
@@ -3515,8 +3637,11 @@ export class PremiereProTools {
                 valueRequested: requestedVal,
                 valueBefore: valueBefore,
                 valueAfter: valueAfter,
-                clamped: clamped,
-                ok: true
+                verification: verified ? "verified" : (acceptedWithWarning ? "changed_with_warning" : (unverifiable ? "unverifiable" : "failed")),
+                warning: acceptedWithWarning
+                  ? "Premiere changed the property but readback differs from the requested value (possibly clamped or coerced)"
+                  : (unverifiable ? "Premiere accepted setValue but the resulting value could not be read back" : undefined),
+                ok: resultOk
               });
             } catch (e2) {
               paramResults.push({ requestedName: pName, ok: false, error: "setValue threw: " + e2.toString() });
@@ -3527,22 +3652,30 @@ export class PremiereProTools {
         }
 
         var failedParams = [];
+        var paramWarnings = [];
         for (var pr = 0; pr < paramResults.length; pr++) {
           if (!paramResults[pr].ok) failedParams.push(paramResults[pr]);
+          if (paramResults[pr].warning) paramWarnings.push({
+            requestedName: paramResults[pr].requestedName,
+            verification: paramResults[pr].verification,
+            warning: paramResults[pr].warning
+          });
         }
 
         return JSON.stringify({
           success: failedParams.length === 0,
           message: "Effect applied",
-          clipId: "${clipId}",
-          effectName: "${effectName}",
+          clipId: ${clipIdJson},
+          effectName: ${effectNameJson},
           addedComponent: {
             displayName: String(newComp.displayName),
             componentIndex: newCompIdx,
+            identificationStrategy: "unique ordered component fingerprint insertion",
             propertyCount: propsDump.length,
             properties: propsDump
           },
           paramResults: paramResults,
+          warnings: paramWarnings,
           error: failedParams.length ? "One or more effect parameters could not be set" : undefined
         });
       } catch (e) {
