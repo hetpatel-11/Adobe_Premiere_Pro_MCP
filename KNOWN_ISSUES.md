@@ -106,6 +106,8 @@ These issues were real and are now resolved in the current code:
 - the CEP bridge could fail with `ENOENT` when the configured temp directory did not exist
 - `create_sequence` could create a sequence in Premiere but still report failure after a bridge timeout
 - `export_frame` called a non-existent API and now uses the QE export path
+- `export_sequence` always queued entire-sequence exports; it now supports explicit `sourceRange` values for entire sequence, Sequence In/Out, and Work Area exports
+- `get_encoder_presets` returned a placeholder expanded-tool response; it now discovers readable user `.epr` presets from local Adobe Media Encoder preset folders
 - `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
 - the branded workflow response returned the wrong message due to object spread order
 

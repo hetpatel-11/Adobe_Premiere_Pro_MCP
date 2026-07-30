@@ -149,7 +149,6 @@ export const expandedToolNames = [
   'batch_rename_clips',
   'batch_enable_disable',
   'clear_sequence_in_out',
-  'get_encoder_presets',
   'get_qe_clip_info',
   'set_poster_frame',
   'move_items_to_bin',
@@ -2052,28 +2051,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!frameExported) return fail(frameExportError || "Frame export failed");
           return ok({ exported: true, outputPath: framePath, method: frameMethod, seconds: frameSeconds });
 
-        case "get_encoder_presets":
-          if (!app.encoder) return fail("app.encoder is unavailable");
-          var presetResult = tryCall(app.encoder, ["getPresets", "getEncoderPresets"], []);
-          if (!presetResult.called) {
-            var presetFolders = args.folders || [
-              "/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app/Contents/Settings/EncoderPresets",
-              "/Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro 2025.app/Contents/Settings/EncoderPresets"
-            ];
-            var presetFiles = [];
-            for (var pfi = 0; pfi < presetFolders.length; pfi++) {
-              try {
-                var presetFolder = new Folder(String(presetFolders[pfi]));
-                if (!presetFolder.exists) continue;
-                var files = presetFolder.getFiles("*.epr");
-                for (var pfj = 0; pfj < files.length; pfj++) presetFiles.push({ name: files[pfj].name, path: files[pfj].fsName });
-              } catch (presetScanError) {}
-            }
-            if (presetFiles.length) return ok({ presets: presetFiles, count: presetFiles.length, method: "filesystem scan" });
-            return fail(presetResult.error, { available: false });
-          }
-          return ok({ presets: presetResult.result });
-
         case "nest_clips":
           if (!app.project || !app.project.createNewSequenceFromClips) return commandByName("Nest...");
           var nestSeq = targetSequence() || activeSequence();
@@ -2299,7 +2276,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ matched: true, clipId: matchClip.clip.nodeId, item: matchClip.clip.projectItem.name, time: matchTime, method: "sourceMonitor.openProjectItem" });
 
         case "capture_frame":
-        case "get_encoder_presets":
         case "get_project_scratch_disks":
         case "get_project_panel_metadata":
         case "get_xmp_metadata":

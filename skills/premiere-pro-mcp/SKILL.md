@@ -93,7 +93,10 @@ For deeper validation in a disposable project, create a test sequence with a uni
 - For product or brand spots, prefer `assemble_product_spot` or `build_brand_spot_from_mogrt_and_assets` when the user's request fits those workflows.
 - For black-and-white looks, use `apply_effect` with `Black & White` rather than generic saturation-only changes.
 - For timeline cuts, prefer sequence-aware tools and include `sequenceId` when available.
-- Export only after confirming output path, format/preset, and overwrite behavior.
+- Export only after confirming output path, export preset, source range, and overwrite behavior.
+- Use `get_encoder_presets` to discover user `.epr` presets when the user does not provide an absolute preset path. Prefer `presetPath` for deterministic exports; use `presetName` only when it resolves to exactly one discovered preset.
+- Treat `format`, `quality`, and `resolution` on export tools as hints only; Adobe Media Encoder uses the `.epr` preset for actual codec, container, quality, and dimensions.
+- Set `sourceRange` explicitly for partial exports: `entire`, `in_out`, or `work_area`. Do not assume Sequence In/Out or Work Area marks are used unless `sourceRange` requests them.
 
 ## Troubleshooting
 
@@ -117,4 +120,3 @@ Common fixes:
 - `ENOENT` on temp directory: create `/tmp/premiere-mcp-bridge`, save config again, restart bridge.
 - Tool succeeds in Premiere but reports failure: run `list_sequences` or the relevant list tool to confirm state before retrying.
 - Empty or malformed temp directory config: set the field to the path only, not JSON or an env assignment.
-

@@ -109,6 +109,31 @@ describe('PremiereProBridge', () => {
     expect(result.id).toBe('item-123');
   });
 
+  it('generates renderSequence JSX that selects the requested source range constant', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: true }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.renderSequence('seq-"quoted"', '/tmp/out.mp4', '/tmp/preset.epr', {
+      sourceRange: 'in_out',
+      removeOnCompletion: false,
+    });
+
+    const commandFile = JSON.parse(String(mockFs.writeFile.mock.calls[0]?.[1] ?? '{}'));
+    const command = String(commandFile.script ?? '');
+    expect(command).toContain('var sequenceId = "seq-\\"quoted\\""');
+    expect(command).toContain('encoderRangeConstant = "ENCODE_IN_TO_OUT"');
+    expect(command).toContain('encoderRangeConstant = "ENCODE_WORKAREA"');
+    expect(command).toContain('encoderRangeConstant = "ENCODE_ENTIRE"');
+    expect(command).toContain('var removeOnCompletion = 0;');
+    expect(command).toContain('app.encoder[encoderRangeConstant]');
+    expect(command).not.toContain('__findSequence("seq-"quoted"")');
+  });
+
   it('blocks modal-prone unsupported subtitle imports before writing a command', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
