@@ -490,7 +490,7 @@ export class PremiereProTools {
       },
       {
         name: 'add_transition_to_clip',
-        description: 'Adds a transition to the beginning or end of a single clip.',
+        description: 'Adds a transition to the beginning or end of a single clip. Check status and verified in the result: accepted_unverified means Premiere accepted the command but inspection could not prove the edit, so do not retry automatically.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip'),
           transitionName: z.string().describe('The name of the transition'),
@@ -3376,7 +3376,7 @@ export class PremiereProTools {
               state.error = "exportAsFinalCutProXML unavailable";
               return state;
             }
-            var file = new File(Folder.temp.fsName + "/premiere-mcp-transition-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) + ".xml");
+            var file = new File(Folder.temp.fsName + "/premiere-mcp-transition-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000) + ".xml");
             seq.exportAsFinalCutProXML(file.fsName);
             state.path = file.fsName;
             if (!file.exists) {
@@ -4094,15 +4094,15 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        if (!info) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Clip not found" });
         var qeSeq = qe.project.getActiveSequence();
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
-        if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for transition" });
+        if (!qeClip) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Could not locate matching QE clip for transition" });
         var transition = info.trackType === 'video'
           ? qe.project.getVideoTransitionByName("${transitionName}")
           : qe.project.getAudioTransitionByName("${transitionName}");
-        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: ${transitionName}" });
+        if (!transition) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Transition not found: ${transitionName}" });
         var seq = app.project.activeSequence;
         var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
         var frames = Math.round(${duration} * fps);
@@ -4113,23 +4113,65 @@ export class PremiereProTools {
         var afterClip = __findQeClipByDomClip(qeTrack, info.clip);
         var after = __readQeTransitionState(afterClip);
         var afterXml = __transitionXmlCount(seq);
-        if (!__transitionWasVerified(before, after) && !__transitionWasVerifiedByXml(beforeXml, afterXml)) {
+        var qeVerified = __transitionWasVerified(before, after);
+        var xmlVerified = __transitionWasVerifiedByXml(beforeXml, afterXml);
+        if (!qeVerified && !xmlVerified) {
+          var qeInspectionAvailable = before.available && after.available;
+          var xmlInspectionAvailable = beforeXml.available && afterXml.available;
+          var inspectionAvailable = qeInspectionAvailable || xmlInspectionAvailable;
           return JSON.stringify({
-            success: false,
-            error: "Transition call completed but Premiere Pro did not expose a verified transition change",
+            success: true,
+            status: "accepted_unverified",
+            verified: false,
+            verification: {
+              method: "transition_enumeration_and_xml",
+              available: inspectionAvailable,
+              channels: {
+                transitionEnumeration: {
+                  available: qeInspectionAvailable,
+                  before: qeInspectionAvailable ? before : null,
+                  after: qeInspectionAvailable ? after : null
+                },
+                finalCutProXml: {
+                  available: xmlInspectionAvailable,
+                  before: xmlInspectionAvailable ? beforeXml : null,
+                  after: xmlInspectionAvailable ? afterXml : null,
+                  beforeError: beforeXml.error,
+                  afterError: afterXml.error
+                }
+              },
+              reason: inspectionAvailable
+                ? "Available Premiere Pro inspection channels did not confirm a transition change; these channels can omit transitions for some clip types"
+                : "Premiere Pro did not expose a readable transition list for this clip type",
+              before: inspectionAvailable ? { transitionEnumeration: before, finalCutProXml: beforeXml } : null,
+              after: inspectionAvailable ? { transitionEnumeration: after, finalCutProXml: afterXml } : null
+            },
+            warning: "Transition command accepted; result could not be independently verified.",
             transitionName: "${transitionName}",
             position: "${position}",
             duration: ${duration},
-            frames: frames,
-            before: before,
-            after: after,
-            beforeXml: beforeXml,
-            afterXml: afterXml
+            frames: frames
           });
         }
-        return JSON.stringify({ success: true, message: "Transition added at ${position} and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
+        return JSON.stringify({
+          success: true,
+          status: "applied_verified",
+          verified: true,
+          message: "Transition added at ${position} and verified",
+          verification: {
+            method: qeVerified ? "transition_enumeration" : "final_cut_pro_xml",
+            available: true,
+            reason: qeVerified ? null : "Verified by a sequence-wide Final Cut Pro XML transition-count increase",
+            before: qeVerified ? before : beforeXml,
+            after: qeVerified ? after : afterXml
+          },
+          transitionName: "${transitionName}",
+          position: "${position}",
+          duration: ${duration},
+          frames: frames
+        });
       } catch (e) {
-        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+        return JSON.stringify({ success: false, status: "failed", verified: false, error: "QE DOM error: " + e.toString() });
       }
     `;
 
