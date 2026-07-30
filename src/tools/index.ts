@@ -7,6 +7,9 @@
 
 import { z } from 'zod';
 import { spawn } from 'child_process';
+import { constants as fsConstants, promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, extname, isAbsolute, join, parse } from 'node:path';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
@@ -20,6 +23,43 @@ export interface MCPTool {
 
 type MotionStyle = 'push_in' | 'pull_out' | 'alternate' | 'none';
 type InsertMode = 'overwrite' | 'insert';
+type ExportSourceRange = 'entire' | 'in_out' | 'work_area';
+
+interface EncoderPresetEntry {
+  name: string;
+  path: string;
+  source: 'user';
+  ameVersion: string;
+}
+
+interface EncoderPresetDiscovery {
+  success: true;
+  presets: EncoderPresetEntry[];
+  count: number;
+  searchedDirectories: string[];
+  errors: Array<{ path: string; error: string }>;
+  factoryPresets: {
+    supported: false;
+    note: string;
+  };
+}
+
+interface ExportSequenceArgs {
+  sequenceId: string;
+  outputPath: string;
+  presetPath?: string;
+  presetName?: string;
+  sourceRange?: ExportSourceRange;
+  allowOverwrite?: boolean;
+  removeOnCompletion?: boolean;
+  format?: string;
+  quality?: string;
+  resolution?: string;
+}
+
+interface AddToRenderQueueArgs extends ExportSequenceArgs {
+  startImmediately?: boolean;
+}
 
 interface ClipPlanTransition {
   name?: string;
@@ -233,6 +273,13 @@ export class PremiereProTools {
           presetPath: z.string().optional().describe('Optional Adobe Media Encoder .epr preset path. When provided, the file is checked.'),
           requireNonEmptyTimeline: z.boolean().optional().describe('When true, an empty timeline is an error. Defaults to true.'),
           checkGaps: z.boolean().optional().describe('When true, timeline gaps are reported as warnings. Defaults to true.')
+        })
+      },
+      {
+        name: 'get_encoder_presets',
+        description: 'Discovers readable user Adobe Media Encoder .epr presets from local AME preset folders. Factory preset enumeration is not claimed complete.',
+        inputSchema: z.object({
+          directories: z.array(z.string()).optional().describe('Optional absolute directories to scan instead of the default user AME preset folders. Intended for tests and advanced setups.')
         })
       },
       {
@@ -627,10 +674,14 @@ export class PremiereProTools {
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence to export'),
           outputPath: z.string().describe('The absolute path where the final video file will be saved'),
-          presetPath: z.string().optional().describe('Optional path to an export preset file (.epr) for specific settings'),
-          format: z.enum(['mp4', 'mov', 'avi', 'h264', 'prores']).optional().describe('The export format or codec'),
-          quality: z.enum(['low', 'medium', 'high', 'maximum']).optional().describe('Export quality setting'),
-          resolution: z.string().optional().describe('Export resolution (e.g., "1920x1080", "3840x2160")')
+          presetPath: z.string().optional().describe('Absolute path to an export preset file (.epr). Required unless presetName uniquely resolves through get_encoder_presets.'),
+          presetName: z.string().optional().describe('Exact user preset display name or filename stem. Must resolve to exactly one discovered .epr preset.'),
+          sourceRange: z.enum(['entire', 'in_out', 'work_area']).optional().describe('Export source range. Defaults to entire. Requested ranges are never silently substituted.'),
+          allowOverwrite: z.boolean().optional().describe('Allow writing to an existing output file. Defaults to false.'),
+          removeOnCompletion: z.boolean().optional().describe('Pass AME removeOnCompletion. Defaults to true to preserve existing queue behavior.'),
+          format: z.enum(['mp4', 'mov', 'avi', 'h264', 'prores']).optional().describe('Deprecated hint only; the .epr preset controls codec/container.'),
+          quality: z.enum(['low', 'medium', 'high', 'maximum']).optional().describe('Deprecated hint only; the .epr preset controls quality.'),
+          resolution: z.string().optional().describe('Deprecated hint only; the .epr preset controls resolution.')
         })
       },
       {
@@ -857,6 +908,10 @@ export class PremiereProTools {
           sequenceId: z.string().describe('The ID of the sequence to render'),
           outputPath: z.string().describe('Output file path'),
           presetPath: z.string().optional().describe('Export preset file path'),
+          presetName: z.string().optional().describe('Exact user preset display name or filename stem. Must resolve to exactly one discovered .epr preset.'),
+          sourceRange: z.enum(['entire', 'in_out', 'work_area']).optional().describe('Export source range. Defaults to entire.'),
+          allowOverwrite: z.boolean().optional().describe('Allow writing to an existing output file. Defaults to false.'),
+          removeOnCompletion: z.boolean().optional().describe('Pass AME removeOnCompletion. Defaults to true.'),
           startImmediately: z.boolean().optional().describe('Whether to start rendering immediately (default: false)')
         })
       },
@@ -1320,6 +1375,8 @@ export class PremiereProTools {
           return await this.getProjectInfo();
         case 'validate_project_for_export':
           return await this.validateProjectForExport(args.sequenceId, args.outputPath, args.presetPath, args.requireNonEmptyTimeline, args.checkGaps);
+        case 'get_encoder_presets':
+          return await this.getEncoderPresets(args.directories);
         case 'build_motion_graphics_demo':
           return await this.buildMotionGraphicsDemo(args.sequenceName);
         case 'assemble_product_spot':
@@ -1429,7 +1486,18 @@ export class PremiereProTools {
 
         // Export and Rendering
         case 'export_sequence':
-          return await this.exportSequence(args.sequenceId, args.outputPath, args.presetPath, args.format, args.quality, args.resolution);
+          return await this.exportSequence({
+            sequenceId: args.sequenceId,
+            outputPath: args.outputPath,
+            presetPath: args.presetPath,
+            presetName: args.presetName,
+            sourceRange: args.sourceRange,
+            allowOverwrite: args.allowOverwrite,
+            removeOnCompletion: args.removeOnCompletion,
+            format: args.format,
+            quality: args.quality,
+            resolution: args.resolution
+          });
         case 'export_frame':
           return await this.exportFrame(args.sequenceId, args.time, args.outputPath, args.format);
 
@@ -1490,7 +1558,16 @@ export class PremiereProTools {
 
         // Render Queue
         case 'add_to_render_queue':
-          return await this.addToRenderQueue(args.sequenceId, args.outputPath, args.presetPath, args.startImmediately);
+          return await this.addToRenderQueue({
+            sequenceId: args.sequenceId,
+            outputPath: args.outputPath,
+            presetPath: args.presetPath,
+            presetName: args.presetName,
+            sourceRange: args.sourceRange,
+            allowOverwrite: args.allowOverwrite,
+            removeOnCompletion: args.removeOnCompletion,
+            startImmediately: args.startImmediately
+          });
         case 'get_render_queue_status':
           return await this.getRenderQueueStatus();
 
@@ -5066,18 +5143,266 @@ export class PremiereProTools {
   }
 
   // Export and Rendering Implementation
-  private async exportSequence(sequenceId: string, outputPath: string, presetPath?: string, format?: string, quality?: string, resolution?: string): Promise<any> {
+  private decodeXmlEntities(value: string): string {
+    return value
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .trim();
+  }
+
+  private displayNameFromPresetXml(xml: string): string | undefined {
+    const patterns = [
+      /<PresetName[^>]*>([^<]+)<\/PresetName>/i,
+      /<Name[^>]*>([^<]+)<\/Name>/i,
+      /\bPresetName="([^"]+)"/i,
+      /\bName="([^"]+)"/i,
+    ];
+    for (const pattern of patterns) {
+      const match = pattern.exec(xml);
+      const name = match?.[1] ? this.decodeXmlEntities(match[1]) : '';
+      if (name) return name;
+    }
+    return undefined;
+  }
+
+  private async defaultEncoderPresetDirectories(): Promise<string[]> {
+    const baseDirs = [
+      join(homedir(), 'Library', 'Application Support', 'Adobe', 'Common', 'AME'),
+    ];
+    if (process.env.APPDATA) {
+      baseDirs.push(join(process.env.APPDATA, 'Adobe', 'Common', 'AME'));
+    }
+
+    const presetDirs = new Set<string>();
+    for (const baseDir of baseDirs) {
+      let entries: Array<{ name: string; isDirectory(): boolean }>;
+      try {
+        entries = await fs.readdir(baseDir, { withFileTypes: true });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+        presetDirs.add(join(baseDir, 'Presets'));
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          presetDirs.add(join(baseDir, entry.name, 'Presets'));
+        }
+      }
+    }
+    return [...presetDirs].sort();
+  }
+
+  private ameVersionFromPresetDirectory(directory: string): string {
+    return basename(directory).toLowerCase() === 'presets'
+      ? basename(dirname(directory))
+      : basename(directory);
+  }
+
+  private async getEncoderPresets(directories?: string[]): Promise<EncoderPresetDiscovery> {
+    const searchedDirectories = directories && directories.length > 0
+      ? directories
+      : await this.defaultEncoderPresetDirectories();
+    const presets: EncoderPresetEntry[] = [];
+    const errors: Array<{ path: string; error: string }> = [];
+
+    for (const directory of searchedDirectories) {
+      let entries: Array<{ name: string; isFile(): boolean }>;
+      try {
+        entries = await fs.readdir(directory, { withFileTypes: true });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          errors.push({ path: directory, error: error instanceof Error ? error.message : String(error) });
+        }
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (!entry.isFile() || extname(entry.name).toLowerCase() !== '.epr') continue;
+        const presetPath = join(directory, entry.name);
+        try {
+          await fs.access(presetPath, fsConstants.R_OK);
+          const xml = await fs.readFile(presetPath, 'utf8');
+          presets.push({
+            name: this.displayNameFromPresetXml(xml) ?? parse(entry.name).name,
+            path: presetPath,
+            source: 'user',
+            ameVersion: this.ameVersionFromPresetDirectory(directory),
+          });
+        } catch (error) {
+          errors.push({ path: presetPath, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
+
+    presets.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+    return {
+      success: true,
+      presets,
+      count: presets.length,
+      searchedDirectories,
+      errors,
+      factoryPresets: {
+        supported: false,
+        note: 'Factory preset enumeration is not complete or supported; save a user .epr preset in AME and rediscover it here.',
+      },
+    };
+  }
+
+  private async resolvePresetPath(presetPath?: string, presetName?: string): Promise<
+    { success: true; presetPath: string; presetName?: string; presetResolution?: any } |
+    { success: false; error: string; presetName?: string; matches?: EncoderPresetEntry[]; searchedDirectories?: string[] }
+  > {
+    if (presetPath && presetName) {
+      return { success: false, error: 'Provide either presetPath or presetName, not both.', presetName };
+    }
+
+    if (presetPath) {
+      return { success: true, presetPath };
+    }
+
+    if (!presetName) {
+      return {
+        success: false,
+        error: 'presetPath or presetName required — Adobe encodeSequence requires an absolute .epr preset file.',
+      };
+    }
+
+    const discovery = await this.getEncoderPresets();
+    const matches = discovery.presets.filter((preset) => preset.name === presetName || parse(preset.path).name === presetName);
+    if (matches.length === 1) {
+      const [match] = matches as [EncoderPresetEntry];
+      return {
+        success: true,
+        presetPath: match.path,
+        presetName,
+        presetResolution: {
+          method: 'exact_name',
+          name: match.name,
+          path: match.path,
+          ameVersion: match.ameVersion,
+        },
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        success: false,
+        error: `presetName "${presetName}" is ambiguous; pass presetPath instead.`,
+        presetName,
+        matches,
+        searchedDirectories: discovery.searchedDirectories,
+      };
+    }
+    return {
+      success: false,
+      error: `presetName "${presetName}" was not found in user AME presets.`,
+      presetName,
+      searchedDirectories: discovery.searchedDirectories,
+    };
+  }
+
+  private async validateExportPaths(outputPath: string, presetPath: string, allowOverwrite = false): Promise<Array<{ code: string; message: string; path?: string }>> {
+    const errors: Array<{ code: string; message: string; path?: string }> = [];
+
+    if (!isAbsolute(presetPath)) {
+      errors.push({ code: 'PRESET_PATH_NOT_ABSOLUTE', message: 'presetPath must be an absolute .epr path.', path: presetPath });
+    } else if (extname(presetPath).toLowerCase() !== '.epr') {
+      errors.push({ code: 'PRESET_EXTENSION', message: 'presetPath must point to a .epr file.', path: presetPath });
+    } else {
+      try {
+        await fs.access(presetPath, fsConstants.R_OK);
+      } catch {
+        errors.push({ code: 'PRESET_NOT_READABLE', message: 'Export preset file does not exist or is not readable.', path: presetPath });
+      }
+    }
+
+    if (!isAbsolute(outputPath)) {
+      errors.push({ code: 'OUTPUT_PATH_NOT_ABSOLUTE', message: 'outputPath must be absolute.', path: outputPath });
+    } else {
+      const outputDirectory = dirname(outputPath);
+      try {
+        const stat = await fs.stat(outputDirectory);
+        if (!stat.isDirectory()) {
+          errors.push({ code: 'OUTPUT_FOLDER_NOT_DIRECTORY', message: 'Output parent path is not a directory.', path: outputDirectory });
+        }
+      } catch {
+        errors.push({ code: 'OUTPUT_FOLDER_NOT_FOUND', message: 'Output parent folder does not exist.', path: outputDirectory });
+      }
+
+      try {
+        await fs.access(outputPath, fsConstants.F_OK);
+        if (!allowOverwrite) {
+          errors.push({ code: 'OUTPUT_EXISTS', message: 'Output file already exists; pass allowOverwrite:true to replace it.', path: outputPath });
+        }
+      } catch {
+        // Missing output file is the normal export case.
+      }
+    }
+
+    return errors;
+  }
+
+  private deprecatedExportOptionWarnings(format?: string, quality?: string, resolution?: string): Array<{ code: string; message: string; value?: string }> {
+    const warnings: Array<{ code: string; message: string; value?: string }> = [];
+    if (format) warnings.push({ code: 'FORMAT_IGNORED', message: 'format is deprecated for export_sequence; the .epr preset controls the container and codec.', value: format });
+    if (quality) warnings.push({ code: 'QUALITY_IGNORED', message: 'quality is deprecated for export_sequence; the .epr preset controls export quality.', value: quality });
+    if (resolution) warnings.push({ code: 'RESOLUTION_IGNORED', message: 'resolution is deprecated for export_sequence; the .epr preset controls output dimensions.', value: resolution });
+    return warnings;
+  }
+
+  private async exportSequence(args: ExportSequenceArgs): Promise<any> {
+    const {
+      sequenceId,
+      outputPath,
+      presetName,
+      sourceRange = 'entire',
+      allowOverwrite = false,
+      removeOnCompletion = true,
+      format,
+      quality,
+      resolution,
+    } = args;
     // app.encoder.encodeSequence() expects an absolute path to a .epr preset file.
     // Passing a string name like "H.264" silently fails: encodeSequence returns
     // no jobID and the JSX bridge reports {success:false}. Reject early with a
     // clear error rather than letting the user think a queue happened.
-    if (!presetPath) {
+    const presetResolution = await this.resolvePresetPath(args.presetPath, presetName);
+    if (!presetResolution.success) {
       return {
         success: false,
-        error: 'presetPath required — must be absolute path to a .epr preset file (Adobe encodeSequence does not accept format names like "H.264" or "ProRes")',
+        error: presetResolution.error,
         hint: 'Create the preset in AME UI: File → Export Settings → configure → Save Preset → exports to ~/Library/Application Support/Adobe/Common/AME/<version>/Presets/. Pass that .epr path as presetPath.',
         sequenceId,
         outputPath,
+        presetName,
+        matches: presetResolution.matches,
+        searchedDirectories: presetResolution.searchedDirectories,
+        format,
+        quality,
+        resolution,
+      };
+    }
+    const presetPath = presetResolution.presetPath;
+
+    const pathErrors = await this.validateExportPaths(outputPath, presetPath, allowOverwrite);
+    const warnings = this.deprecatedExportOptionWarnings(format, quality, resolution);
+    if (pathErrors.length > 0) {
+      return {
+        success: false,
+        error: pathErrors.map((pathError) => pathError.message).join(' '),
+        errors: pathErrors,
+        warnings,
+        sequenceId,
+        outputPath,
+        presetPath,
+        presetName,
+        sourceRange,
+        allowOverwrite,
         format,
         quality,
         resolution,
@@ -5088,13 +5413,22 @@ export class PremiereProTools {
       // bridge.renderSequence returns a structured response; propagate it instead
       // of unconditionally claiming success. Pre-fix wrapper reported success even
       // when AME never received the job (false-success false positives).
-      const result = await this.bridge.renderSequence(sequenceId, outputPath, presetPath);
+      const result = await this.bridge.renderSequence(sequenceId, outputPath, presetPath, {
+        sourceRange,
+        removeOnCompletion,
+      });
 
       if (result && result.success === false) {
         return {
           ...result,
           sequenceId,
           outputPath,
+          presetPath,
+          presetName,
+          presetResolution: presetResolution.presetResolution,
+          sourceRange,
+          allowOverwrite,
+          warnings: [...warnings, ...(result.warnings ?? [])],
           format,
           quality,
           resolution,
@@ -5103,15 +5437,24 @@ export class PremiereProTools {
 
       return {
         success: true,
+        status: result?.status ?? 'queued',
         message: 'Sequence queued in Adobe Media Encoder. Render runs asynchronously — verify by checking the output file size growth.',
         sequenceId,
         outputPath,
         presetPath,
+        presetName,
+        presetResolution: presetResolution.presetResolution,
+        sourceRange,
+        resolvedRange: result?.resolvedRange,
+        encoderRangeConstant: result?.encoderRangeConstant,
+        removeOnCompletion,
         format,
         quality,
         resolution,
+        warnings: [...warnings, ...(result?.warnings ?? [])],
         jobID: result?.jobID,
         queued: result?.queued,
+        queueStarted: result?.queueStarted,
         verify: `ffprobe -show_entries format=duration,size '${outputPath}'`,
       };
     } catch (error) {
@@ -6196,8 +6539,8 @@ export class PremiereProTools {
   }
 
   // Render Queue
-  private async addToRenderQueue(sequenceId: string, outputPath: string, presetPath?: string, _startImmediately?: boolean): Promise<any> {
-    return await this.exportSequence(sequenceId, outputPath, presetPath);
+  private async addToRenderQueue(args: AddToRenderQueueArgs): Promise<any> {
+    return await this.exportSequence(args);
   }
 
   private async getRenderQueueStatus(): Promise<any> {

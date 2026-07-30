@@ -869,56 +869,184 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script, 300000);
   }
 
-  async renderSequence(sequenceId: string, outputPath: string, presetPath: string): Promise<any> {
-    // Escape backslashes and quotes in paths so JSX string-eval is safe
-    const safePath = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  async renderSequence(
+    sequenceId: string,
+    outputPath: string,
+    presetPath: string,
+    options: { sourceRange?: 'entire' | 'in_out' | 'work_area'; removeOnCompletion?: boolean } = {}
+  ): Promise<any> {
+    const sourceRange = options.sourceRange ?? 'entire';
+    const removeOnCompletion = options.removeOnCompletion ?? true;
     const script = `
       try {
+        var sequenceId = ${JSON.stringify(sequenceId)};
+        var outputPath = ${JSON.stringify(outputPath)};
+        var presetPath = ${JSON.stringify(presetPath)};
+        var sourceRange = ${JSON.stringify(sourceRange)};
+        var removeOnCompletion = ${removeOnCompletion ? 1 : 0};
+        var warnings = [];
+
+        function secondsOf(value) {
+          if (value === null || typeof value === "undefined") return 0;
+          try {
+            if (typeof value.ticks !== "undefined") return Number(value.ticks) / 254016000000.0;
+            if (typeof value.seconds !== "undefined") {
+              var secondsValue = Number(value.seconds);
+              return Math.abs(secondsValue) > 1000000 ? secondsValue / 254016000000.0 : secondsValue;
+            }
+          } catch (_) {}
+          var numeric = Number(value);
+          if (Math.abs(numeric) > 1000000) return numeric / 254016000000.0;
+          return isNaN(numeric) ? 0 : numeric;
+        }
+
+        function rangeFailure(code, message, details) {
+          var payload = {
+            success: false,
+            status: "failed",
+            code: code,
+            error: message,
+            sourceRange: sourceRange,
+            outputPath: outputPath,
+            presetPath: presetPath,
+            warnings: warnings
+          };
+          if (details) {
+            for (var key in details) {
+              if (details.hasOwnProperty(key)) payload[key] = details[key];
+            }
+          }
+          return JSON.stringify(payload);
+        }
+
         // Premiere 2026 dropped getSequenceByID; iterate via __findSequence helper.
         // Fail hard if the requested sequence isn't found — silently falling back to
         // app.project.activeSequence would queue/render the wrong timeline while still
         // reporting success, masking caller bugs (stale IDs, etc.).
-        var sequence = __findSequence("${sequenceId}");
+        var sequence = __findSequence(sequenceId);
         if (!sequence) {
-          return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+          return rangeFailure("SEQUENCE_NOT_FOUND", "Sequence not found by id: " + sequenceId);
         }
         if (typeof app.encoder === "undefined") {
-          return JSON.stringify({ success: false, error: "app.encoder not available in this Premiere build" });
+          return rangeFailure("ENCODER_UNAVAILABLE", "app.encoder not available in this Premiere build");
         }
 
         // Boot AME if not already running so it can pick up the queue
-        try { app.encoder.launchEncoder(); } catch (e1) {}
+        try { app.encoder.launchEncoder(); }
+        catch (e1) {
+          warnings.push({ code: "LAUNCH_ENCODER_FAILED", message: e1.toString() });
+        }
 
-        // Queue range constants on app.encoder: ENCODE_ENTIRE / ENCODE_IN_TO_OUT / ENCODE_WORKAREA
-        var range = (typeof app.encoder.ENCODE_ENTIRE !== "undefined") ? app.encoder.ENCODE_ENTIRE : 0;
+        var sequenceEnd = secondsOf(sequence.end);
+        var sequenceIn = 0;
+        var sequenceOut = 0;
+        try { sequenceIn = secondsOf(sequence.getInPointAsTime()); } catch (inReadError) {}
+        try { sequenceOut = secondsOf(sequence.getOutPointAsTime()); } catch (outReadError) {}
+        var inMarked = sequenceIn > 0;
+        var outMarked = sequenceOut > 0;
+        var range = null;
+        var encoderRangeConstant = "";
+        var resolvedRange = {
+          in: 0,
+          out: sequenceEnd,
+          inMarked: inMarked,
+          outMarked: outMarked,
+          sequenceEnd: sequenceEnd
+        };
 
-        // 5th arg "removeOnCompletion": 1=remove, 0=keep. We use 1 to avoid AME queue clutter.
+        if (sourceRange === "in_out") {
+          if (!inMarked && !outMarked) {
+            return rangeFailure("IN_OUT_UNSET", "sourceRange in_out requested, but sequence In and Out are both unset.", { resolvedRange: resolvedRange });
+          }
+          if (!outMarked) {
+            return rangeFailure("OUT_POINT_UNSET", "sourceRange in_out requested, but sequence Out is unset.", { resolvedRange: resolvedRange });
+          }
+          resolvedRange.in = inMarked ? sequenceIn : 0;
+          resolvedRange.out = sequenceOut;
+          if (resolvedRange.out <= resolvedRange.in) {
+            return rangeFailure("INVALID_IN_OUT_RANGE", "sourceRange in_out requires Out to be greater than In.", { resolvedRange: resolvedRange });
+          }
+          if (sequenceEnd > 0 && resolvedRange.out > sequenceEnd + 0.001) {
+            return rangeFailure("OUT_POINT_BEYOND_SEQUENCE_END", "Sequence Out exceeds the physical sequence end.", { resolvedRange: resolvedRange });
+          }
+          encoderRangeConstant = "ENCODE_IN_TO_OUT";
+        } else if (sourceRange === "work_area") {
+          var workIn = 0;
+          var workOut = 0;
+          try { workIn = secondsOf(sequence.getWorkAreaInPointAsTime()); } catch (workInReadError) {}
+          try { workOut = secondsOf(sequence.getWorkAreaOutPointAsTime()); } catch (workOutReadError) {}
+          resolvedRange = {
+            in: workIn,
+            out: workOut,
+            inMarked: workIn > 0,
+            outMarked: workOut > 0,
+            sequenceEnd: sequenceEnd
+          };
+          if (workOut <= workIn) {
+            return rangeFailure("INVALID_WORK_AREA_RANGE", "sourceRange work_area requires Work Area Out to be greater than Work Area In.", { resolvedRange: resolvedRange });
+          }
+          if (sequenceEnd > 0 && workOut > sequenceEnd + 0.001) {
+            return rangeFailure("WORK_AREA_BEYOND_SEQUENCE_END", "Work Area Out exceeds the physical sequence end.", { resolvedRange: resolvedRange });
+          }
+          encoderRangeConstant = "ENCODE_WORKAREA";
+        } else if (sourceRange === "entire") {
+          encoderRangeConstant = "ENCODE_ENTIRE";
+        } else {
+          return rangeFailure("INVALID_SOURCE_RANGE", "Unsupported sourceRange: " + sourceRange);
+        }
+
+        if (typeof app.encoder[encoderRangeConstant] === "undefined") {
+          return rangeFailure("ENCODER_RANGE_UNAVAILABLE", "Requested encoder range constant is unavailable: " + encoderRangeConstant, {
+            encoderRangeConstant: encoderRangeConstant,
+            resolvedRange: resolvedRange
+          });
+        }
+        range = app.encoder[encoderRangeConstant];
+
         var jobID = app.encoder.encodeSequence(
           sequence,
-          "${safePath(outputPath)}",
-          "${safePath(presetPath)}",
+          outputPath,
+          presetPath,
           range,
-          1
+          removeOnCompletion
         );
 
         if (!jobID) {
           return JSON.stringify({
             success: false,
+            status: "failed",
             error: "encodeSequence returned no jobID — preset path may be invalid or AME not connected",
-            outputPath: "${safePath(outputPath)}",
-            presetPath: "${safePath(presetPath)}"
+            outputPath: outputPath,
+            presetPath: presetPath,
+            sourceRange: sourceRange,
+            resolvedRange: resolvedRange,
+            encoderRangeConstant: encoderRangeConstant,
+            warnings: warnings
           });
         }
 
         // Trigger AME to actually start processing the queued job
-        try { app.encoder.startBatch(); } catch (e2) {}
+        var queueStarted = false;
+        try {
+          var startBatchResult = app.encoder.startBatch();
+          queueStarted = startBatchResult !== false;
+        } catch (e2) {
+          warnings.push({ code: "START_BATCH_FAILED", message: e2.toString() });
+        }
 
         return JSON.stringify({
           success: true,
+          status: "queued",
           queued: true,
+          queueStarted: queueStarted,
           jobID: String(jobID),
-          outputPath: "${safePath(outputPath)}",
-          presetPath: "${safePath(presetPath)}"
+          outputPath: outputPath,
+          presetPath: presetPath,
+          sourceRange: sourceRange,
+          resolvedRange: resolvedRange,
+          encoderRangeConstant: encoderRangeConstant,
+          removeOnCompletion: !!removeOnCompletion,
+          warnings: warnings
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: "encodeSequence threw: " + e.toString() });

@@ -4,6 +4,9 @@
 
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PremiereProTools, evaluateTextInjectionResult } from '../../tools/index.js';
 import { PremiereProBridge } from '../../bridge/index.js';
 import { executeExpandedTool, expandedToolNames, unimplementedExpandedToolNames } from '../../tools/expanded.js';
@@ -30,6 +33,13 @@ function fakeMissingFfmpegProcess(): any {
   proc.stderr = new EventEmitter();
   process.nextTick(() => proc.emit('error', new Error('ENOENT')));
   return proc;
+}
+
+async function createTempPreset(name = 'Test Preset'): Promise<{ root: string; presetPath: string; outputPath: string }> {
+  const root = await fs.mkdtemp(join(tmpdir(), 'premiere-tools-test-'));
+  const presetPath = join(root, `${name}.epr`);
+  await fs.writeFile(presetPath, `<Preset><PresetName>${name}</PresetName></Preset>`, 'utf8');
+  return { root, presetPath, outputPath: join(root, 'out.mp4') };
 }
 
 describe('PremiereProTools', () => {
@@ -67,6 +77,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('ripple_delete');
       expect(toolNames).toContain('capture_frame');
       expect(toolNames).toContain('add_tracks');
+      expect(toolNames).toContain('get_encoder_presets');
       expect(toolNames).not.toContain('import_ae_comps');
       expect(availableTools).toHaveLength(281);
       expect(unimplementedExpandedToolNames).toEqual([]);
@@ -1255,6 +1266,46 @@ describe('PremiereProTools', () => {
     });
   });
 
+  describe('get_encoder_presets', () => {
+    it('discovers readable user .epr presets from supplied AME preset directories', async () => {
+      const root = await fs.mkdtemp(join(tmpdir(), 'premiere-presets-test-'));
+      const presetDir = join(root, '26.0', 'Presets');
+      await fs.mkdir(presetDir, { recursive: true });
+      const presetPath = join(presetDir, 'YouTube UHD 4K.epr');
+      await fs.writeFile(presetPath, '<Preset><PresetName>YouTube UHD 4K Custom</PresetName></Preset>', 'utf8');
+      await fs.writeFile(join(presetDir, 'ignore.txt'), 'not a preset', 'utf8');
+
+      const result = await tools.executeTool('get_encoder_presets', {
+        directories: [presetDir],
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        count: 1,
+        presets: [{
+          name: 'YouTube UHD 4K Custom',
+          path: presetPath,
+          source: 'user',
+          ameVersion: '26.0',
+        }],
+        factoryPresets: {
+          supported: false,
+        },
+      });
+    });
+
+    it('returns an empty list for missing preset directories', async () => {
+      const result = await tools.executeTool('get_encoder_presets', {
+        directories: ['/tmp/premiere-missing-presets-for-test'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.presets).toEqual([]);
+      expect(result.count).toBe(0);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   describe('export_sequence', () => {
     // Pre-fix bugs (commit 6 of PR #14):
     //   1. Wrapper accepted no presetPath and silently substituted "H.264" / "ProRes"
@@ -1269,7 +1320,7 @@ describe('PremiereProTools', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/presetPath required/);
+      expect(result.error).toMatch(/presetPath or presetName required/);
       expect(result.hint).toMatch(/\.epr/);
       expect(mockBridge.renderSequence).not.toHaveBeenCalled();
     });
@@ -1283,22 +1334,23 @@ describe('PremiereProTools', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/presetPath required/);
+      expect(result.error).toMatch(/presetPath or presetName required/);
       expect(mockBridge.renderSequence).not.toHaveBeenCalled();
     });
 
     it('propagates bridge {success:false} response instead of claiming success', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
       mockBridge.renderSequence.mockResolvedValue({
         success: false,
         error: 'encodeSequence returned no jobID — preset path may be invalid or AME not connected',
-        outputPath: '/tmp/out.mp4',
-        presetPath: '/path/that/does/not/exist.epr',
+        outputPath,
+        presetPath,
       });
 
       const result = await tools.executeTool('export_sequence', {
         sequenceId: 'seq-1',
-        outputPath: '/tmp/out.mp4',
-        presetPath: '/path/that/does/not/exist.epr',
+        outputPath,
+        presetPath,
       });
 
       expect(result.success).toBe(false);
@@ -1307,29 +1359,132 @@ describe('PremiereProTools', () => {
     });
 
     it('returns success with jobID when bridge confirms AME queue accepted', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
       mockBridge.renderSequence.mockResolvedValue({
         success: true,
         queued: true,
+        queueStarted: true,
+        status: 'queued',
         jobID: 'job-abc-123',
-        outputPath: '/tmp/out.mp4',
-        presetPath: '/Users/me/preset.epr',
+        outputPath,
+        presetPath,
+        sourceRange: 'entire',
+        resolvedRange: { in: 0, out: 10, inMarked: false, outMarked: false },
+        encoderRangeConstant: 'ENCODE_ENTIRE',
       });
 
       const result = await tools.executeTool('export_sequence', {
         sequenceId: 'seq-1',
-        outputPath: '/tmp/out.mp4',
-        presetPath: '/Users/me/preset.epr',
+        outputPath,
+        presetPath,
       });
 
       expect(result.success).toBe(true);
       expect(result.jobID).toBe('job-abc-123');
       expect(result.queued).toBe(true);
+      expect(result.queueStarted).toBe(true);
+      expect(result.sourceRange).toBe('entire');
+      expect(result.encoderRangeConstant).toBe('ENCODE_ENTIRE');
       expect(result.message).toMatch(/queued in Adobe Media Encoder/);
       expect(mockBridge.renderSequence).toHaveBeenCalledWith(
         'seq-1',
-        '/tmp/out.mp4',
-        '/Users/me/preset.epr',
+        outputPath,
+        presetPath,
+        { sourceRange: 'entire', removeOnCompletion: true },
       );
+    });
+
+    it('passes requested sourceRange and removeOnCompletion to the bridge', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
+      mockBridge.renderSequence.mockResolvedValue({
+        success: true,
+        queued: true,
+        queueStarted: false,
+        jobID: 'job-in-out',
+        sourceRange: 'in_out',
+        resolvedRange: { in: 0, out: 5, inMarked: false, outMarked: true },
+        encoderRangeConstant: 'ENCODE_IN_TO_OUT',
+      });
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath,
+        presetPath,
+        sourceRange: 'in_out',
+        removeOnCompletion: false,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.resolvedRange).toEqual({ in: 0, out: 5, inMarked: false, outMarked: true });
+      expect(mockBridge.renderSequence).toHaveBeenCalledWith(
+        'seq-1',
+        outputPath,
+        presetPath,
+        { sourceRange: 'in_out', removeOnCompletion: false },
+      );
+    });
+
+    it('rejects non-absolute, unreadable, and existing output paths before queueing', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
+      await fs.writeFile(outputPath, 'already here', 'utf8');
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath,
+        presetPath,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'OUTPUT_EXISTS' }),
+      ]));
+      expect(mockBridge.renderSequence).not.toHaveBeenCalled();
+    });
+
+    it('resolves a unique presetName exactly and rejects ambiguous names', async () => {
+      const { presetPath, outputPath } = await createTempPreset('Named Preset');
+      const toolsAny = tools as any;
+      jest.spyOn(toolsAny, 'getEncoderPresets').mockResolvedValue({
+        success: true,
+        presets: [
+          { name: 'Named Preset', path: presetPath, source: 'user', ameVersion: '26.0' },
+        ],
+        count: 1,
+        searchedDirectories: ['/presets'],
+        errors: [],
+        factoryPresets: { supported: false, note: 'unsupported' },
+      });
+      mockBridge.renderSequence.mockResolvedValue({ success: true, queued: true, jobID: 'job-name' });
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath,
+        presetName: 'Named Preset',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.presetPath).toBe(presetPath);
+
+      toolsAny.getEncoderPresets.mockResolvedValue({
+        success: true,
+        presets: [
+          { name: 'Duplicate', path: presetPath, source: 'user', ameVersion: '26.0' },
+          { name: 'Duplicate', path: presetPath.replace('.epr', '-2.epr'), source: 'user', ameVersion: '26.0' },
+        ],
+        count: 2,
+        searchedDirectories: ['/presets'],
+        errors: [],
+        factoryPresets: { supported: false, note: 'unsupported' },
+      });
+
+      const ambiguous = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath,
+        presetName: 'Duplicate',
+      });
+
+      expect(ambiguous.success).toBe(false);
+      expect(ambiguous.error).toMatch(/ambiguous/);
     });
   });
 
@@ -1342,11 +1497,12 @@ describe('PremiereProTools', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/presetPath required/);
+      expect(result.error).toMatch(/presetPath or presetName required/);
       expect(mockBridge.renderSequence).not.toHaveBeenCalled();
     });
 
     it('propagates bridge failure responses through the delegation', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
       mockBridge.renderSequence.mockResolvedValue({
         success: false,
         error: 'app.encoder not available in this Premiere build',
@@ -1354,8 +1510,8 @@ describe('PremiereProTools', () => {
 
       const result = await tools.executeTool('add_to_render_queue', {
         sequenceId: 'seq-1',
-        outputPath: '/tmp/out.mp4',
-        presetPath: '/Users/me/preset.epr',
+        outputPath,
+        presetPath,
       });
 
       expect(result.success).toBe(false);
