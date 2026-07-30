@@ -430,8 +430,10 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip on the timeline to trim'),
           inPoint: z.number().optional().describe('The new in point in seconds from the start of the clip'),
-          outPoint: z.number().optional().describe('The new out point in seconds from the start of the clip'),
-          duration: z.number().optional().describe('Alternative: set the desired duration in seconds')
+          outPoint: z.number().optional().describe('The new out point in seconds from the start of the clip; cannot be combined with duration'),
+          duration: z.number().optional().describe('Alternative: set the desired timeline duration in seconds; cannot be combined with outPoint')
+        }).refine((value) => value.outPoint === undefined || value.duration === undefined, {
+          message: 'outPoint and duration cannot be used together'
         })
       },
       {
@@ -3123,6 +3125,14 @@ export class PremiereProTools {
   }
 
   private async trimClip(clipId: string, inPoint?: number, outPoint?: number, duration?: number): Promise<any> {
+    if (outPoint !== undefined && duration !== undefined) {
+      return {
+        success: false,
+        error: 'outPoint and duration cannot be used together',
+        errorCode: 'INVALID_TRIM_ARGUMENTS'
+      };
+    }
+
     const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)});
@@ -3135,12 +3145,40 @@ export class PremiereProTools {
           if (value.ticks !== undefined) return Number(value.ticks) / 254016000000.0;
           return null;
         }
+        function frameDurationOf(sequence) {
+          try {
+            if (sequence && sequence.timebase !== undefined) {
+              var value = Number(sequence.timebase) / 254016000000.0;
+              if (value > 0 && isFinite(value)) return value;
+            }
+          } catch (frameError) {}
+          return 1 / 48;
+        }
+        var frameDurationSeconds = frameDurationOf(info.sequence);
+        function exactEnough(a, b) {
+          return a !== null && b !== null && Math.abs(a - b) < 0.000001;
+        }
         function closeEnough(a, b) {
-          return a !== null && b !== null && Math.abs(a - b) < 0.001;
+          return a !== null && b !== null && Math.abs(a - b) <= (frameDurationSeconds / 2) + 0.000001;
         }
         function timeFromSeconds(seconds) {
           var t = new Time();
           t.seconds = Number(seconds);
+          return t;
+        }
+        function capturedTime(value) {
+          if (value === undefined || value === null) return null;
+          var captured = { seconds: secondsOf(value), ticks: null };
+          try {
+            if (value.ticks !== undefined && value.ticks !== null) captured.ticks = String(value.ticks);
+          } catch (ticksError) {}
+          return captured;
+        }
+        function timeFromCaptured(captured) {
+          if (!captured) return null;
+          var t = new Time();
+          if (captured.ticks !== null) t.ticks = captured.ticks;
+          else t.seconds = Number(captured.seconds);
           return t;
         }
         function stateOf() {
@@ -3154,20 +3192,37 @@ export class PremiereProTools {
         }
 
         var before = stateOf();
-        var timelineEndError = null;
+        var original = {
+          inPoint: capturedTime(clip.inPoint),
+          outPoint: capturedTime(clip.outPoint),
+          start: capturedTime(clip.start),
+          end: capturedTime(clip.end)
+        };
+        var writeErrors = [];
+        function recordWriteError(propertyName, error) {
+          writeErrors.push({ property: propertyName, error: error.toString() });
+        }
 
-        ${inPoint !== undefined ? `clip.inPoint = timeFromSeconds(${inPoint});` : ''}
-        ${outPoint !== undefined ? `clip.outPoint = timeFromSeconds(${outPoint});` : ''}
+        ${inPoint !== undefined ? `
+        if (!exactEnough(before.inPoint, ${inPoint})) {
+          try { clip.inPoint = timeFromSeconds(${inPoint}); }
+          catch (inPointError) { recordWriteError("inPoint", inPointError); }
+        }
+        ` : ''}
+        ${outPoint !== undefined ? `
+        if (!exactEnough(before.outPoint, ${outPoint})) {
+          try { clip.outPoint = timeFromSeconds(${outPoint}); }
+          catch (outPointError) { recordWriteError("outPoint", outPointError); }
+        }
+        ` : ''}
         ${duration !== undefined ? `
         var targetDuration = ${duration};
-        var targetOutPoint = secondsOf(clip.inPoint) + targetDuration;
-        clip.outPoint = timeFromSeconds(targetOutPoint);
-        try {
-          if (clip.start !== undefined && clip.end !== undefined) {
+        if (!exactEnough(before.duration, targetDuration)) {
+          try {
             clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration);
+          } catch (timelineError) {
+            recordWriteError("end", timelineError);
           }
-        } catch (timelineError) {
-          timelineEndError = timelineError.toString();
         }
         ` : ''}
 
@@ -3194,9 +3249,36 @@ export class PremiereProTools {
         ` : ''}
 
         if (!verified) {
+          var attempted = after;
+          var rollbackErrors = [];
+          function rollback(propertyName, captured) {
+            try {
+              if (captured) clip[propertyName] = timeFromCaptured(captured);
+            } catch (rollbackError) {
+              rollbackErrors.push({ property: propertyName, error: rollbackError.toString() });
+            }
+          }
+          ${duration !== undefined ? 'if (!exactEnough(attempted.end, before.end)) rollback("end", original.end);' : ''}
+          ${outPoint !== undefined || duration !== undefined ? 'if (!exactEnough(attempted.outPoint, before.outPoint)) rollback("outPoint", original.outPoint);' : ''}
+          ${inPoint !== undefined ? 'if (!exactEnough(attempted.inPoint, before.inPoint)) rollback("inPoint", original.inPoint);' : ''}
+          var restored = stateOf();
+          var rolledBack =
+            exactEnough(restored.inPoint, before.inPoint) &&
+            exactEnough(restored.outPoint, before.outPoint) &&
+            exactEnough(restored.start, before.start) &&
+            exactEnough(restored.end, before.end);
+          var errorCode = "TRIM_NOT_APPLIED";
+          ${duration !== undefined ? `
+          if (${duration} > before.duration && closeEnough(attempted.duration, before.duration)) {
+            errorCode = "TRIM_UNSUPPORTED_FOR_CLIP";
+          }
+          ` : ''}
           return JSON.stringify({
             success: false,
-            error: "Premiere Pro did not apply the requested trim",
+            error: errorCode === "TRIM_UNSUPPORTED_FOR_CLIP"
+              ? "Premiere Pro does not support extending this clip to the requested duration"
+              : "Premiere Pro did not apply the requested trim",
+            errorCode: errorCode,
             clipId: ${JSON.stringify(clipId)},
             requested: {
               inPoint: ${inPoint !== undefined ? inPoint : 'null'},
@@ -3205,8 +3287,13 @@ export class PremiereProTools {
             },
             before: before,
             after: after,
+            attempted: attempted,
+            restored: restored,
+            rolledBack: rolledBack,
             verificationErrors: verificationErrors,
-            timelineEndError: timelineEndError
+            writeErrors: writeErrors,
+            rollbackErrors: rollbackErrors,
+            frameDurationSeconds: frameDurationSeconds
           });
         }
 
@@ -3222,7 +3309,8 @@ export class PremiereProTools {
           newDuration: after.duration,
           before: before,
           after: after,
-          timelineEndError: timelineEndError
+          writeErrors: writeErrors,
+          frameDurationSeconds: frameDurationSeconds
         });
       } catch (e) {
         return JSON.stringify({

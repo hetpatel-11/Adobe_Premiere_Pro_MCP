@@ -783,11 +783,117 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(true);
       const script = mockBridge.executeScript.mock.calls[0][0];
-      expect(script).toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
+      expect(script).not.toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
       expect(script).toContain('clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration)');
       expect(script).not.toContain('new Time(clip.inPoint.seconds + 2.5)');
       expect(script).toContain('timeline duration did not change to requested value');
-      expect(script).toContain('Premiere Pro did not apply the requested trim');
+      expect(script).toContain('TRIM_UNSUPPORTED_FOR_CLIP');
+      expect(script).toContain('rollback("outPoint", original.outPoint)');
+    });
+
+    it('rejects conflicting trim_clip duration and outPoint arguments before calling Premiere', async () => {
+      const result = await tools.executeTool('trim_clip', {
+        clipId: 'clip-123',
+        outPoint: 8,
+        duration: 2.5
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('outPoint and duration cannot be used together');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('does not mutate a source outPoint when a duration extension is unsupported', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('trim_clip', { clipId: 'graphic-1', duration: 7 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+      let outPointWrites = 0;
+      const clip: any = {
+        inPoint: at(3599.9964),
+        start: at(0),
+        duration: at(4.97163333333333)
+      };
+      let sourceOut = at(3604.96803333333);
+      let timelineEnd = at(4.97163333333333);
+      Object.defineProperty(clip, 'outPoint', {
+        get: () => sourceOut,
+        set: (value) => { outPointWrites++; sourceOut = value; }
+      });
+      Object.defineProperty(clip, 'end', {
+        get: () => timelineEnd,
+        set: () => { /* Premiere silently ignores this native Graphic extension. */ }
+      });
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(
+        () => ({ clip, sequence: { timebase: String(Math.round(ticksPerSecond * 1001 / 30000)) } }),
+        FakeTime
+      ));
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.errorCode).toBe('TRIM_UNSUPPORTED_FOR_CLIP');
+      expect(parsed.attempted.outPoint).toBeCloseTo(3604.96803333333);
+      expect(parsed.restored.outPoint).toBeCloseTo(3604.96803333333);
+      expect(parsed.rolledBack).toBe(true);
+      expect(outPointWrites).toBe(0);
+    });
+
+    it('accepts a duration that Premiere quantizes to the nearest frame', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('trim_clip', { clipId: 'clip-123', duration: 7 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+      const clip: any = { inPoint: at(0), outPoint: at(5), start: at(0) };
+      let timelineEnd = at(5);
+      Object.defineProperty(clip, 'end', {
+        get: () => timelineEnd,
+        set: () => { timelineEnd = at(7.007); }
+      });
+      Object.defineProperty(clip, 'duration', {
+        get: () => at(timelineEnd.seconds - clip.start.seconds)
+      });
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(
+        () => ({ clip, sequence: { timebase: String(Math.round(ticksPerSecond * 1001 / 30000)) } }),
+        FakeTime
+      ));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.newDuration).toBeCloseTo(7.007);
+    });
+
+    it('writes a one-frame duration change instead of treating it as an idempotent no-op', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('trim_clip', { clipId: 'clip-123', duration: 5.0333666667 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      expect(script).toContain('if (!exactEnough(before.duration, targetDuration))');
+      expect(script).not.toContain('if (!closeEnough(before.duration, targetDuration))');
+      expect(script).toContain('frameDurationSeconds / 2');
     });
 
     it('generates a non-destructive export readiness validation script', async () => {
