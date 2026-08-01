@@ -947,8 +947,8 @@ export class PremiereProBridge implements PremiereProTransport {
         var range = null;
         var encoderRangeConstant = "";
         var resolvedRange = {
-          in: 0,
-          out: sequenceEnd,
+          "in": 0,
+          "out": sequenceEnd,
           inMarked: inMarked,
           outMarked: outMarked,
           sequenceEnd: sequenceEnd
@@ -976,8 +976,8 @@ export class PremiereProBridge implements PremiereProTransport {
           try { workIn = secondsOf(sequence.getWorkAreaInPointAsTime()); } catch (workInReadError) {}
           try { workOut = secondsOf(sequence.getWorkAreaOutPointAsTime()); } catch (workOutReadError) {}
           resolvedRange = {
-            in: workIn,
-            out: workOut,
+            "in": workIn,
+            "out": workOut,
             inMarked: workIn > 0,
             outMarked: workOut > 0,
             sequenceEnd: sequenceEnd

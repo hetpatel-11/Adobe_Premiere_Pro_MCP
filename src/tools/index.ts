@@ -1902,9 +1902,23 @@ export class PremiereProTools {
 
         function secondsOf(value) {
           if (value === undefined || value === null) return 0;
-          if (typeof value === "number") return value;
-          if (value.seconds !== undefined) return Number(value.seconds);
-          if (value.ticks !== undefined) return Number(value.ticks) / 254016000000.0;
+          if (typeof value === "number") return isFinite(value) ? value : 0;
+          // Premiere Pro 26.3 returns sequence.end as a plain tick string rather
+          // than a Time object, which previously fell through to 0 and produced a
+          // spurious ZERO_DURATION. The timeline inspection tools already read the
+          // same value as ticks, so interpret it the same way here.
+          if (typeof value === "string") {
+            var stringTicks = parseInt(value, 10);
+            return isFinite(stringTicks) ? stringTicks / 254016000000.0 : 0;
+          }
+          if (value.seconds !== undefined) {
+            var seconds = Number(value.seconds);
+            return isFinite(seconds) ? seconds : 0;
+          }
+          if (value.ticks !== undefined) {
+            var ticks = Number(value.ticks);
+            return isFinite(ticks) ? ticks / 254016000000.0 : 0;
+          }
           return 0;
         }
 
