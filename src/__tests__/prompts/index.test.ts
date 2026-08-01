@@ -251,13 +251,13 @@ describe('PremiereProPrompts', () => {
   });
 
   describe('Prompt Message Structure', () => {
-    it('should include system message for context', async () => {
+    it('should include a user-role instruction message for context', async () => {
       const result = await prompts.getPrompt('create_video_project', {
         project_type: 'documentary'
       });
 
-      const systemMessages = result.messages.filter(m => m.role === 'system');
-      expect(systemMessages.length).toBeGreaterThan(0);
+      expect(result.messages[0].role).toBe('user');
+      expect(result.messages[0].content.text).toContain('You are an expert video editor');
     });
 
     it('should include user message for query', async () => {
@@ -284,8 +284,7 @@ describe('PremiereProPrompts', () => {
         project_type: 'documentary'
       });
 
-      const systemMessages = result.messages.filter(m => m.role === 'system');
-      expect(systemMessages[0].content.text).toContain('premiere://config/get_instructions');
+      expect(result.messages[0].content.text).toContain('premiere://config/get_instructions');
     });
   });
 

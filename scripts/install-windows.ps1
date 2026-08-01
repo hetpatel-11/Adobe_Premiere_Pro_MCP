@@ -152,12 +152,12 @@ fs.writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`);
 
 $script:nodePath = Resolve-CommandPath 'node'
 if (-not $script:nodePath) {
-    throw "Node.js 18+ is required but 'node' was not found on PATH."
+    throw "Node.js 20+ is required but 'node' was not found on PATH."
 }
 
 $nodeMajor = [int](& $script:nodePath -p "process.versions.node.split('.')[0]")
-if ($nodeMajor -lt 18) {
-    throw "Node.js 18+ is required. Found: $(& $script:nodePath -v)"
+if ($nodeMajor -lt 20) {
+    throw "Node.js 20+ is required. Found: $(& $script:nodePath -v)"
 }
 
 $npmPath = Resolve-CommandPath 'npm.cmd'

@@ -79,8 +79,8 @@ if (-not $node) {
     Fail 'node not found on PATH'
 } else {
     $nodeMajor = [int](& $node.Source -p "process.versions.node.split('.')[0]")
-    if ($nodeMajor -lt 18) {
-        Fail "Node.js 18+ required, found $(& $node.Source -v)"
+    if ($nodeMajor -lt 20) {
+        Fail "Node.js 20+ required, found $(& $node.Source -v)"
     } else {
         Pass "$(& $node.Source -v)"
     }

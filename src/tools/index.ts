@@ -509,7 +509,7 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to apply the effect to'),
           effectName: z.string().describe('The name of the effect to apply (e.g., "Gaussian Blur", "Lumetri Color")'),
-          parameters: z.record(z.any()).optional().describe('Key-value pairs for the effect\'s parameters')
+          parameters: z.record(z.string(), z.any()).optional().describe('Key-value pairs for the effect\'s parameters')
         })
       },
       {
@@ -788,7 +788,7 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the audio clip'),
           effectName: z.string().describe('Name of the audio effect (e.g., "Compressor", "EQ", "Reverb")'),
-          parameters: z.record(z.any()).optional().describe('Effect parameters')
+          parameters: z.record(z.string(), z.any()).optional().describe('Effect parameters')
         })
       },
       {
@@ -797,7 +797,7 @@ export class PremiereProTools {
         inputSchema: z.object({
           sequenceId: z.string().describe('Target sequence ID (must be the active sequence in Premiere)'),
           effectName: z.string().describe('Audio effect display name (e.g., "Limitador forzado", "Compresor multibanda")'),
-          parameters: z.record(z.any()).optional().describe('Effect parameters by displayName (exact or normalized)')
+          parameters: z.record(z.string(), z.any()).optional().describe('Effect parameters by displayName (exact or normalized)')
         })
       },
 

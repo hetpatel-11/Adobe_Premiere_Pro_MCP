@@ -187,7 +187,7 @@ export function getExpandedTools(existingNames: Set<string>): MCPTool[] {
     .map((name) => ({
       name,
       description: `Premiere Pro expanded operation: ${name.replace(/_/g, ' ')}.`,
-      inputSchema: z.record(z.any())
+      inputSchema: z.record(z.string(), z.any())
     }));
 }
 

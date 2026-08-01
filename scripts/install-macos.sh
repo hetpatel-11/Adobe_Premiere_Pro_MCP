@@ -16,13 +16,13 @@ TEMP_DIR="/tmp/premiere-mcp-bridge"
 DIST_ENTRY="$REPO_ROOT/dist/index.js"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 18+ is required but 'node' was not found."
+  echo "Node.js 20+ is required but 'node' was not found."
   exit 1
 fi
 
 NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
-if [[ "$NODE_MAJOR" -lt 18 ]]; then
-  echo "Node.js 18+ is required. Found: $(node -v)"
+if [[ "$NODE_MAJOR" -lt 20 ]]; then
+  echo "Node.js 20+ is required. Found: $(node -v)"
   exit 1
 fi
 

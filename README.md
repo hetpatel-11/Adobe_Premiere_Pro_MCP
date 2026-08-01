@@ -40,7 +40,8 @@ This repository is currently validated for:
 - macOS
 - Windows installer/config smoke checks through GitHub Actions
 - Adobe Premiere Pro 2020+ (actively used and tested on Premiere Pro 26.0)
-- Node.js 18+
+- Node.js 20+
+- MCP v2 server transport with modern stateless protocol discovery
 - the included macOS installer path for Claude Desktop
 - the included Windows installer path for GitHub Copilot in VS Code and Claude Desktop config
 - manual MCP registration for Codex, Claude Code, and similar MCP clients

@@ -31,10 +31,10 @@ info() {
 if command -v node >/dev/null 2>&1; then
   NODE_VERSION="$(node -v)"
   NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
-  if [[ "$NODE_MAJOR" -ge 18 ]]; then
+  if [[ "$NODE_MAJOR" -ge 20 ]]; then
     pass "Node.js available ($NODE_VERSION)"
   else
-    fail "Node.js 18+ required (found $NODE_VERSION)"
+    fail "Node.js 20+ required (found $NODE_VERSION)"
   fi
 else
   fail "Node.js not found in PATH"

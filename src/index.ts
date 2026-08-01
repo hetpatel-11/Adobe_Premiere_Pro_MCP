@@ -1,42 +1,18 @@
 #!/usr/bin/env node
 
-/**
- * MCP Adobe Premiere Pro Server
- * 
- * This server enables AI-powered video editing through natural language prompts
- * by providing Model Context Protocol tools for Adobe Premiere Pro.
- * 
- * Features:
- * - Project management (create, open, save)
- * - Media import and management
- * - Timeline and sequence operations
- * - Video/audio editing operations
- * - Effects and transitions
- * - Rendering and export
- * - Metadata management
- */
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  GetPromptRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  ListResourcesRequestSchema,
-  ListToolsRequestSchema,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js';
+import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
+import { Server, ProtocolError, ProtocolErrorCode, type CallToolResult } from '@modelcontextprotocol/server';
+import { z, type ZodTypeAny } from 'zod';
 import { PremiereProTools } from './tools/index.js';
 import { PremiereProResources } from './resources/index.js';
 import { PremiereProPrompts } from './prompts/index.js';
 import { PremiereProBridge } from './bridge/index.js';
 import { Logger } from './utils/logger.js';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+
+type ObjectJsonSchema = Record<string, unknown> & { type: 'object' };
 
 class MCPPremiereProServer {
-  private server: Server;
+  private stdioHandle?: StdioServerHandle;
   private tools: PremiereProTools;
   private resources: PremiereProResources;
   private prompts: PremiereProPrompts;
@@ -45,7 +21,15 @@ class MCPPremiereProServer {
 
   constructor() {
     this.logger = new Logger('MCPPremiereProServer');
-    this.server = new Server(
+
+    this.bridge = new PremiereProBridge();
+    this.tools = new PremiereProTools(this.bridge);
+    this.resources = new PremiereProResources(this.bridge);
+    this.prompts = new PremiereProPrompts();
+  }
+
+  private buildServer(): Server {
+    const server = new Server(
       {
         name: 'mcp-adobe-premiere-pro',
         version: '1.0.0',
@@ -55,65 +39,71 @@ class MCPPremiereProServer {
         capabilities: {
           tools: {},
           resources: {},
-          prompts: {},
-          logging: {}
+          prompts: {}
         }
       }
     );
 
-    this.bridge = new PremiereProBridge();
-    this.tools = new PremiereProTools(this.bridge);
-    this.resources = new PremiereProResources(this.bridge);
-    this.prompts = new PremiereProPrompts();
-
-    this.setupHandlers();
+    this.setupHandlers(server);
+    return server;
   }
 
-  private setupHandlers(): void {
+  private inputSchemaToJsonSchema(inputSchema: ZodTypeAny): ObjectJsonSchema {
+    const jsonSchema = z.toJSONSchema(inputSchema, { unrepresentable: 'any' }) as Record<string, unknown>;
+    if (jsonSchema.type !== 'object') {
+      return { type: 'object', additionalProperties: true };
+    }
+    return jsonSchema as ObjectJsonSchema;
+  }
+
+  private setupHandlers(server: Server): void {
     // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler('tools/list', async () => {
       const tools = this.tools.getAvailableTools().map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputSchema: zodToJsonSchema(tool.inputSchema as any, { $refStrategy: 'none' }) as any
+        inputSchema: this.inputSchemaToJsonSchema(tool.inputSchema as ZodTypeAny)
       }));
       return { tools };
     });
 
     // Execute tool calls
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler('tools/call', async (request) => {
       const { name, arguments: args } = request.params;
       
       try {
         const result = await this.tools.executeTool(name, args || {});
-        return {
+        const toolResult: CallToolResult = {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify(result, null, 2)
             }
-          ]
+          ],
+          structuredContent: result as Record<string, unknown>,
+          isError: result.success === false
         };
+        return server.projectCallToolResult(toolResult, undefined);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         this.logger.error(`Tool execution failed: ${errorMessage}`);
         
-        throw new McpError(
-          ErrorCode.InternalError,
+        throw new ProtocolError(
+          ProtocolErrorCode.InternalError,
           `Failed to execute tool '${name}': ${errorMessage}`
         );
       }
     });
 
     // List available resources
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    server.setRequestHandler('resources/list', async () => {
       return {
         resources: this.resources.getAvailableResources()
       };
     });
 
     // Read resource content
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    server.setRequestHandler('resources/read', async (request) => {
       const { uri } = request.params;
       
       try {
@@ -136,22 +126,22 @@ class MCPPremiereProServer {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         this.logger.error(`Resource read failed: ${errorMessage}`);
         
-        throw new McpError(
-          ErrorCode.InternalError,
+        throw new ProtocolError(
+          ProtocolErrorCode.InternalError,
           `Failed to read resource '${uri}': ${errorMessage}`
         );
       }
     });
 
     // List available prompts
-    this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
+    server.setRequestHandler('prompts/list', async () => {
       return {
         prompts: this.prompts.getAvailablePrompts()
       };
     });
 
     // Get prompt content
-    this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    server.setRequestHandler('prompts/get', async (request) => {
       const { name, arguments: args } = request.params;
       
       try {
@@ -164,15 +154,15 @@ class MCPPremiereProServer {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         this.logger.error(`Prompt generation failed: ${errorMessage}`);
         
-        throw new McpError(
-          ErrorCode.InternalError,
+        throw new ProtocolError(
+          ProtocolErrorCode.InternalError,
           `Failed to generate prompt '${name}': ${errorMessage}`
         );
       }
     });
 
     // Error handling
-    this.server.onerror = (error) => {
+    server.onerror = (error) => {
       this.logger.error('Server error:', error);
     };
   }
@@ -182,8 +172,11 @@ class MCPPremiereProServer {
       await this.bridge.initialize();
       this.logger.info('Adobe Premiere Pro bridge initialized');
       
-      const transport = new StdioServerTransport();
-      await this.server.connect(transport);
+      this.stdioHandle = serveStdio(() => this.buildServer(), {
+        onerror: (error) => {
+          this.logger.error('Stdio transport error:', error);
+        }
+      });
       
       this.logger.info('MCP Adobe Premiere Pro Server started successfully');
     } catch (error) {
@@ -194,6 +187,7 @@ class MCPPremiereProServer {
 
   async stop(): Promise<void> {
     try {
+      await this.stdioHandle?.close();
       await this.bridge.cleanup();
       this.logger.info('MCP Adobe Premiere Pro Server stopped');
     } catch (error) {
