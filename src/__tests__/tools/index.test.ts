@@ -932,6 +932,63 @@ describe('PremiereProTools', () => {
       expect(script).not.toContain('renderSequence');
     });
 
+    it('reads export validation duration from tick strings while keeping ZERO_DURATION', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        readyForExport: true,
+        errors: [],
+        warnings: [],
+        summary: { videoClipCount: 1 }
+      });
+
+      await tools.executeTool('validate_project_for_export', {
+        sequenceId: 'seq-1',
+        outputPath: '/tmp/output.mp4',
+        presetPath: '/tmp/export.epr'
+      });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+
+      // The readiness gate itself must be untouched: still an error, still keyed
+      // off a non-positive duration, still sourced from the active sequence.
+      expect(script).toContain('durationSeconds: sequence ? secondsOf(sequence.end) : 0');
+      expect(script).toContain('if (summary.durationSeconds <= 0)');
+      expect(script).toContain('code: "ZERO_DURATION"');
+
+      const extracted = script.match(/ {8}function secondsOf\(value\) \{[\s\S]*?\n {8}\}/);
+      expect(extracted).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      const secondsOf = new Function(`${extracted![0]}\nreturn secondsOf;`)() as (value: unknown) => number;
+
+      const TICKS_PER_SECOND = 254016000000;
+
+      // A real sequence holding clips: Premiere 26.3 hands back a tick string.
+      expect(secondsOf(String(Math.round(3.211 * TICKS_PER_SECOND)))).toBeCloseTo(3.211, 6);
+      // A genuinely empty sequence still reports zero, so ZERO_DURATION survives.
+      expect(secondsOf('0')).toBe(0);
+      // No active sequence resolves to zero through the ternary above.
+      expect(secondsOf(undefined)).toBe(0);
+      expect(secondsOf(null)).toBe(0);
+      // Legacy Time object shapes keep working unchanged.
+      expect(secondsOf({ seconds: 5 })).toBe(5);
+      expect(secondsOf({ ticks: String(TICKS_PER_SECOND) })).toBe(1);
+      expect(secondsOf(2.5)).toBe(2.5);
+      // Malformed host values fail safe to zero rather than leaking NaN, which
+      // would slip past the `<= 0` comparison and disable the guard entirely.
+      expect(secondsOf('not-a-number')).toBe(0);
+      expect(secondsOf(NaN)).toBe(0);
+      expect(secondsOf({ seconds: 'oops' })).toBe(0);
+      expect(secondsOf({ ticks: 'oops' })).toBe(0);
+    });
+
+    it('keeps timeline inspection tools reading sequence end as ticks', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, sequences: [], count: 0 });
+
+      await tools.executeTool('list_sequences', {});
+
+      expect(mockBridge.executeScript.mock.calls[0][0] as string).toContain('__ticksToSeconds(seq.end)');
+    });
+
     it('uses verifiable QE transition calls for add_transition', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
