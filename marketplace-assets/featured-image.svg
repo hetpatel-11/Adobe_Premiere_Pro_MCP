@@ -18,8 +18,8 @@
   <rect x="136" y="605" width="264" height="34" rx="10" fill="#5fd3c6"/>
   <rect x="424" y="605" width="98" height="34" rx="10" fill="#ef6b5a"/>
   <rect x="546" y="605" width="98" height="34" rx="10" fill="#5fd3c6"/>
-  <text x="780" y="276" fill="#f4f7f8" font-family="Helvetica, Arial, sans-serif" font-size="72" font-weight="700">PREMIERE PRO</text>
-  <text x="780" y="360" fill="#5fd3c6" font-family="Helvetica, Arial, sans-serif" font-size="72" font-weight="700">MCP BRIDGE</text>
+  <text x="780" y="276" fill="#f4f7f8" font-family="Helvetica, Arial, sans-serif" font-size="58" font-weight="700">MCP BRIDGE FOR</text>
+  <text x="780" y="360" fill="#5fd3c6" font-family="Helvetica, Arial, sans-serif" font-size="48" font-weight="700">ADOBE PREMIERE PRO</text>
   <text x="784" y="430" fill="#b9c5cc" font-family="Helvetica, Arial, sans-serif" font-size="28">Local AI-assisted video editing</text>
   <line x1="784" y1="476" x2="1240" y2="476" stroke="#ef6b5a" stroke-width="6"/>
   <text x="784" y="540" fill="#f4f7f8" font-family="Helvetica, Arial, sans-serif" font-size="23">PROJECTS  •  TIMELINES  •  EFFECTS  •  EXPORTS</text>
