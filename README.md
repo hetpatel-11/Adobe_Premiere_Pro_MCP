@@ -36,7 +36,7 @@ Restart Premiere Pro, open `Window > Extensions > MCP Bridge (CEP)`, set the bri
 
 > Run `verify_premiere_connection`. Make no changes.
 
-The bundle is unsigned. Install it only from this repository's GitHub Releases. A signed Adobe CEP `.zxp` archive is not currently offered.
+The MCPB bundle is unsigned. Install it only from this repository's GitHub Releases. CEP release archives are labeled accurately as unsigned or self-signed; self-signed does not mean Adobe Marketplace trusted.
 
 ### MCP client configuration
 
@@ -386,6 +386,8 @@ The `282` exposed tools are grouped roughly like this:
 Use MCP introspection in your client to see the full tool catalog and exact schemas.
 
 ## Real Limits
+
+- A self-signed CEP `.zxp` confirms archive integrity but is not Adobe Marketplace approval or a public trust guarantee. The reproducible signing workflow requires private certificate secrets and target-platform Premiere validation.
 
 This project is much more usable than the original prototype, but it is not magic.
 

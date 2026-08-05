@@ -2,6 +2,11 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [1.1.5] - 2026-08-05
+
+- Added reproducible CEP ZXP signing, verification, and release-upload workflows.
+- Added a local macOS helper that creates a private self-signed certificate and stores its password in the macOS Keychain.
+
 ## [1.1.4] - 2026-08-05
 
 - Added the official Claude Desktop MCPB bundle to the release artifact workflow.

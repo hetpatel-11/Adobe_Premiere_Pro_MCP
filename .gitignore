@@ -11,6 +11,8 @@ dist/
 *.backup
 .mcpb-staging/
 release-artifacts/
+*.p12
+*.zxp
 
 # Worktrees
 .worktrees/

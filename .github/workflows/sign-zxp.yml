@@ -1,0 +1,47 @@
+name: Sign CEP ZXP
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to receive the signed ZXP
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Restore signing certificate
+        env:
+          ZXP_CERT_BASE64: ${{ secrets.ZXP_CERT_BASE64 }}
+        run: |
+          test -n "$ZXP_CERT_BASE64" || { echo "Configure the ZXP_CERT_BASE64 repository secret first."; exit 1; }
+          printf '%s' "$ZXP_CERT_BASE64" | base64 -D > "$RUNNER_TEMP/premiere-mcp.p12"
+          chmod 600 "$RUNNER_TEMP/premiere-mcp.p12"
+
+      - name: Download Adobe ZXPSignCmd
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/Adobe-CEP/CEP-Resources/master/ZXPSignCMD/4.1.3/macOS/ZXPSignCmd -o "$RUNNER_TEMP/ZXPSignCmd"
+          chmod 700 "$RUNNER_TEMP/ZXPSignCmd"
+
+      - name: Sign and verify CEP archive
+        env:
+          ZXP_SIGN_CMD: ${{ runner.temp }}/ZXPSignCmd
+          ZXP_CERT_PATH: ${{ runner.temp }}/premiere-mcp.p12
+          ZXP_CERT_PASSWORD: ${{ secrets.ZXP_CERT_PASSWORD }}
+          ZXP_OUTPUT_PATH: ${{ github.workspace }}/MCPBridgeCEP-${{ inputs.tag }}-signed.zxp
+        run: |
+          test -n "$ZXP_CERT_PASSWORD" || { echo "Configure the ZXP_CERT_PASSWORD repository secret first."; exit 1; }
+          node scripts/sign-zxp.mjs
+
+      - name: Upload signed CEP archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.tag }}" "MCPBridgeCEP-${{ inputs.tag }}-signed.zxp" --clobber

@@ -1,6 +1,6 @@
 {
   "name": "adobe-premiere-pro-mcp",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "282 tools for AI-driven Adobe Premiere Pro video editing via MCP, for Codex, Claude, and other MCP clients.",
   "main": "dist/index.js",
   "bin": {
@@ -35,7 +35,9 @@
     "format": "prettier --write src/**/*.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/verify-package.mjs",
-    "bundle:mcpb": "node scripts/build-mcpb.mjs"
+    "bundle:mcpb": "node scripts/build-mcpb.mjs",
+    "sign:zxp": "node scripts/sign-zxp.mjs",
+    "create:self-signed-zxp-cert": "node scripts/create-self-signed-zxp-cert.mjs"
   },
   "keywords": [
     "mcp",

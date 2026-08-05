@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="10.0" ExtensionBundleId="com.mcp.premiere.cepbridge" ExtensionBundleVersion="1.0.0" ExtensionBundleName="MCP Bridge (CEP)">
+<ExtensionManifest Version="10.0" ExtensionBundleId="com.mcp.premiere.cepbridge" ExtensionBundleVersion="1.1.5" ExtensionBundleName="MCP Bridge (CEP)">
   <ExtensionList>
-    <Extension Id="com.mcp.premiere.cepbridge.panel" Version="1.0.0"/>
+    <Extension Id="com.mcp.premiere.cepbridge.panel" Version="1.1.5"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
