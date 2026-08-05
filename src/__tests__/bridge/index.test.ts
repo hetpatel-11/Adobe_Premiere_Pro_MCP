@@ -18,8 +18,8 @@ jest.mock('fs', () => ({
   }
 }));
 
-jest.mock('uuid', () => ({
-  v4: jest.fn(() => 'test-uuid-1234')
+jest.mock('node:crypto', () => ({
+  randomUUID: jest.fn(() => 'test-uuid-1234')
 }));
 
 describe('PremiereProBridge', () => {

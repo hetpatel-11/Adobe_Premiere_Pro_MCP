@@ -7,9 +7,9 @@
 
 import { Logger } from '../utils/logger.js';
 import { ChildProcess } from 'child_process';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'fs';
 import { extname, join } from 'path';
-import { v4 as uuidv4 } from 'uuid';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 import type { PremiereProTransport } from './types.js';
 
@@ -182,7 +182,7 @@ export class PremiereProBridge implements PremiereProTransport {
   constructor() {
     this.logger = new Logger('PremiereProBridge');
     this.communicationMethod = 'file'; // Default to file-based communication
-    this.sessionId = uuidv4();
+    this.sessionId = randomUUID();
     // Use PREMIERE_TEMP_DIR if set (same path as UXP plugin "Temp Directory"), else session-specific
     const envDir = process.env.PREMIERE_TEMP_DIR;
     this.usesExternalTempDir = Boolean(envDir);
@@ -260,7 +260,7 @@ export class PremiereProBridge implements PremiereProTransport {
       throw new Error('Bridge not initialized. Call initialize() first.');
     }
 
-    const commandId = uuidv4();
+    const commandId = randomUUID();
     const commandFile = join(this.tempDir, `command-${commandId}.json`);
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
 
