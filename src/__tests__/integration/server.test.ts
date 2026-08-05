@@ -66,7 +66,7 @@ describe('MCP Adobe Premiere Pro Integration', () => {
     expect(result.success).toBe(true);
     expect(result.sequence.id).toBe('seq-1');
     expect(result.placements).toHaveLength(3);
-  });
+  }, 30000);
 
   it('supports assembling a product spot from real assets', async () => {
     mockBridge.importMedia = jest

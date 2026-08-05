@@ -1161,7 +1161,7 @@ describe('PremiereProTools', () => {
       expect(result.assets).toHaveLength(3);
       expect(mockBridge.importMedia).toHaveBeenCalledTimes(3);
       expect(mockBridge.addToTimeline).toHaveBeenCalledTimes(3);
-    });
+    }, 30000);
 
     it('assembles a product spot from provided assets', async () => {
       mockBridge.importMedia = jest

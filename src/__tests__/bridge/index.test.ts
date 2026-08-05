@@ -140,17 +140,23 @@ describe('PremiereProBridge', () => {
 
   it('blocks AME rendering before Premiere when Media Encoder is not installed', async () => {
     const bridge = new PremiereProBridge();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     mockFs.mkdir.mockResolvedValue(undefined);
     mockFs.access.mockRejectedValue(new Error('Not found'));
     mockFs.readdir.mockResolvedValue([] as any);
 
-    await bridge.initialize();
-    const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr');
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      await bridge.initialize();
+      const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr');
 
-    expect(result.success).toBe(false);
-    expect(result.code).toBe('MEDIA_ENCODER_NOT_INSTALLED');
-    expect(result.error).toContain('not sent to Premiere');
-    expect(mockFs.writeFile).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('MEDIA_ENCODER_NOT_INSTALLED');
+      expect(result.error).toContain('not sent to Premiere');
+      expect(mockFs.writeFile).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
   });
 
   it('blocks modal-prone unsupported subtitle imports before writing a command', async () => {
