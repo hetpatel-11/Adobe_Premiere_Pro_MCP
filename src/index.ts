@@ -31,8 +31,8 @@ class MCPPremiereProServer {
   private buildServer(): Server {
     const server = new Server(
       {
-        name: 'mcp-adobe-premiere-pro',
-        version: '1.0.0',
+        name: 'adobe-premiere-pro-mcp',
+        version: '1.1.1',
         description: 'Model Context Protocol tools for Adobe Premiere Pro - AI-powered video editing'
       },
       {
