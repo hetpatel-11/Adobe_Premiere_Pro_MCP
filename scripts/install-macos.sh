@@ -2,6 +2,17 @@
 
 set -euo pipefail
 
+SKIP_BUILD=false
+if [[ "${1:-}" == "--skip-build" ]]; then
+  SKIP_BUILD=true
+  shift
+fi
+
+if [[ "$#" -gt 0 ]]; then
+  echo "Unknown option: $1"
+  exit 1
+fi
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This installer currently supports macOS only."
   exit 1
@@ -26,11 +37,15 @@ if [[ "$NODE_MAJOR" -lt 20 ]]; then
   exit 1
 fi
 
-echo "Installing npm dependencies..."
-npm install --prefix "$REPO_ROOT"
+if [[ "$SKIP_BUILD" == "true" ]]; then
+  echo "Using packaged build..."
+else
+  echo "Installing npm dependencies..."
+  npm install --prefix "$REPO_ROOT"
 
-echo "Building MCP server..."
-npm run build --prefix "$REPO_ROOT"
+  echo "Building MCP server..."
+  npm run build --prefix "$REPO_ROOT"
+fi
 
 if [[ ! -f "$DIST_ENTRY" ]]; then
   echo "Build completed but dist/index.js was not created."

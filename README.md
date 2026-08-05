@@ -6,6 +6,58 @@ Control Adobe Premiere Pro through MCP using Codex, Claude Code, Claude Desktop,
 
 ---
 
+## Install
+
+The supported bridge is the included **CEP panel**. Install the npm package on the same computer as Premiere Pro and your MCP client:
+
+```bash
+npm install -g adobe-premiere-pro-mcp
+premiere-pro-mcp --install-cep
+premiere-pro-mcp --doctor
+```
+
+`--install-cep` installs the CEP bridge, enables the required Adobe CEP debug setting, prepares the bridge directory, and configures supported local MCP clients. `--doctor` verifies the server build, CEP installation, bridge directory, debug setting, and client configuration.
+
+Then restart Premiere Pro, open `Window > Extensions > MCP Bridge (CEP)`, set the bridge directory shown by the installer, and start the bridge.
+
+Requirements:
+
+- Node.js 20+
+- Adobe Premiere Pro 2020+
+- Premiere Pro, the MCP client, and this package on the same computer
+
+The bundled `uxp-plugin` is an **experimental preview**. It is shipped for evaluation but is not a replacement for the validated CEP bridge and is not installed by the CLI.
+
+### MCP client configuration
+
+The installer configures Claude Desktop on macOS and Claude Desktop plus GitHub Copilot in VS Code on Windows. For another MCP client, configure it to run:
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "premiere-pro-mcp"
+    }
+  }
+}
+```
+
+### Install from source
+
+Use source setup when developing the MCP, modifying the CEP panel, or troubleshooting a package install:
+
+```bash
+git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
+cd Adobe_Premiere_Pro_MCP
+npm install
+npm run build
+npm run setup:mac # macOS
+```
+
+On Windows, use `npm run setup:win` from PowerShell after `npm install` and `npm run build`.
+
+---
+
 ## Building Something Better
 
 <table>
@@ -102,7 +154,7 @@ npx skills add https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/tree/main/s
 
 The skill teaches agents how to install the MCP, start and verify the CEP bridge, use the Premiere tools safely, import real media before editing, prefer sequence-aware operations, and run diagnostics when something fails.
 
-## Fastest Install (macOS)
+## Source Install Details (macOS)
 
 ```bash
 git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
@@ -145,7 +197,7 @@ If you need a visual reference for the developer mode toggle, it looks like this
 
 If the panel reports that Premiere is ready after `Start Bridge`, the bridge is live.
 
-## Fastest Install (Windows)
+## Source Install Details (Windows)
 
 ```powershell
 git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git

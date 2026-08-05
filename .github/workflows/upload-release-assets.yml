@@ -1,0 +1,37 @@
+name: Upload CEP release asset
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  cep-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build and verify npm package
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test -- --runInBand --silent
+      - run: npm run pack:check
+
+      - name: Build unsigned CEP archive
+        run: |
+          cd cep-plugin
+          zip -r "../MCPBridgeCEP-${{ github.event.release.tag_name }}-unsigned.zip" .
+
+      - name: Upload CEP archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "MCPBridgeCEP-${{ github.event.release.tag_name }}-unsigned.zip" --clobber
