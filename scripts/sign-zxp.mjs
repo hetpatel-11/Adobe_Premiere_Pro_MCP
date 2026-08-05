@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -22,6 +22,7 @@ if (!certificatePassword) {
 }
 
 await mkdir(dirname(outputPath), { recursive: true });
+await rm(outputPath, { force: true });
 execFileSync(zxpSignCommand, [
   '-sign',
   join(root, 'cep-plugin'),
