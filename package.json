@@ -16,6 +16,8 @@
     "QUICKSTART.md",
     "CHANGELOG.md",
     "SECURITY.md",
+    "PRIVACY.md",
+    "TERMS.md",
     "LICENSE.md"
   ],
   "type": "module",

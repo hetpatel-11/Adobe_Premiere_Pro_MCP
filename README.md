@@ -4,6 +4,8 @@ English | [日本語](README.ja.md) | [Tiếng Việt](README.vi.md) | [简体�
 
 Control Adobe Premiere Pro through MCP using Codex, Claude Code, Claude Desktop, or any other MCP client.
 
+[Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
+
 ---
 
 ## Install
