@@ -13,6 +13,7 @@ const tools = new PremiereProTools(bridge);
 const runId = Date.now();
 const outputDir = process.env.PREMIERE_TEMP_DIR || '/tmp/premiere-mcp-bridge';
 const outputPath = path.join(outputDir, 'live-tool-sweep.json');
+const sequencePresetPath = process.env.PREMIERE_SEQUENCE_PRESET_PATH;
 
 const results = [];
 const executed = new Map();
@@ -233,12 +234,22 @@ async function main() {
   let srtPath;
 
   if (firstAssetPath) {
-    const manualSequence = await invoke(
-      'create_sequence',
-      { name: `Sweep Manual ${runId}` },
-      'direct sequence creation for lower-level tool coverage',
-    );
-    manualSequenceId = manualSequence?.id;
+    if (sequencePresetPath) {
+      const manualSequence = await invoke(
+        'create_sequence',
+        { name: `Sweep Manual ${runId}`, presetPath: sequencePresetPath },
+        'direct sequence creation with an explicit preset to avoid Premiere UI',
+      );
+      manualSequenceId = manualSequence?.id;
+    } else {
+      record(
+        'create_sequence',
+        'skipped',
+        {},
+        undefined,
+        'set PREMIERE_SEQUENCE_PRESET_PATH to exercise non-interactive sequence creation',
+      );
+    }
 
     const manualImport = await invoke(
       'import_media',

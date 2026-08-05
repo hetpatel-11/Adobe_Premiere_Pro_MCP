@@ -459,6 +459,25 @@ export class PremiereProBridge implements PremiereProTransport {
         var existingItems = [];
         __walkItems(app.project.rootItem, existingItems);
 
+        // Premiere returns true when asked to import media already in the
+        // project, but it does not add another project item. Reuse that item
+        // instead of reporting a fabricated import failure.
+        for (var existingIndex = 0; existingIndex < existingItems.length; existingIndex++) {
+          var existingItem = existingItems[existingIndex];
+          try {
+            if (existingItem.getMediaPath && existingItem.getMediaPath() === file.fsName) {
+              return JSON.stringify({
+                success: true,
+                id: existingItem.nodeId,
+                name: existingItem.name,
+                type: existingItem.type.toString(),
+                mediaPath: file.fsName,
+                alreadyImported: true
+              });
+            }
+          } catch (e) {}
+        }
+
         var importResult = app.project.importFiles([file.fsName], true, app.project.rootItem, false);
         if (!importResult) {
           return JSON.stringify({
@@ -519,11 +538,20 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async createSequence(name: string, presetPath?: string): Promise<PremiereProSequence> {
+  async createSequence(name: string, presetPath: string): Promise<PremiereProSequence> {
     const script = `
       try {
         var sequenceName = ${JSON.stringify(name)};
-        var presetPath = ${presetPath ? JSON.stringify(presetPath) : 'null'};
+        var presetPath = ${JSON.stringify(presetPath)};
+        var presetFile = new File(presetPath);
+        if (!presetFile.exists) {
+          return JSON.stringify({
+            success: false,
+            error: "Sequence preset file not found: " + presetPath,
+            sequenceName: sequenceName,
+            blockedBeforePremiere: true
+          });
+        }
         var beforeIds = {};
 
         if (app.project && app.project.sequences) {
@@ -535,7 +563,10 @@ export class PremiereProBridge implements PremiereProTransport {
         var sequence = null;
         var createError = null;
         try {
-          sequence = app.project.createNewSequence(sequenceName, presetPath || "");
+          // newSequence(name, presetPath) is Premiere's non-interactive preset API.
+          // createNewSequence() treats its second argument differently and can open
+          // the native New Sequence dialog on current Premiere releases.
+          sequence = app.project.newSequence(sequenceName, presetFile.fsName);
         } catch (createException) {
           createError = createException;
         }
@@ -877,6 +908,19 @@ export class PremiereProBridge implements PremiereProTransport {
   ): Promise<any> {
     const sourceRange = options.sourceRange ?? 'entire';
     const removeOnCompletion = options.removeOnCompletion ?? true;
+    const encoder = await this.findInstalledMediaEncoder();
+    if (encoder.available === false) {
+      return {
+        success: false,
+        status: 'failed',
+        code: 'MEDIA_ENCODER_NOT_INSTALLED',
+        error: 'Adobe Media Encoder is not installed. The export was not sent to Premiere, so no native Media Encoder warning was shown.',
+        searchedPaths: encoder.searchedPaths,
+        outputPath,
+        presetPath,
+        sourceRange,
+      };
+    }
     const script = `
       try {
         var sequenceId = ${JSON.stringify(sequenceId)};
@@ -1060,6 +1104,43 @@ export class PremiereProBridge implements PremiereProTransport {
       try { return JSON.parse(raw); } catch { return { success: false, error: "Bridge returned unparseable string: " + raw }; }
     }
     return raw;
+  }
+
+  /**
+   * Avoid calling app.encoder.launchEncoder() when AME is absent: Premiere shows
+   * a blocking native warning in that case. An unreadable install directory is
+   * treated as unknown, so a transient filesystem error does not disable export.
+   */
+  private async findInstalledMediaEncoder(): Promise<{ available: boolean; searchedPaths: string[] }> {
+    if (process.platform === 'darwin') {
+      const applications = '/Applications';
+      try {
+        const entries = await fs.readdir(applications);
+        const found = entries.some((entry) => /^Adobe Media Encoder(?: \d+)?\.app$/i.test(entry));
+        return { available: found, searchedPaths: [applications] };
+      } catch {
+        return { available: true, searchedPaths: [applications] };
+      }
+    }
+
+    if (process.platform === 'win32') {
+      const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter((value): value is string => Boolean(value));
+      const searchedPaths = roots.map((root) => join(root, 'Adobe'));
+      if (searchedPaths.length === 0) return { available: true, searchedPaths };
+      try {
+        for (const directory of searchedPaths) {
+          const entries = await fs.readdir(directory);
+          if (entries.some((entry) => /^Adobe Media Encoder(?: \d+)?$/i.test(entry))) {
+            return { available: true, searchedPaths };
+          }
+        }
+        return { available: false, searchedPaths };
+      } catch {
+        return { available: true, searchedPaths };
+      }
+    }
+
+    return { available: true, searchedPaths: [] };
   }
 
   async listProjectItems(): Promise<PremiereProProjectItem[]> {

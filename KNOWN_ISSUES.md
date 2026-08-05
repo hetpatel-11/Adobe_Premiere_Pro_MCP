@@ -63,6 +63,15 @@ Practical consequence:
 - the MCP layer can automate a large amount of editing work
 - it still cannot promise parity with every click path a senior editor can use manually
 
+### Native Premiere dialogs
+
+The server avoids known dialog-prone calls rather than attempting to dismiss native UI, which CEP cannot do reliably once the scripting host is blocked.
+
+- `create_sequence` requires a real `.sqpreset` and uses Premiere's non-interactive `newSequence` API.
+- Footage-driven workflows use `create_sequence_from_clips`; existing-settings workflows use `duplicate_sequence` with `clearContents=true`.
+- `import_fcp_xml` suppresses import warnings. `import_edl` is rejected before Premiere because its available API is interactive; convert EDL to FCP7 XML for unattended import.
+- Unexpected host/OS dialogs, such as missing media or permission alerts, cannot be globally suppressed and require diagnostics after the user dismisses them.
+
 ### Professional motion graphics still need real assets
 
 The server can assemble timelines and apply motion/effect treatments, but polished title design still depends on:
@@ -105,6 +114,7 @@ These issues were real and are now resolved in the current code:
 - the server could delete an externally managed temp directory on shutdown
 - the CEP bridge could fail with `ENOENT` when the configured temp directory did not exist
 - `create_sequence` could create a sequence in Premiere but still report failure after a bridge timeout
+- `create_sequence` could open the native New Sequence dialog because it used the wrong API; it now requires a preset and uses `newSequence`.
 - `export_frame` called a non-existent API and now uses the QE export path
 - `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
 - the branded workflow response returned the wrong message due to object spread order

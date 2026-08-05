@@ -10,6 +10,7 @@ jest.mock('fs', () => ({
   promises: {
     mkdir: jest.fn(),
     access: jest.fn(),
+    readdir: jest.fn(),
     writeFile: jest.fn(),
     readFile: jest.fn(),
     unlink: jest.fn(),
@@ -107,6 +108,9 @@ describe('PremiereProBridge', () => {
 
     expect(result.success).toBe(true);
     expect(result.id).toBe('item-123');
+    const command = mockFs.writeFile.mock.calls.find(([filePath]: [string]) => filePath.endsWith('.json'))?.[1] as string;
+    expect(command).toContain('alreadyImported: true');
+    expect(command).toContain('existingItem.getMediaPath() === file.fsName');
   });
 
   it('generates renderSequence JSX that selects the requested source range constant', async () => {
@@ -132,6 +136,21 @@ describe('PremiereProBridge', () => {
     expect(command).toContain('var removeOnCompletion = 0;');
     expect(command).toContain('app.encoder[encoderRangeConstant]');
     expect(command).not.toContain('__findSequence("seq-"quoted"")');
+  });
+
+  it('blocks AME rendering before Premiere when Media Encoder is not installed', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.readdir.mockResolvedValue([] as any);
+
+    await bridge.initialize();
+    const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr');
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('MEDIA_ENCODER_NOT_INSTALLED');
+    expect(result.error).toContain('not sent to Premiere');
+    expect(mockFs.writeFile).not.toHaveBeenCalled();
   });
 
   it('blocks modal-prone unsupported subtitle imports before writing a command', async () => {
@@ -216,13 +235,14 @@ describe('PremiereProBridge', () => {
     mockFs.unlink.mockResolvedValue(undefined);
 
     await bridge.initialize();
-    const result: any = await bridge.createSequence('Safe Sequence');
+    const result: any = await bridge.createSequence('Safe Sequence', '/tmp/sequence.sqpreset');
     const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
 
     expect(result.success).toBe(true);
     expect(result.id).toBe('seq-123');
     expect(commandPayload.script).toContain('try {');
-    expect(commandPayload.script).toContain('app.project.createNewSequence(sequenceName, presetPath || "")');
+    expect(commandPayload.script).toContain('app.project.newSequence(sequenceName, presetFile.fsName)');
+    expect(commandPayload.script).toContain('Sequence preset file not found');
     expect(commandPayload.script).toContain('Sequence creation completed but the new sequence could not be located');
   });
 

@@ -204,7 +204,8 @@ describe('PremiereProTools', () => {
       mockBridge.createSequence = jest.fn().mockRejectedValue(new Error('Bridge response timeout'));
 
       const result = await tools.executeTool('create_sequence', {
-        name: 'Possibly Created Sequence'
+        name: 'Possibly Created Sequence',
+        presetPath: '/tmp/sequence.sqpreset'
       });
 
       expect(result.success).toBe(false);
@@ -217,12 +218,47 @@ describe('PremiereProTools', () => {
       mockBridge.createSequence = jest.fn().mockRejectedValue(new Error('Premiere rejected the preset'));
 
       const result = await tools.executeTool('create_sequence', {
-        name: 'Missing Sequence'
+        name: 'Missing Sequence',
+        presetPath: '/tmp/sequence.sqpreset'
       });
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Premiere rejected the preset');
       expect(result.warning).toBeUndefined();
+    });
+
+    it('rejects dialog-prone sequence creation without a preset before calling Premiere', async () => {
+      const result = await tools.executeTool('create_sequence', {
+        name: 'No Dialog Sequence'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.createSequence).not.toHaveBeenCalled();
+    });
+
+    it('blocks EDL import before calling Premiere because it requires an interactive dialog', async () => {
+      const result = await tools.executeTool('import_edl', {
+        filePath: '/tmp/edit.edl'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.blockedBeforePremiere).toBe(true);
+      expect(result.error).toContain('interactive dialog');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('requests Premiere UI suppression for FCP XML imports', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, imported: true, method: 'importFiles(suppressUI=true)' });
+
+      const result = await tools.executeTool('import_fcp_xml', {
+        filePath: '/tmp/edit.xml'
+      });
+
+      expect(result.success).toBe(true);
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      expect(script).toContain('app.project.importFiles(["/tmp/edit.xml"], true, app.project.rootItem, false)');
+      expect(script).not.toContain('app.openFCPXML');
     });
 
     it('passes through successful imports', async () => {
@@ -1102,10 +1138,6 @@ describe('PremiereProTools', () => {
 
   describe('high-level workflow tools', () => {
     it('builds a motion graphics demo sequence', async () => {
-      mockBridge.createSequence = jest.fn().mockResolvedValue({
-        id: 'seq-1',
-        name: 'Demo Sequence'
-      } as any);
       mockBridge.importMedia = jest
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'item-1', name: '01_focus.png' } as any)
@@ -1116,11 +1148,9 @@ describe('PremiereProTools', () => {
         .mockResolvedValueOnce({ success: true, id: 'clip-1', name: '01_focus.png' } as any)
         .mockResolvedValueOnce({ success: true, id: 'clip-2', name: '02_precision.png' } as any)
         .mockResolvedValueOnce({ success: true, id: 'clip-3', name: '03_finish.png' } as any);
-      mockBridge.executeScript.mockResolvedValue({
-        success: true,
-        videoTracks: [],
-        audioTracks: []
-      });
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, id: 'seq-1', name: 'Demo Sequence' })
+        .mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
       const result = await tools.executeTool('build_motion_graphics_demo', {
         sequenceName: 'Demo Sequence'
@@ -1134,10 +1164,6 @@ describe('PremiereProTools', () => {
     });
 
     it('assembles a product spot from provided assets', async () => {
-      mockBridge.createSequence = jest.fn().mockResolvedValue({
-        id: 'seq-2',
-        name: 'Product Spot'
-      } as any);
       mockBridge.importMedia = jest
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'item-a', name: 'a.mp4' } as any)
@@ -1146,11 +1172,9 @@ describe('PremiereProTools', () => {
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'clip-a', name: 'a.mp4', inPoint: 0, outPoint: 4 } as any)
         .mockResolvedValueOnce({ success: true, id: 'clip-b', name: 'b.mp4', inPoint: 4, outPoint: 8 } as any);
-      mockBridge.executeScript.mockResolvedValue({
-        success: true,
-        videoTracks: [],
-        audioTracks: []
-      });
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, id: 'seq-2', name: 'Product Spot' })
+        .mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
       const result = await tools.executeTool('assemble_product_spot', {
         sequenceName: 'Product Spot',
@@ -1166,10 +1190,6 @@ describe('PremiereProTools', () => {
     });
 
     it('supports directed clip plans without forcing template transitions or motion', async () => {
-      mockBridge.createSequence = jest.fn().mockResolvedValue({
-        id: 'seq-2b',
-        name: 'Directed Spot'
-      } as any);
       mockBridge.importMedia = jest
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'item-a', name: 'a.mp4' } as any)
@@ -1178,11 +1198,9 @@ describe('PremiereProTools', () => {
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'clip-a', name: 'a.mp4', inPoint: 1.5, outPoint: 3.5 } as any)
         .mockResolvedValueOnce({ success: true, id: 'clip-b', name: 'b.mp4', inPoint: 3.6, outPoint: 6.6 } as any);
-      mockBridge.executeScript.mockResolvedValue({
-        success: true,
-        videoTracks: [],
-        audioTracks: []
-      });
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, id: 'seq-2b', name: 'Directed Spot' })
+        .mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
       const result = await tools.executeTool('assemble_product_spot', {
         sequenceName: 'Directed Spot',
@@ -1202,10 +1220,6 @@ describe('PremiereProTools', () => {
     });
 
     it('builds a brand spot from assets without requiring a mogrt', async () => {
-      mockBridge.createSequence = jest.fn().mockResolvedValue({
-        id: 'seq-3',
-        name: 'Brand Spot'
-      } as any);
       mockBridge.importMedia = jest
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'item-a', name: 'a.mp4' } as any)
@@ -1214,11 +1228,9 @@ describe('PremiereProTools', () => {
         .fn()
         .mockResolvedValueOnce({ success: true, id: 'clip-a', name: 'a.mp4', inPoint: 0, outPoint: 4 } as any)
         .mockResolvedValueOnce({ success: true, id: 'clip-b', name: 'b.mp4', inPoint: 4, outPoint: 8 } as any);
-      mockBridge.executeScript.mockResolvedValue({
-        success: true,
-        videoTracks: [],
-        audioTracks: []
-      });
+      mockBridge.executeScript
+        .mockResolvedValueOnce({ success: true, id: 'seq-3', name: 'Brand Spot' })
+        .mockResolvedValue({ success: true, videoTracks: [], audioTracks: [] });
 
       const result = await tools.executeTool('build_brand_spot_from_mogrt_and_assets', {
         sequenceName: 'Brand Spot',

@@ -83,13 +83,13 @@ If Premiere is running and the bridge is started, verify with safe read-only cal
 - `list_sequences`
 - `list_project_items`
 
-For deeper validation in a disposable project, create a test sequence with a unique name, then call `list_sequences` and confirm it exists.
+For deeper validation in a disposable project, create a test sequence with `create_sequence_from_clips` or `create_sequence` plus a real `.sqpreset` path, then call `list_sequences` and confirm it exists. Do not call blank sequence creation without a preset because newer Premiere versions can open a native dialog that blocks CEP.
 
 ## Editing Strategy
 
 - Start by understanding the project: project info, active sequence, existing media, tracks, markers, and selected sequence.
 - Build a plan in concrete Premiere operations before changing anything.
-- For rough cuts, create or choose a sequence, import media, place clips, then add trims/transitions/effects.
+- For rough cuts, import media first, then use `create_sequence_from_clips` so Premiere derives settings without a native dialog. Use `create_sequence` only with a real `.sqpreset`; use `duplicate_sequence` with `clearContents=true` when an existing sequence defines the intended settings.
 - For product or brand spots, prefer `assemble_product_spot` or `build_brand_spot_from_mogrt_and_assets` when the user's request fits those workflows.
 - For black-and-white looks, use `apply_effect` with `Black & White` rather than generic saturation-only changes.
 - For timeline cuts, prefer sequence-aware tools and include `sequenceId` when available.
@@ -117,4 +117,3 @@ Common fixes:
 - `ENOENT` on temp directory: create `/tmp/premiere-mcp-bridge`, save config again, restart bridge.
 - Tool succeeds in Premiere but reports failure: run `list_sequences` or the relevant list tool to confirm state before retrying.
 - Empty or malformed temp directory config: set the field to the path only, not JSON or an env assignment.
-

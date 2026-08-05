@@ -363,14 +363,14 @@ export class PremiereProTools {
       },
       {
         name: 'import_fcp_xml',
-        description: 'Imports a Final Cut Pro 7 XML (XMEML) file into the current project. Premiere creates a new sequence with the cuts/clips defined in the XML, atomically. Use for importing pre-built timelines from external tools (NOT for FCPXML 1.x modern format from Final Cut Pro X — only legacy FCP7 XML is supported by app.openFCPXML).',
+        description: 'Imports a Final Cut Pro 7 XML (XMEML) file into the current project. Premiere creates a new sequence with the cuts/clips defined in the XML. The import requests Premiere UI suppression, but malformed or unsupported XML can still be rejected by Premiere. Use legacy FCP7 XML, not modern FCPXML 1.x from Final Cut Pro X.',
         inputSchema: z.object({
           filePath: z.string().describe('The absolute path to the FCP7 XML file (.xml extension typical)')
         })
       },
       {
         name: 'import_edl',
-        description: 'Imports a CMX 3600 EDL file into the current project. Premiere prompts for sequence settings and source media, then creates a new sequence with all cuts applied atomically. Use for atomic timeline import from cut-list-based pipelines. Note: the resulting sequence inherits its timebase/video standard from the project defaults or from the interactive sequence-settings dialog Premiere shows on import — `app.importEDL` does not accept a video-standard argument.',
+        description: 'Reports that CMX 3600 EDL import is unavailable through this dialog-safe MCP server. Premiere\'s EDL API opens an interactive sequence/source-media dialog that blocks CEP. Use import_fcp_xml for unattended timeline interchange instead.',
         inputSchema: z.object({
           filePath: z.string().describe('The absolute path to the .edl file')
         })
@@ -396,14 +396,10 @@ export class PremiereProTools {
       // Sequence Management
       {
         name: 'create_sequence',
-        description: 'Creates a new sequence in the project. A sequence is a timeline where you edit clips.',
+        description: 'Creates a new sequence from a specific installed .sqpreset file without opening Premiere\'s New Sequence dialog. For footage-driven edits, prefer create_sequence_from_clips; for an empty copy of an existing sequence, use duplicate_sequence with clearContents=true.',
         inputSchema: z.object({
           name: z.string().describe('The name for the new sequence'),
-          presetPath: z.string().optional().describe('Optional path to a sequence preset file for custom settings'),
-          width: z.number().optional().describe('Sequence width in pixels'),
-          height: z.number().optional().describe('Sequence height in pixels'),
-          frameRate: z.number().optional().describe('Frame rate (e.g., 24, 25, 30, 60)'),
-          sampleRate: z.number().optional().describe('Audio sample rate (e.g., 48000)')
+          presetPath: z.string().describe('Absolute path to an installed Premiere .sqpreset sequence preset. Required so Premiere does not show the native New Sequence dialog.')
         })
       },
       {
@@ -1408,7 +1404,7 @@ export class PremiereProTools {
 
         // Sequence Management
         case 'create_sequence':
-          return await this.createSequence(args.name, args.presetPath, args.width, args.height, args.frameRate, args.sampleRate);
+          return await this.createSequence(args.name, args.presetPath);
         case 'duplicate_sequence':
           return await this.duplicateSequence(args.sequenceId, args.newName, args.clearContents);
         case 'delete_sequence':
@@ -2166,16 +2162,6 @@ export class PremiereProTools {
     const assetDir = `${assetBase.replace(/\/$/, '')}/motion-demo-${Date.now()}`;
     const assets = await createMotionDemoAssets(assetDir);
 
-    const createdSequence = await this.createSequence(sequenceName);
-    if (!createdSequence.success || !createdSequence.id) {
-      return {
-        success: false,
-        error: createdSequence.error || 'Failed to create demo sequence',
-        assetDir,
-        assets
-      };
-    }
-
     const imported = [];
     for (const asset of assets) {
       const result = await this.importMedia(asset.path);
@@ -2186,10 +2172,23 @@ export class PremiereProTools {
           error: result.error || `Failed to import asset ${asset.name}`,
           assetDir,
           assets,
-          createdSequence,
           imported
         };
       }
+    }
+
+    const createdSequence = await this.createSequenceFromProjectItems(
+      sequenceName,
+      imported.map((item: any) => item.id)
+    );
+    if (!createdSequence.success || !createdSequence.id) {
+      return {
+        success: false,
+        error: createdSequence.error || 'Failed to create demo sequence from imported assets',
+        assetDir,
+        assets,
+        imported
+      };
     }
 
     const placements = [];
@@ -2278,15 +2277,6 @@ export class PremiereProTools {
     const transitionDuration = args.transitionDuration ?? 0.5;
     const motionStyle: MotionStyle = args.motionStyle ?? (hasDirectedPlan ? 'none' : 'alternate');
 
-    const createdSequence = await this.createSequence(args.sequenceName);
-    if (!createdSequence.success || !createdSequence.id) {
-      return {
-        success: false,
-        error: createdSequence.error || 'Failed to create sequence',
-        sequenceName: args.sequenceName
-      };
-    }
-
     const imported = [];
     for (const assetPath of args.assetPaths) {
       const result = await this.importMedia(assetPath);
@@ -2295,10 +2285,22 @@ export class PremiereProTools {
         return {
           success: false,
           error: result.error || `Failed to import ${assetPath}`,
-          sequence: createdSequence,
           imported
         };
       }
+    }
+
+    const createdSequence = await this.createSequenceFromProjectItems(
+      args.sequenceName,
+      imported.map((item: any) => item.id)
+    );
+    if (!createdSequence.success || !createdSequence.id) {
+      return {
+        success: false,
+        error: createdSequence.error || 'Failed to create sequence from imported assets',
+        sequenceName: args.sequenceName,
+        imported
+      };
     }
 
     const planSteps: ClipPlanStep[] = hasDirectedPlan
@@ -2648,11 +2650,9 @@ export class PremiereProTools {
   /**
    * Import a Final Cut Pro 7 XML (XMEML) file.
    *
-   * Premiere 2026 requires project.importFiles (not the legacy openFCPXML which
-   * needs additional args like project context). importFiles handles XML/EDL/AAF
-   * detection automatically and creates a new sequence atomically.
-   *
-   * Fallback chain: importFiles → openFCPXML(path,suppressUI) → openFCPXML(path).
+   * Premiere 26 accepts FCP7 XML through importFiles. The second argument asks
+   * Premiere to suppress warning UI. Do not use app.openFCPXML here: it rejects
+   * the documented-looking two-argument form in the supported host runtime.
    */
   private async importFcpXml(filePath: string): Promise<any> {
     try {
@@ -2663,32 +2663,12 @@ export class PremiereProTools {
           if (!f.exists) {
             return JSON.stringify({ success: false, error: "File not found: ${escapedPath}" });
           }
-          var attempts = [];
-
-          // Attempt 1: project.importFiles (modern Premiere 2026 preferred)
-          if (typeof app.project !== 'undefined' && typeof app.project.importFiles === 'function') {
-            try {
-              var ok = app.project.importFiles(["${escapedPath}"], false, app.project.rootItem, false);
-              attempts.push({ method: "importFiles", ok: ok });
-              if (ok) return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "importFiles", attempts: attempts });
-            } catch (e1) { attempts.push({ method: "importFiles", error: e1.toString() }); }
+          // suppressUI=true asks Premiere not to surface import warning dialogs.
+          var imported = app.project.importFiles(["${escapedPath}"], true, app.project.rootItem, false);
+          if (!imported) {
+            return JSON.stringify({ success: false, imported: false, path: "${escapedPath}", method: "importFiles(suppressUI=true)", error: "Premiere rejected the FCP7 XML import" });
           }
-
-          // Attempt 2: openFCPXML with suppressUI flag (Premiere 2026)
-          if (typeof app.openFCPXML === 'function') {
-            try {
-              app.openFCPXML("${escapedPath}", true);
-              return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "openFCPXML(path,true)", attempts: attempts });
-            } catch (e2) {
-              attempts.push({ method: "openFCPXML(path,true)", error: e2.toString() });
-              try {
-                app.openFCPXML("${escapedPath}");
-                return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "openFCPXML(path)", attempts: attempts });
-              } catch (e3) { attempts.push({ method: "openFCPXML(path)", error: e3.toString() }); }
-            }
-          }
-
-          return JSON.stringify({ success: false, error: "All import methods failed", attempts: attempts });
+          return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "importFiles(suppressUI=true)" });
         } catch (e) {
           return JSON.stringify({ success: false, error: e.toString() });
         }
@@ -2699,7 +2679,7 @@ export class PremiereProTools {
         ...parsed,
         message: parsed.success
           ? `FCP XML imported successfully via ${parsed.method} — Premiere created new sequence atomically`
-          : `Failed to import FCP XML — see attempts for details`,
+          : `Failed to import FCP XML — ${parsed.error || 'Premiere rejected the import'}`,
         filePath
       };
     } catch (error) {
@@ -2718,45 +2698,12 @@ export class PremiereProTools {
    * or the interactive dialog — app.importEDL has no video-standard argument.
    */
   private async importEdl(filePath: string): Promise<any> {
-    try {
-      const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const script = `
-        try {
-          var f = new File("${escapedPath}");
-          if (!f.exists) {
-            return JSON.stringify({ success: false, error: "File not found: ${escapedPath}" });
-          }
-          // Premiere's EDL import API: app.importEDL(filePath, sequence, project)
-          // If no sequence provided, Premiere creates a new one with prompted settings.
-          // Note: this may pop up an interactive sequence-settings dialog.
-          if (typeof app.importEDL === 'function') {
-            app.importEDL("${escapedPath}");
-            return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", mode: "importEDL" });
-          } else {
-            // Fallback: try app.openDocument or app.project.importFiles
-            var imported = app.project.importFiles(["${escapedPath}"], false, app.project.rootItem, false);
-            return JSON.stringify({ success: !!imported, imported: !!imported, path: "${escapedPath}", mode: "importFiles_fallback" });
-          }
-        } catch (e) {
-          return JSON.stringify({ success: false, error: e.toString() });
-        }
-      `;
-      const result: any = await this.bridge.executeScript(script);
-      const parsed = typeof result === 'string' ? JSON.parse(result) : result;
-      return {
-        ...parsed,
-        message: parsed.success
-          ? `EDL imported successfully — check project for new sequence`
-          : `Failed to import EDL — try import_fcp_xml as alternative`,
-        filePath
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: `Failed to import EDL: ${error instanceof Error ? error.message : String(error)}`,
-        filePath
-      };
-    }
+    return {
+      success: false,
+      blockedBeforePremiere: true,
+      filePath,
+      error: 'CMX 3600 EDL import is disabled because Premiere only exposes it through an interactive dialog that blocks CEP. Convert the EDL to FCP7 XML and use import_fcp_xml for unattended import.'
+    };
   }
 
   private async importFolder(folderPath: string, binName?: string, recursive = false): Promise<any> {
@@ -2841,7 +2788,7 @@ export class PremiereProTools {
   }
 
   // Sequence Management Implementation
-  private async createSequence(name: string, presetPath?: string, _width?: number, _height?: number, _frameRate?: number, _sampleRate?: number): Promise<any> {
+  private async createSequence(name: string, presetPath: string): Promise<any> {
     try {
       const result: any = await this.bridge.createSequence(name, presetPath);
       if (result?.success === false) {
@@ -2869,6 +2816,43 @@ export class PremiereProTools {
         } : {})
       };
     }
+  }
+
+  private async createSequenceFromProjectItems(name: string, projectItemIds: string[]): Promise<any> {
+    if (!projectItemIds.length) {
+      return { success: false, error: 'At least one imported project item is required to create a sequence without a dialog.' };
+    }
+
+    const script = `
+      try {
+        function walk(parent, output) {
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var item = parent.children[i];
+            output.push(item);
+            if (item.type === ProjectItemType.BIN) walk(item, output);
+          }
+        }
+        var ids = ${JSON.stringify(projectItemIds)};
+        var allItems = [];
+        walk(app.project.rootItem, allItems);
+        var items = [];
+        for (var j = 0; j < ids.length; j++) {
+          for (var k = 0; k < allItems.length; k++) {
+            if (String(allItems[k].nodeId) === String(ids[j])) {
+              items.push(allItems[k]);
+              break;
+            }
+          }
+        }
+        if (!items.length) return JSON.stringify({ success: false, error: 'Imported project items could not be found.' });
+        var sequence = app.project.createNewSequenceFromClips(${JSON.stringify(name)}, items, app.project.rootItem);
+        if (!sequence) return JSON.stringify({ success: false, error: 'Premiere did not create a sequence from the imported clips.' });
+        return JSON.stringify({ success: true, id: sequence.sequenceID, name: sequence.name, itemCount: items.length });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
   }
 
   private async duplicateSequence(sequenceId: string, newName: string, clearContents = false): Promise<any> {

@@ -11,7 +11,7 @@ export interface PremiereProTransport {
   openProject(path: string): Promise<PremiereProProject>;
   saveProject(): Promise<void>;
   importMedia(filePath: string): Promise<PremiereProProjectItem>;
-  createSequence(name: string, presetPath?: string): Promise<PremiereProSequence>;
+  createSequence(name: string, presetPath: string): Promise<PremiereProSequence>;
   addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio?: boolean, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip>;
   addToTimelineBatch(sequenceId: string, clips: Array<{ projectItemId: string; trackIndex: number; time: number; linkAudio?: boolean; sourceInPoint?: number; sourceOutPoint?: number }>): Promise<any>;
   renderSequence(sequenceId: string, outputPath: string, presetPath: string, options?: {

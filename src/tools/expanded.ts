@@ -1393,17 +1393,15 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "create_sequence_from_preset":
           if (!app.project) return fail("No open project");
+          if (!args.presetPath && !args.preset) return fail("create_sequence_from_preset requires a .sqpreset path so Premiere does not open the New Sequence dialog.", { blockedBeforePremiere: true });
           var presetSequence = null;
-          var presetMethod = "createNewSequenceFromPreset";
-          if (app.project.createNewSequenceFromPreset) {
-            presetSequence = app.project.createNewSequenceFromPreset(String(args.name || "New Sequence"), String(args.presetPath || args.preset || ""));
-          } else if (app.project.createNewSequence) {
-            presetMethod = "createNewSequence";
-            presetSequence = app.project.createNewSequence(String(args.name || "New Sequence"), String(args.presetPath || args.preset || ""));
+          var presetMethod = "newSequence";
+          if (app.project.newSequence) {
+            presetSequence = app.project.newSequence(String(args.name || "New Sequence"), String(args.presetPath || args.preset));
           } else {
-            return fail("No sequence creation API is available");
+            return fail("Premiere's non-interactive newSequence API is unavailable");
           }
-          if (!presetSequence) return fail("Premiere did not return a sequence from createNewSequenceFromPreset");
+          if (!presetSequence) return fail("Premiere did not return a sequence from newSequence");
           return ok({ created: true, name: presetSequence.name, sequenceId: presetSequence.sequenceID, method: presetMethod });
 
         case "get_export_file_extension":
