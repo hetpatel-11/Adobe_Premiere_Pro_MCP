@@ -1,8 +1,19 @@
+<div align="center">
+
 # MCP Bridge for Adobe Premiere Pro
 
-[![npm](https://img.shields.io/npm/v/adobe-premiere-pro-mcp.svg)](https://www.npmjs.com/package/adobe-premiere-pro-mcp) [![GitHub release](https://img.shields.io/github/v/release/hetpatel-11/Adobe_Premiere_Pro_MCP)](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/releases) [![License](https://img.shields.io/badge/license-MIT-5fd3c6.svg)](LICENSE.md)
+**Operate local Adobe Premiere Pro projects through MCP.**
 
-Control local Adobe Premiere Pro projects through MCP with Codex, Claude Code, Claude Desktop, and other MCP clients. The supported production bridge is CEP; UXP remains experimental.
+283 tools, 13 context resources, and 10 guided prompts for Codex, Claude Code, Claude Desktop, and other MCP clients. CEP is the supported production bridge; UXP remains experimental.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-5fd3c6.svg)](LICENSE.md)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org/)
+[![MCP](https://img.shields.io/badge/MCP-local%20server-5fd3c6.svg)](https://modelcontextprotocol.io/)
+[![npm](https://img.shields.io/npm/v/adobe-premiere-pro-mcp.svg)](https://www.npmjs.com/package/adobe-premiere-pro-mcp)
+[![CEP](https://img.shields.io/badge/CEP-production-2ea44f.svg)](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)
+[![UXP](https://img.shields.io/badge/UXP-experimental-f2c14e.svg)](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)
+
+</div>
 
 **Start here:** install the local bridge, open it in Premiere, then run `verify_premiere_connection` before editing.
 
