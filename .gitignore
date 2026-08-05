@@ -9,6 +9,8 @@ dist/
 *.log
 .DS_Store
 *.backup
+.mcpb-staging/
+release-artifacts/
 
 # Worktrees
 .worktrees/

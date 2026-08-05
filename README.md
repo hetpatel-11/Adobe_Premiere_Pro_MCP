@@ -28,6 +28,16 @@ Requirements:
 
 The bundled `uxp-plugin` is an **experimental preview**. It is shipped for evaluation but is not a replacement for the validated CEP bridge and is not installed by the CLI.
 
+### Claude Desktop one-click bundle
+
+Each GitHub release includes an `.mcpb` bundle for Claude Desktop. Download the matching `adobe-premiere-pro-mcp-<version>.mcpb` asset and open it in Claude Desktop to install the local MCP server. Its first launch installs the bundled CEP bridge for the current user.
+
+Restart Premiere Pro, open `Window > Extensions > MCP Bridge (CEP)`, set the bridge directory, and start the bridge. Then ask Claude:
+
+> Run `verify_premiere_connection`. Make no changes.
+
+The bundle is unsigned. Install it only from this repository's GitHub Releases. A signed Adobe CEP `.zxp` archive is not currently offered.
+
 ### MCP client configuration
 
 The installer configures Claude Desktop on macOS and Claude Desktop plus GitHub Copilot in VS Code on Windows. For another MCP client, configure it to run:
@@ -58,29 +68,6 @@ On Windows, use `npm run setup:win` from PowerShell after `npm install` and `npm
 
 ---
 
-## Building Something Better
-
-<table>
-<tr>
-<td width="100" align="center">
-<a href="https://github.com/Monet-AI-Editor/Monet">
-  <img src="images/monet-logo.svg" width="80" height="80" alt="Monet logo" />
-</a>
-</td>
-<td>
-
-**Adobe Premiere Pro was not built for AI agents — and it shows.**
-
-I'm building **[Monet](https://github.com/Monet-AI-Editor/Monet)**, an AI-first video editor designed from day one for full coding-agent control for claude code and openai codex. No workarounds. No scripting hacks. Just a clean API built for the way agents actually work.
-
-➡️ **[Star Monet on GitHub](https://github.com/Monet-AI-Editor/Monet)** 
-
-</td>
-</tr>
-</table>
-
----
-
 ![Current MCP Bridge (CEP) panel](images/demo.png)
 
 Current CEP panel UI inside Premiere Pro, using the refreshed bridge controls and status layout.
@@ -100,13 +87,13 @@ This repository is currently validated for:
 
 Current catalog status as of July 29, 2026:
 
-- `281` Premiere Pro MCP tools are exposed for AI-driven video editing
+- `282` Premiere Pro MCP tools are exposed for AI-driven video editing
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
 - the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, export readiness validation, and linked audio/video operations
 
 Most recent completed local live validation:
 
-- `281` active tools are exposed; `validate_project_for_export` replaces the removed AE comp import path with a non-destructive export readiness audit, and the merged main branch includes `detect_silence`
+- `282` active tools are exposed; `verify_premiere_connection` is the canonical read-only bridge and host readiness check, while `validate_project_for_export` replaces the removed AE comp import path with a non-destructive export readiness audit
 - `0` known parked or placeholder tools are advertised
 - `import_ae_comps` is intentionally not advertised because Premiere returned `false` for real `.aep` fixtures in this environment and a generic `.aep` import can wedge the CEP bridge
 
@@ -129,6 +116,8 @@ Example prompts:
 For monochrome looks, prefer `apply_effect` with `Black & White` instead of trying to force black and white through generic saturation-only adjustments.
 
 Before editing, you can also attach the `premiere://config/get_instructions` resource to give the model Premiere-specific operating guidance.
+
+For a predictable start to every session, first run `verify_premiere_connection`. It confirms that the CEP bridge responded and returns the Premiere build, open project, and active sequence without modifying the project.
 
 High-level workflow tools included:
 
@@ -382,7 +371,7 @@ This creates temporary `Sweep ...` sequences in the currently open project so th
 
 ## Tool Coverage
 
-The `281` exposed tools are grouped roughly like this:
+The `282` exposed tools are grouped roughly like this:
 
 - Discovery and project inspection
 - Project and sequence management

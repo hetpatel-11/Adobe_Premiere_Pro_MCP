@@ -68,6 +68,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('import_mogrt');
       expect(toolNames).toContain('setup_ducking');
       expect(toolNames).toContain('validate_project_for_export');
+      expect(toolNames).toContain('verify_premiere_connection');
       expect(toolNames).toContain('detect_silence');
       expect(toolNames).toContain('ping');
       expect(toolNames).toContain('get_full_project_overview');
@@ -79,7 +80,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('add_tracks');
       expect(toolNames).toContain('get_encoder_presets');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(281);
+      expect(availableTools).toHaveLength(282);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -131,6 +132,25 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript).toHaveBeenCalled();
       expect(result.success).toBe(true);
       expect(result.data.connected).toBe(true);
+    });
+
+    it('runs the connection verification as a read-only bridge call', async () => {
+      mockBridge.executeScript.mockResolvedValue({
+        success: true,
+        status: 'connected',
+        bridge: 'responsive',
+        premiere: { version: '26.0', build: '123' },
+        readOnly: true
+      });
+
+      const result = await tools.executeTool('verify_premiere_connection', {});
+
+      expect(result.success).toBe(true);
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain("status: 'connected'");
+      expect(script).toContain('readOnly: true');
+      expect(script).not.toContain('save()');
+      expect(script).not.toContain('create');
     });
 
     it('does not report expanded track creation as successful unless Premiere confirms it', async () => {

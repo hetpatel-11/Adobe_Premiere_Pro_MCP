@@ -265,6 +265,11 @@ export class PremiereProTools {
         inputSchema: z.object({})
       },
       {
+        name: 'verify_premiere_connection',
+        description: 'Read-only readiness check for the live CEP bridge and Premiere Pro host. Run this before an editing workflow to confirm the bridge responds and report the Premiere version, project, and active sequence without changing the project.',
+        inputSchema: z.object({})
+      },
+      {
         name: 'validate_project_for_export',
         description: 'Runs a non-destructive export readiness audit for the active or requested sequence. Checks timeline content, offline media, missing export preset/output folder inputs, gaps, markers, and basic audio/video track state before an agent queues an export.',
         inputSchema: z.object({
@@ -1369,6 +1374,8 @@ export class PremiereProTools {
           return await this.listSequenceTracks(args.sequenceId);
         case 'get_project_info':
           return await this.getProjectInfo();
+        case 'verify_premiere_connection':
+          return await this.verifyPremiereConnection();
         case 'validate_project_for_export':
           return await this.validateProjectForExport(args.sequenceId, args.outputPath, args.presetPath, args.requireNonEmptyTimeline, args.checkGaps);
         case 'get_encoder_presets':
@@ -1882,6 +1889,43 @@ export class PremiereProTools {
         return JSON.stringify({
           success: false,
           error: e.toString()
+        });
+      }
+    `;
+
+    return await this.bridge.executeScript(script);
+  }
+
+  private async verifyPremiereConnection(): Promise<any> {
+    const script = `
+      try {
+        var project = app.project;
+        var sequence = project ? project.activeSequence : null;
+        return JSON.stringify({
+          success: true,
+          status: 'connected',
+          bridge: 'responsive',
+          premiere: {
+            version: app.version || null,
+            build: app.build || null
+          },
+          project: project ? {
+            name: project.name || null,
+            path: project.path || null,
+            sequenceCount: project.sequences ? project.sequences.numSequences : 0
+          } : null,
+          activeSequence: sequence ? {
+            id: sequence.sequenceID,
+            name: sequence.name
+          } : null,
+          readOnly: true
+        });
+      } catch (e) {
+        return JSON.stringify({
+          success: false,
+          status: 'unavailable',
+          error: e.toString(),
+          nextStep: 'Open Window > Extensions > MCP Bridge (CEP), start the bridge, then run this check again.'
         });
       }
     `;

@@ -1,7 +1,7 @@
 {
   "name": "adobe-premiere-pro-mcp",
-  "version": "1.1.3",
-  "description": "281 tools for AI-driven Adobe Premiere Pro video editing via MCP, for Codex, Claude, and other MCP clients.",
+  "version": "1.1.4",
+  "description": "282 tools for AI-driven Adobe Premiere Pro video editing via MCP, for Codex, Claude, and other MCP clients.",
   "main": "dist/index.js",
   "bin": {
     "premiere-pro-mcp": "dist/cli.js"
@@ -14,6 +14,8 @@
     "skills",
     "README.md",
     "QUICKSTART.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE.md"
   ],
   "type": "module",
@@ -32,7 +34,8 @@
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src/**/*.ts",
     "prepack": "npm run build",
-    "pack:check": "node scripts/verify-package.mjs"
+    "pack:check": "node scripts/verify-package.mjs",
+    "bundle:mcpb": "node scripts/build-mcpb.mjs"
   },
   "keywords": [
     "mcp",
@@ -59,6 +62,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
     "@types/fs-extra": "^11.0.4",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.14.10",

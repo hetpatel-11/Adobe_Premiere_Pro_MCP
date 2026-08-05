@@ -25,6 +25,7 @@ jobs:
       - run: npm run build
       - run: npm test -- --runInBand --silent
       - run: npm run pack:check
+      - run: npm run bundle:mcpb
 
       - name: Build unsigned CEP archive
         run: |
@@ -34,4 +35,8 @@ jobs:
       - name: Upload CEP archive
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "MCPBridgeCEP-${{ github.event.release.tag_name }}-unsigned.zip" --clobber
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "MCPBridgeCEP-${{ github.event.release.tag_name }}-unsigned.zip" \
+            "release-artifacts/adobe-premiere-pro-mcp-*.mcpb" \
+            --clobber
