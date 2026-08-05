@@ -1,7 +1,7 @@
 {
   "name": "mcp-adobe-premiere-pro",
-  "version": "1.0.0",
-  "description": "Model Context Protocol tools for Adobe Premiere Pro - AI-powered video editing through natural language prompts",
+  "version": "1.1.0",
+  "description": "281 tools for AI-driven Adobe Premiere Pro video editing via MCP, for Codex, Claude, and other MCP clients.",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -26,7 +26,7 @@
     "extendscript",
     "uxp"
   ],
-  "author": "Your Name",
+  "author": "hetpatel-11",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
