@@ -180,209 +180,31 @@ npx skills add https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/tree/main/s
 
 The skill teaches agents how to install the MCP, start and verify the CEP bridge, use the Premiere tools safely, import real media before editing, prefer sequence-aware operations, and run diagnostics when something fails.
 
-## Source Install Details (macOS)
+## Advanced Setup and Verification
 
-```bash
-git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
-cd Adobe_Premiere_Pro_MCP
-npm run setup:mac
+For source installs, client-specific MCP configuration, Windows installer flags, diagnostics, and the live tool sweep, use [QUICKSTART.md](QUICKSTART.md). It is the canonical setup guide and keeps this page focused on choosing and using the product.
+
+The short version:
+
+1. Install with `npm install -g adobe-premiere-pro-mcp`, then run `premiere-pro-mcp --install-cep`.
+2. Restart Premiere Pro and your MCP client, then start `Window > Extensions > MCP Bridge (CEP)`.
+3. Run `premiere-pro-mcp --doctor`, then ask the client to call `verify_premiere_connection` without making changes.
+
+For manual registration in any MCP client, use the global command after npm installation:
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "premiere-pro-mcp"
+    }
+  }
+}
 ```
 
-That installer will:
+The supported UI bridge is CEP. If Premiere does not expose the extension, enable **UXP Plugins > Enable developer mode** in Premiere preferences, restart Premiere, and reopen the CEP panel. The bundled UXP panel remains experimental.
 
-- install dependencies
-- build `dist/index.js`
-- enable Adobe CEP debug mode
-- install the `MCP Bridge (CEP)` extension
-- create `/tmp/premiere-mcp-bridge`
-- add the `premiere-pro` MCP entry to Claude Desktop
-
-Important:
-
-- the supported UI bridge in this repo is the `MCP Bridge (CEP)` extension
-- the installer enables Adobe **CEP** debug mode automatically
-- if Premiere does not expose the extension cleanly on your machine, enable **UXP Plugins > Enable developer mode** in Premiere Pro preferences before opening the bridge panel
-- `npm run setup:mac` is the easiest path for Claude Desktop on macOS because it updates Claude Desktop config automatically
-
-After the installer finishes:
-
-1. Quit and reopen your MCP client if it reads config on startup. If you used the installer, that means Claude Desktop.
-2. Quit and reopen Premiere Pro.
-3. In Premiere Pro on macOS, open `Premiere Pro > Preferences > Plugins` and enable **UXP Plugins > Enable developer mode**.
-4. Restart Premiere Pro if the setting was changed.
-5. Open `Window > Extensions > MCP Bridge (CEP)`.
-6. Set `Temp Directory` to `/tmp/premiere-mcp-bridge`.
-7. Click `Save Configuration`.
-8. Click `Start Bridge`.
-9. Connect from Codex, Claude Code, Claude Desktop, or another MCP client using the same temp directory.
-10. If commands fail, click `Run Diagnostics` and send back `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`.
-
-If you need a visual reference for the developer mode toggle, it looks like this:
-
-![Enable UXP developer mode in Premiere Pro](images/uxp-developer-mode.png)
-
-If the panel reports that Premiere is ready after `Start Bridge`, the bridge is live.
-
-## Source Install Details (Windows)
-
-```powershell
-git clone https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP.git
-cd Adobe_Premiere_Pro_MCP
-npm run setup:win
-```
-
-That installer will:
-
-- install dependencies
-- build `dist\index.js`
-- enable Adobe CEP debug mode under `HKCU:\Software\Adobe\CSXS.9` through `CSXS.15`
-- install the `MCP Bridge (CEP)` extension into `%APPDATA%\Adobe\CEP\extensions\MCPBridgeCEP`
-- create `%TEMP%\premiere-mcp-bridge`
-- add the `premiere-pro` MCP entry to GitHub Copilot in VS Code at `%APPDATA%\Code\User\mcp.json`
-- add the `premiere-pro` MCP entry to Claude Desktop at `%APPDATA%\Claude\claude_desktop_config.json`
-
-Optional flags:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -SkipCopilotConfig
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -SkipClaudeDesktopConfig
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -SkipAdobeDebugMode
-```
-
-After the installer finishes:
-
-1. Quit and reopen VS Code and/or Claude Desktop.
-2. Quit and reopen Premiere Pro.
-3. Open `Window > Extensions > MCP Bridge (CEP)`.
-4. Set `Temp Directory` to `%TEMP%\premiere-mcp-bridge`.
-5. Click `Save Configuration`.
-6. Click `Start Bridge`.
-7. Click `Test Connection`.
-
-Windows note: the installer and config path are smoke-tested on GitHub Actions Windows runners. A full Windows Premiere validation still requires a real Windows machine with Premiere Pro installed, the CEP panel visible in Premiere, and a live bridge round trip.
-
-## Install By Client
-
-### Claude Desktop
-
-On macOS, use:
-
-```bash
-npm run setup:mac
-```
-
-On Windows, use:
-
-```powershell
-npm run setup:win
-```
-
-Both installers automatically write the MCP entry for Claude Desktop.
-
-### GitHub Copilot in VS Code
-
-On Windows, use:
-
-```powershell
-npm run setup:win
-```
-
-The installer writes this server to VS Code's MCP config at `%APPDATA%\Code\User\mcp.json`. Restart VS Code after the installer finishes, then use VS Code's MCP server list to confirm `premiere-pro` is available.
-
-### Codex
-
-Build the server first:
-
-```bash
-npm install
-npm run build
-```
-
-Then add the MCP server on a single line:
-
-```bash
-codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
-```
-
-Replace `/absolute/path/to/Adobe_Premiere_Pro_MCP` with the real absolute path to your clone. For example:
-
-```bash
-codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /Users/yourname/Downloads/Adobe_Premiere_Pro_MCP/dist/index.js
-```
-
-Before restarting Codex, verify the built entrypoint exists:
-
-```bash
-ls -l /Users/yourname/Downloads/Adobe_Premiere_Pro_MCP/dist/index.js
-```
-
-### Claude Code
-
-Build the server the same way:
-
-```bash
-npm install
-npm run build
-```
-
-Then register the MCP server in Claude Code using the same built `dist/index.js` entrypoint and the same temp directory:
-
-```text
-command: node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
-env: PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge
-```
-
-If you use a local MCP config file instead of a helper command, point it at the same `dist/index.js` and set the same env var.
-
-### Other MCP Clients
-
-Use the same manual registration approach as Claude Code:
-
-```text
-command: node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
-env: PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge
-```
-
-Important for all manual client setups:
-
-- keep the command on one line
-- use the real absolute path to `dist/index.js`
-- restart the client after adding or updating the MCP entry
-- start the CEP bridge inside Premiere and confirm the temp directory is exactly `/tmp/premiere-mcp-bridge`
-
-## Verify the Install
-
-Run the built-in checks:
-
-```bash
-npm run setup:doctor
-```
-
-That validates:
-
-- Node.js version
-- built server output
-- CEP extension install
-- `/tmp/premiere-mcp-bridge`
-- Adobe CEP debug mode
-- the Claude Desktop config entry when you use the installer path
-- CEP panel diagnostics written to `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json`
-
-On Windows, run:
-
-```powershell
-npm run setup:doctor:win
-```
-
-That validates the built server, CEP extension install, `%TEMP%\premiere-mcp-bridge`, Adobe CEP debug mode, the GitHub Copilot VS Code MCP config, and the Claude Desktop MCP config.
-
-For a deeper end-to-end check, use a disposable Premiere project and run:
-
-```bash
-node scripts/live-tool-sweep.mjs
-```
-
-This creates temporary `Sweep ...` sequences in the currently open project so the toolchain is exercised against real data.
+For a real-host sweep, use a disposable Premiere project and run `node scripts/live-tool-sweep.mjs`; it creates temporary `Sweep ...` sequences in the current project.
 
 ## How the Bridge Works
 
