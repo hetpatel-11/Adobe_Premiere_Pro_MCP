@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="800" viewBox="0 0 1360 800">
+  <rect width="1360" height="800" fill="#101820"/>
+  <rect x="80" y="100" width="620" height="600" rx="32" fill="#1f2b35" stroke="#5fd3c6" stroke-width="4"/>
+  <rect x="110" y="132" width="560" height="54" rx="14" fill="#f4f7f8"/>
+  <circle cx="146" cy="159" r="8" fill="#ef6b5a"/>
+  <circle cx="174" cy="159" r="8" fill="#f2c14e"/>
+  <circle cx="202" cy="159" r="8" fill="#5fd3c6"/>
+  <rect x="110" y="220" width="252" height="230" rx="18" fill="#263744"/>
+  <rect x="390" y="220" width="280" height="230" rx="18" fill="#263744"/>
+  <path d="M188 360l54-64 46 42 46-72" fill="none" stroke="#5fd3c6" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="504" cy="304" r="36" fill="#ef6b5a"/>
+  <path d="M493 286l34 18-34 18z" fill="#f4f7f8"/>
+  <rect x="110" y="486" width="560" height="74" rx="16" fill="#263744"/>
+  <rect x="136" y="505" width="146" height="34" rx="10" fill="#ef6b5a"/>
+  <rect x="306" y="505" width="190" height="34" rx="10" fill="#5fd3c6"/>
+  <rect x="520" y="505" width="124" height="34" rx="10" fill="#f2c14e"/>
+  <rect x="110" y="586" width="560" height="74" rx="16" fill="#263744"/>
+  <rect x="136" y="605" width="264" height="34" rx="10" fill="#5fd3c6"/>
+  <rect x="424" y="605" width="98" height="34" rx="10" fill="#ef6b5a"/>
+  <rect x="546" y="605" width="98" height="34" rx="10" fill="#5fd3c6"/>
+  <text x="780" y="276" fill="#f4f7f8" font-family="Helvetica, Arial, sans-serif" font-size="72" font-weight="700">PREMIERE PRO</text>
+  <text x="780" y="360" fill="#5fd3c6" font-family="Helvetica, Arial, sans-serif" font-size="72" font-weight="700">MCP BRIDGE</text>
+  <text x="784" y="430" fill="#b9c5cc" font-family="Helvetica, Arial, sans-serif" font-size="28">Local AI-assisted video editing</text>
+  <line x1="784" y1="476" x2="1240" y2="476" stroke="#ef6b5a" stroke-width="6"/>
+  <text x="784" y="540" fill="#f4f7f8" font-family="Helvetica, Arial, sans-serif" font-size="23">PROJECTS  •  TIMELINES  •  EFFECTS  •  EXPORTS</text>
+  <text x="784" y="602" fill="#b9c5cc" font-family="Helvetica, Arial, sans-serif" font-size="22">Independent software. Not affiliated with Adobe.</text>
+</svg>
