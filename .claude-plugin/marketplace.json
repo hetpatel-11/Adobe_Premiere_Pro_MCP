@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "adobe-premiere-pro-mcp",
+  "owner": {
+    "name": "Het Patel"
+  },
+  "metadata": {
+    "description": "Claude Code integration for local Adobe Premiere Pro editing through MCP."
+  },
+  "plugins": [
+    {
+      "name": "premiere-pro-mcp",
+      "source": "./claude-plugins/premiere-pro-mcp",
+      "description": "Inspect, edit, verify, and export local Adobe Premiere Pro projects through MCP.",
+      "version": "1.1.6",
+      "category": "creative",
+      "tags": ["premiere-pro", "video-editing", "mcp"]
+    }
+  ]
+}

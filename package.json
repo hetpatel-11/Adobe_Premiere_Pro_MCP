@@ -1,7 +1,7 @@
 {
   "name": "adobe-premiere-pro-mcp",
-  "version": "1.1.5",
-  "description": "282 tools for AI-driven Adobe Premiere Pro video editing via MCP, for Codex, Claude, and other MCP clients.",
+  "version": "1.1.6",
+  "description": "MCP Bridge for Adobe Premiere Pro with 283 tools for AI-driven video editing.",
   "main": "dist/index.js",
   "bin": {
     "premiere-pro-mcp": "dist/cli.js"
@@ -10,6 +10,10 @@
     "dist",
     "cep-plugin",
     "uxp-plugin",
+    "plugins",
+    ".agents",
+    ".claude-plugin",
+    "claude-plugins",
     "scripts",
     "skills",
     "README.md",

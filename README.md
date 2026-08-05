@@ -1,12 +1,12 @@
-# Adobe Premiere Pro MCP Server
+# MCP Bridge for Adobe Premiere Pro
 
-English | [日本語](README.ja.md) | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [한국어](README.ko.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Dansk](README.da.md) | [Polski](README.pl.md) | [Русский](README.ru.md) | [Bosanski](README.bs.md) | [العربية](README.ar.md) | [Norsk](README.no.md) | [Português (Brasil)](README.pt-BR.md) | [ไทย](README.th.md) | [Türkçe](README.tr.md) | [ភាសាខ្មែរ](README.km.md)
+[![npm](https://img.shields.io/npm/v/adobe-premiere-pro-mcp.svg)](https://www.npmjs.com/package/adobe-premiere-pro-mcp) [![GitHub release](https://img.shields.io/github/v/release/hetpatel-11/Adobe_Premiere_Pro_MCP)](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/releases) [![License](https://img.shields.io/badge/license-MIT-5fd3c6.svg)](LICENSE.md)
 
-Control Adobe Premiere Pro through MCP using Codex, Claude Code, Claude Desktop, or any other MCP client.
+Control local Adobe Premiere Pro projects through MCP with Codex, Claude Code, Claude Desktop, and other MCP clients. The supported production bridge is CEP; UXP remains experimental.
 
-[Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
+**Start here:** install the local bridge, open it in Premiere, then run `verify_premiere_connection` before editing.
 
----
+[Install](#install) | [Codex plugin](#codex-plugin) | [Claude Code plugin](#claude-code-plugin) | [Verify](#verify-the-install) | [Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
 
 ## Install
 
@@ -29,6 +29,28 @@ Requirements:
 - Premiere Pro, the MCP client, and this package on the same computer
 
 The bundled `uxp-plugin` is an **experimental preview**. It is shipped for evaluation but is not a replacement for the validated CEP bridge and is not installed by the CLI.
+
+### Codex plugin
+
+From a clone of this repository, install the Codex plugin that bundles the MCP configuration and Premiere editing skill:
+
+```bash
+codex plugin marketplace add .
+codex plugin add premiere-pro-mcp@adobe-premiere-pro-mcp
+```
+
+The plugin still requires the local CEP bridge. Run `premiere-pro-mcp --install-cep`, restart Premiere, start `Window > Extensions > MCP Bridge (CEP)`, then ask Codex to run `get_capabilities` followed by `verify_premiere_connection`.
+
+### Claude Code plugin
+
+From a clone of this repository:
+
+```text
+/plugin marketplace add .
+/plugin install premiere-pro-mcp@adobe-premiere-pro-mcp
+```
+
+Install and start the CEP bridge with the same steps as above before using the plugin.
 
 ### Claude Desktop one-click bundle
 
@@ -87,15 +109,15 @@ This repository is currently validated for:
 - the included Windows installer path for GitHub Copilot in VS Code and Claude Desktop config
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
 
-Current catalog status as of July 29, 2026:
+Current catalog status as of August 5, 2026:
 
-- `282` Premiere Pro MCP tools are exposed for AI-driven video editing
+- `283` MCP tools are exposed for AI-driven video editing
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
 - the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, export readiness validation, and linked audio/video operations
 
 Most recent completed local live validation:
 
-- `282` active tools are exposed; `verify_premiere_connection` is the canonical read-only bridge and host readiness check, while `validate_project_for_export` replaces the removed AE comp import path with a non-destructive export readiness audit
+- `283` active tools are exposed; `get_capabilities` reports local installation and optional live connection state, while `verify_premiere_connection` is the canonical read-only bridge and host readiness check
 - `0` known parked or placeholder tools are advertised
 - `import_ae_comps` is intentionally not advertised because Premiere returned `false` for real `.aep` fixtures in this environment and a generic `.aep` import can wedge the CEP bridge
 

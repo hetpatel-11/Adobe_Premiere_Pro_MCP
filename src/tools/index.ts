@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { spawn } from 'child_process';
 import { constants as fsConstants, promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, parse } from 'node:path';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
@@ -268,6 +268,13 @@ export class PremiereProTools {
         name: 'verify_premiere_connection',
         description: 'Read-only readiness check for the live CEP bridge and Premiere Pro host. Run this before an editing workflow to confirm the bridge responds and report the Premiere version, project, and active sequence without changing the project.',
         inputSchema: z.object({})
+      },
+      {
+        name: 'get_capabilities',
+        description: 'Reports the local MCP runtime, installed bridge status, tool/resource/prompt catalog sizes, and supported versus experimental integration surfaces. Set checkConnection to true to run the read-only live Premiere connection check; otherwise no Premiere request is made.',
+        inputSchema: z.object({
+          checkConnection: z.boolean().optional().describe('When true, run verify_premiere_connection and include its live result. Defaults to false so capability discovery is fast and non-invasive.')
+        })
       },
       {
         name: 'validate_project_for_export',
@@ -1376,6 +1383,8 @@ export class PremiereProTools {
           return await this.getProjectInfo();
         case 'verify_premiere_connection':
           return await this.verifyPremiereConnection();
+        case 'get_capabilities':
+          return await this.getCapabilities(args.checkConnection);
         case 'validate_project_for_export':
           return await this.validateProjectForExport(args.sequenceId, args.outputPath, args.presetPath, args.requireNonEmptyTimeline, args.checkGaps);
         case 'get_encoder_presets':
@@ -1931,6 +1940,76 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  private async getCapabilities(checkConnection = false): Promise<any> {
+    const currentPlatform = platform();
+    const cepExtensionPath = currentPlatform === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support', 'Adobe', 'CEP', 'extensions', 'MCPBridgeCEP')
+      : currentPlatform === 'win32'
+        ? join(process.env.APPDATA || homedir(), 'Adobe', 'CEP', 'extensions', 'MCPBridgeCEP')
+        : null;
+
+    let cepInstalled = false;
+    if (cepExtensionPath) {
+      try {
+        await fs.access(cepExtensionPath, fsConstants.R_OK);
+        cepInstalled = true;
+      } catch {
+        cepInstalled = false;
+      }
+    }
+
+    let liveConnection: any = {
+      checked: false,
+      status: 'not_checked',
+      nextStep: 'Run get_capabilities with checkConnection=true or call verify_premiere_connection before editing.'
+    };
+    if (checkConnection) {
+      try {
+        liveConnection = {
+          checked: true,
+          result: await this.verifyPremiereConnection()
+        };
+      } catch (error) {
+        liveConnection = {
+          checked: true,
+          status: 'unavailable',
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+
+    return {
+      success: true,
+      runtime: {
+        platform: currentPlatform,
+        transport: 'stdio',
+        bridgeDirectory: process.env.PREMIERE_TEMP_DIR || null
+      },
+      bridge: {
+        cep: {
+          status: cepInstalled ? 'installed' : 'not_detected',
+          path: cepExtensionPath,
+          support: 'production bridge for Premiere Pro 2020+'
+        },
+        uxp: {
+          status: 'experimental',
+          support: 'not a replacement for the validated CEP bridge'
+        }
+      },
+      catalog: {
+        tools: this.getAvailableTools().length,
+        resources: 13,
+        prompts: 10
+      },
+      liveConnection,
+      safety: {
+        recommendedFirstCall: 'verify_premiere_connection',
+        rawExtendScript: 'Available through execute_extendscript and evaluate_expression. Require explicit user approval before using either tool.',
+        note: 'A detected CEP installation does not prove that Premiere is running or the bridge is connected.'
+      }
+    };
   }
 
   private async validateProjectForExport(sequenceId?: string, outputPath?: string, presetPath?: string, requireNonEmptyTimeline = true, checkGaps = true): Promise<any> {

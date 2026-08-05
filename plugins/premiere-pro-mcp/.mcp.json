@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "npx",
+      "args": ["-y", "adobe-premiere-pro-mcp@latest"]
+    }
+  }
+}

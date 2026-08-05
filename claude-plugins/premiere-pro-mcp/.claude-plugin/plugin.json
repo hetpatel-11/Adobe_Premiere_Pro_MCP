@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "premiere-pro-mcp",
+  "displayName": "MCP Bridge for Adobe Premiere Pro",
+  "version": "1.1.6",
+  "description": "Inspect, edit, verify, and export local Adobe Premiere Pro projects through the MCP Bridge.",
+  "author": {
+    "name": "Het Patel",
+    "url": "https://github.com/hetpatel-11"
+  },
+  "homepage": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+  "repository": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+  "license": "MIT",
+  "keywords": ["premiere-pro", "video-editing", "mcp", "timeline", "export"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

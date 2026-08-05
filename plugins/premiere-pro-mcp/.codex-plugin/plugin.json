@@ -1,0 +1,32 @@
+{
+  "name": "premiere-pro-mcp",
+  "version": "1.1.6",
+  "description": "Inspect, edit, verify, and export local Adobe Premiere Pro projects through the MCP Bridge.",
+  "author": {
+    "name": "Het Patel",
+    "url": "https://github.com/hetpatel-11"
+  },
+  "homepage": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+  "repository": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+  "license": "MIT",
+  "keywords": ["premiere-pro", "video-editing", "mcp", "timeline", "export"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MCP Bridge for Adobe Premiere Pro",
+    "shortDescription": "Operate local Premiere projects through MCP",
+    "longDescription": "Install the local Premiere MCP server, verify the CEP bridge, and perform evidence-based editing workflows from Codex.",
+    "developerName": "Het Patel",
+    "category": "Creativity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+    "privacyPolicyURL": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Verify my local Premiere connection without making changes.",
+      "Inspect my active Premiere sequence and summarize its tracks.",
+      "Create a rough cut from these local media files and verify it."
+    ],
+    "brandColor": "#5FD3C6"
+  }
+}

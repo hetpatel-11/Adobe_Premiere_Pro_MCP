@@ -69,6 +69,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('setup_ducking');
       expect(toolNames).toContain('validate_project_for_export');
       expect(toolNames).toContain('verify_premiere_connection');
+      expect(toolNames).toContain('get_capabilities');
       expect(toolNames).toContain('detect_silence');
       expect(toolNames).toContain('ping');
       expect(toolNames).toContain('get_full_project_overview');
@@ -80,7 +81,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('add_tracks');
       expect(toolNames).toContain('get_encoder_presets');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(282);
+      expect(availableTools).toHaveLength(283);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -97,6 +98,26 @@ describe('PremiereProTools', () => {
   });
 
   describe('executeTool()', () => {
+    it('reports local capabilities without probing the Premiere bridge by default', async () => {
+      const result = await tools.executeTool('get_capabilities', {});
+
+      expect(result.success).toBe(true);
+      expect(result.catalog).toEqual({ tools: 283, resources: 13, prompts: 10 });
+      expect(result.liveConnection.checked).toBe(false);
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('can include an explicit read-only live connection check in capabilities', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, status: 'connected' });
+
+      const result = await tools.executeTool('get_capabilities', { checkConnection: true });
+
+      expect(result.success).toBe(true);
+      expect(result.liveConnection.checked).toBe(true);
+      expect(result.liveConnection.result).toEqual({ success: true, status: 'connected' });
+      expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
+    });
+
     it('returns a clear error for unknown tools', async () => {
       const result = await tools.executeTool('unknown_tool', {});
 

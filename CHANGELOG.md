@@ -2,6 +2,12 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [1.1.6] - 2026-08-05
+
+- Added `get_capabilities`, a read-only report of local bridge installation, catalog coverage, and optional live connection status.
+- Added installable Codex and Claude Code plugin packages that reuse the supported local MCP server and Premiere editing skill.
+- Reworked the README entry path around client-specific installation and read-only connection verification.
+
 ## [1.1.5] - 2026-08-05
 
 - Added reproducible CEP ZXP signing, verification, and release-upload workflows.

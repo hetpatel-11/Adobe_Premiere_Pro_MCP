@@ -1,0 +1,20 @@
+{
+  "name": "adobe-premiere-pro-mcp",
+  "interface": {
+    "displayName": "MCP Bridge for Adobe Premiere Pro"
+  },
+  "plugins": [
+    {
+      "name": "premiere-pro-mcp",
+      "source": {
+        "source": "local",
+        "path": "./plugins/premiere-pro-mcp"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Creativity"
+    }
+  ]
+}
