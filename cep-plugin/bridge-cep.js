@@ -140,6 +140,14 @@
         this.loadConfig();
         this.updateUI();
         this.startCommandPolling();
+        // Auto-start so agents can talk without a manual "Start Bridge" click.
+        // Stop Bridge still works; a reload of the panel will start again.
+        try {
+            this.startBridge();
+            this.log('Bridge auto-started on panel load.', 'info');
+        } catch (e) {
+            this.log('Bridge auto-start failed: ' + e.message, 'error');
+        }
     };
 
     MCPPremiereBridge.prototype.getTempDirectory = function() {
@@ -235,6 +243,29 @@
         }, command.timeoutMs);
     };
 
+    /**
+     * Wrap host scripts in a Premiere undo group so every MCP mutation is one Ctrl+Z.
+     * Skips when the script already manages beginUndoGroup itself.
+     */
+    MCPPremiereBridge.prototype.wrapScriptWithUndoGroup = function(script, label) {
+        if (!script || /beginUndoGroup\s*\(/.test(script)) return script;
+        var safeLabel = String(label || 'MCP Bridge').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return [
+            '(function(){',
+            '  var __mcpUndoOpened = false;',
+            '  try { app.beginUndoGroup("' + safeLabel + '"); __mcpUndoOpened = true; }',
+            '  catch (e0) { try { app.project.beginUndoGroup("' + safeLabel + '"); __mcpUndoOpened = true; } catch (e1) {} }',
+            '  try {',
+            script,
+            '  } finally {',
+            '    if (__mcpUndoOpened) {',
+            '      try { app.endUndoGroup(); } catch (e2) { try { app.project.endUndoGroup(); } catch (e3) {} }',
+            '    }',
+            '  }',
+            '})();'
+        ].join('\n');
+    };
+
     MCPPremiereBridge.prototype.executeExtendScript = function(script, callback, requestedTimeoutMs) {
         var self = this;
         try {
@@ -250,7 +281,8 @@
                 return;
             }
 
-            var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + script;
+            var undoWrapped = this.wrapScriptWithUndoGroup(script, 'MCP Bridge');
+            var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + undoWrapped;
             var settled = false;
             // Honor a per-command timeout from the server (batch operations request up to 300s).
             // Fall back to 45s when the server does not specify one, and never go below it.
