@@ -14,6 +14,7 @@ jest.mock('fs', () => ({
     writeFile: jest.fn(),
     readFile: jest.fn(),
     unlink: jest.fn(),
+    rename: jest.fn(),
     rm: jest.fn(),
   }
 }));
@@ -26,6 +27,9 @@ describe('PremiereProBridge', () => {
   const mockFs = fs as jest.Mocked<typeof fs>;
   const configuredTempDir = '/tmp/premiere-mcp-bridge-test';
   const commandPath = path.join(configuredTempDir, 'command-test-uuid-1234.json');
+  // The command is written to a scratch name and renamed into place, so the panel
+  // never sees a partially written command-*.json while polling the directory.
+  const stagingPath = path.join(configuredTempDir, '.tmp-test-uuid-1234.json');
   const responsePath = path.join(configuredTempDir, 'response-test-uuid-1234.json');
 
   beforeEach(() => {
@@ -63,9 +67,11 @@ describe('PremiereProBridge', () => {
 
     expect(result).toEqual({ ok: true });
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('return JSON.stringify')
     );
+    // Published atomically: visible under its real name only once fully written.
+    expect(mockFs.rename).toHaveBeenCalledWith(stagingPath, commandPath);
     expect(mockFs.unlink).toHaveBeenCalledWith(commandPath);
     expect(mockFs.unlink).toHaveBeenCalledWith(responsePath);
   });
@@ -82,11 +88,11 @@ describe('PremiereProBridge', () => {
     await bridge.executeScript('(function(){ return JSON.stringify({ ok: true }); })();');
 
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('(function(){ return JSON.stringify({ ok: true }); })();')
     );
     expect(mockFs.writeFile).not.toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('(function(){\n(function(){ return JSON.stringify({ ok: true }); })();\n})();')
     );
   });
@@ -191,11 +197,11 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.projectPath).toBe('/tmp/projects/Test.prproj');
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('app.newProject(projectPath)')
     );
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('Premiere Pro did not create or activate the requested project')
     );
   });
@@ -219,11 +225,11 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.actualPath).toBe('/tmp/projects/AlreadyOpen.prproj');
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('app.openDocument(projectPath)')
     );
     expect(mockFs.writeFile).toHaveBeenCalledWith(
-      commandPath,
+      stagingPath,
       expect.stringContaining('Premiere Pro did not activate the requested project')
     );
   });

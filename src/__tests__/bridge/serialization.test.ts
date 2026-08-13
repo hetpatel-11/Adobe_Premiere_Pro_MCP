@@ -1,0 +1,231 @@
+/**
+ * Characters that survive JSON.stringify but not the trip into Premiere.
+ *
+ * All three behaviours below were reproduced against a live 26.0.2 host before
+ * being fixed, by writing marker names through add_marker and reading them back
+ * through list_markers.
+ */
+
+import { PremiereProBridge } from '../../bridge/index.js';
+import { promises as fs } from 'fs';
+import path from 'path';
+import vm from 'vm';
+
+jest.mock('fs', () => ({
+  promises: {
+    mkdir: jest.fn(),
+    access: jest.fn(),
+    readdir: jest.fn(),
+    writeFile: jest.fn(),
+    readFile: jest.fn(),
+    unlink: jest.fn(),
+    rename: jest.fn(),
+    rm: jest.fn(),
+  }
+}));
+
+jest.mock('node:crypto', () => ({
+  randomUUID: jest.fn(() => 'test-uuid-1234')
+}));
+
+describe('script serialization', () => {
+  const mockFs = fs as jest.Mocked<typeof fs>;
+  const configuredTempDir = '/tmp/premiere-mcp-bridge-test';
+  const commandPath = path.join(configuredTempDir, 'command-test-uuid-1234.json');
+  // Written here first, then renamed to commandPath so the panel cannot read a
+  // half-written command while polling.
+  const stagingPath = path.join(configuredTempDir, '.tmp-test-uuid-1234.json');
+
+  const LINE_SEPARATOR = '\u2028';
+  const PARAGRAPH_SEPARATOR = '\u2029';
+  const NUL = '\u0000';
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.PREMIERE_TEMP_DIR = configuredTempDir;
+  });
+
+  afterEach(() => {
+    delete process.env.PREMIERE_TEMP_DIR;
+  });
+
+  const readyBridge = async (): Promise<PremiereProBridge> => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ ok: true }));
+    mockFs.unlink.mockResolvedValue(undefined);
+    await bridge.initialize();
+    return bridge;
+  };
+
+  /** The script as it was actually written to the command file. */
+  const writtenScript = (): string => {
+    const call = mockFs.writeFile.mock.calls.find(
+      ([, payload]) => typeof payload === 'string' && payload.includes('"script"'),
+    );
+    if (!call) throw new Error('no command file was written');
+    return JSON.parse(call[1] as string).script as string;
+  };
+
+  it('escapes U+2028 so it cannot split a generated string literal', async () => {
+    // JSON.stringify leaves these raw — legal in JSON, but line terminators to
+    // a JavaScript parser, so the generated script died at parse time with a
+    // bare "ExtendScript execution failed via CEP evalScript()".
+    const bridge = await readyBridge();
+
+    await bridge.executeScript(`var name = ${JSON.stringify(`x${LINE_SEPARATOR}y`)};`);
+
+    const script = writtenScript();
+    expect(script).not.toContain(LINE_SEPARATOR);
+    expect(script).toContain('\\u2028');
+  });
+
+  it('escapes U+2029 as well', async () => {
+    const bridge = await readyBridge();
+
+    await bridge.executeScript(`var name = ${JSON.stringify(`x${PARAGRAPH_SEPARATOR}y`)};`);
+
+    const script = writtenScript();
+    expect(script).not.toContain(PARAGRAPH_SEPARATOR);
+    expect(script).toContain('\\u2029');
+  });
+
+  it('leaves an ordinary script untouched', async () => {
+    const bridge = await readyBridge();
+
+    await bridge.executeScript('return JSON.stringify({ ok: true });');
+
+    expect(writtenScript()).toContain('return JSON.stringify({ ok: true });');
+  });
+
+  it('refuses a raw NUL rather than letting the host truncate at it', async () => {
+    const bridge = await readyBridge();
+
+    await expect(bridge.executeScript(`var n = "p${NUL}q";`)).rejects.toThrow(/NUL byte/);
+    expect(mockFs.writeFile).not.toHaveBeenCalledWith(commandPath, expect.anything());
+  });
+
+  describe('the installed JSON.stringify', () => {
+    /**
+     * These used to assert on the SOURCE TEXT of the escaper and never call it.
+     * Asserting on the escaper's source text would not catch a bug that keeps
+     * the same shape: emitting \\u1 instead of \\u0001, dropping the quote escape,
+     * or disabling the control-character branch all leave the surrounding code
+     * intact. So the escaper is executed and its output parsed.
+     *
+     * It runs in an isolated vm context because the prelude assigns
+     * JSON.stringify, which would otherwise clobber the real one for the suite.
+     */
+    const loadEscaper = async (): Promise<(v: unknown) => string> => {
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+      return (sandbox as { __mcpStringify: (v: unknown) => string }).__mcpStringify;
+    };
+
+    it('round-trips every character below U+0020', async () => {
+      const stringify = await loadEscaper();
+
+      for (let code = 0; code < 0x20; code++) {
+        const original = `a${String.fromCharCode(code)}b`;
+        const emitted = stringify(original);
+        expect(JSON.parse(emitted)).toBe(original);
+      }
+    });
+
+    it('round-trips quotes and backslashes', async () => {
+      const stringify = await loadEscaper();
+
+      for (const original of ['say "hi"', 'C:\\Users\\bob', 'both " and \\', '\\"']) {
+        expect(JSON.parse(stringify(original))).toBe(original);
+      }
+    });
+
+    it('round-trips the two line separators', async () => {
+      const stringify = await loadEscaper();
+
+      for (const original of [`x${LINE_SEPARATOR}y`, `x${PARAGRAPH_SEPARATOR}y`]) {
+        expect(JSON.parse(stringify(original))).toBe(original);
+      }
+    });
+
+    it('produces four hex digits, not a truncated escape', async () => {
+      const stringify = await loadEscaper();
+
+      // \u1 parses as nothing useful; the bug that emitted it survived the old tests.
+      expect(stringify('a\u0001b')).toBe('"a\\u0001b"');
+    });
+
+    it('serialises nested structures a tool actually returns', async () => {
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      // The payload is built INSIDE the context on purpose. __mcpStringify tests
+      // arrays with `instanceof Array`, which is false for an array constructed in
+      // another realm -- an artifact of this harness, not of the host, where there
+      // is only one realm.
+      vm.runInContext(
+        prelude.slice(0, prelude.indexOf('function __findSequence')) +
+        `;__out = __mcpStringify({
+           success: true,
+           markers: [{ name: "a" + String.fromCharCode(1) + "b", comment: 'has "quotes"', time: 1.5 }],
+           count: 1
+         });`,
+        sandbox,
+      );
+
+      expect(JSON.parse(sandbox.__out as string)).toEqual({
+        success: true,
+        markers: [{ name: 'a\u0001b', comment: 'has "quotes"', time: 1.5 }],
+        count: 1,
+      });
+    });
+  });
+
+  describe('caller-authored scripts', () => {
+    /**
+     * The line-terminator repair is only sound on scripts this server generates,
+     * where everything outside a string literal is ASCII. execute_extendscript
+     * breaks that assumption, and rewriting blindly turned a U+2028 the caller
+     * used as a line break into the literal characters \\u2028 -- a syntax error
+     * on a script that previously ran. This was a regression, not a latent bug.
+     */
+    it('passes a caller script through untouched', async () => {
+      const bridge = await readyBridge();
+      const callerScript = `var a = 1;${LINE_SEPARATOR}var b = 2;`;
+
+      await bridge.executeScript(callerScript, undefined, true);
+
+      const script = writtenScript();
+      expect(script).toContain(LINE_SEPARATOR);
+      expect(script).not.toContain('\\u2028');
+    });
+
+    it('still repairs a generated script', async () => {
+      const bridge = await readyBridge();
+
+      await bridge.executeScript(`var n = ${JSON.stringify(`x${LINE_SEPARATOR}y`)};`);
+
+      const script = writtenScript();
+      expect(script).not.toContain(LINE_SEPARATOR);
+      expect(script).toContain('\\u2028');
+    });
+
+    it('still refuses a NUL from a caller script', async () => {
+      // Scoping the repair must not also disable the truncation guard.
+      const bridge = await readyBridge();
+
+      await expect(bridge.executeScript(`var n = "p${NUL}q";`, undefined, true))
+        .rejects.toThrow(/NUL byte/);
+    });
+  });
+});

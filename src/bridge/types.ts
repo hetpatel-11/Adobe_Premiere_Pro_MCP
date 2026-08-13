@@ -6,7 +6,7 @@ import type {
 } from './index.js';
 
 export interface PremiereProTransport {
-  executeScript(script: string, timeoutMs?: number): Promise<any>;
+  executeScript(script: string, timeoutMs?: number, callerAuthored?: boolean): Promise<any>;
   createProject(name: string, location: string): Promise<PremiereProProject>;
   openProject(path: string): Promise<PremiereProProject>;
   saveProject(): Promise<void>;

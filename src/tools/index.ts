@@ -129,6 +129,38 @@ interface TextInjectionEntry {
   [key: string]: any;
 }
 
+/**
+ * Returns the path of the first argument holding a NUL character, or null.
+ *
+ * Premiere truncates a string at the first NUL when it is assigned and reports
+ * success for the shortened value, so a name like "p\0q" is stored as "p".
+ * Nothing downstream can catch it: JSON.stringify turns the NUL into a \\u0000
+ * escape on the way into the generated script, so the script itself is clean
+ * and only the host sees the real character.
+ */
+export function findNulByteArgument(value: any, path = ''): string | null {
+  if (typeof value === 'string') {
+    return value.indexOf('\u0000') === -1 ? null : (path || 'argument');
+  }
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = findNulByteArgument(value[i], `${path}[${i}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value)) {
+      const found = findNulByteArgument(value[key], path ? `${path}.${key}` : key);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
 export function evaluateTextInjectionResult(result: any): any {
   if (!result || result.success === false) return result;
 
@@ -1343,6 +1375,20 @@ export class PremiereProTools {
   }
 
   async executeTool(name: string, args: Record<string, any>): Promise<any> {
+    // Premiere truncates a string at the first NUL when it is assigned — a
+    // marker named "p\0q" is created as "p" — and reports success for the
+    // truncated result. JSON.stringify escapes the NUL on the way into the
+    // generated script, so nothing downstream ever sees a raw byte to reject.
+    // This is the only layer that still holds the caller's actual value, so
+    // refuse it here rather than silently storing a different string.
+    const nulPath = findNulByteArgument(args);
+    if (nulPath) {
+      return {
+        success: false,
+        error: `Argument '${nulPath}' contains a NUL character. Premiere silently truncates strings at the first NUL rather than rejecting them, so this would have stored a shortened value and reported success. Remove the NUL and retry.`,
+      };
+    }
+
     const tool = this.getAvailableTools().find(t => t.name === name);
     if (!tool) {
       return {

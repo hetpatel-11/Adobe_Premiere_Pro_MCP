@@ -9,13 +9,30 @@
     var path = require('path');
     var os = require('os');
     var EXTENDSCRIPT_COMPAT_HELPERS = [
+        '// Built from character codes rather than backslash literals: this text is',
+        '// assembled in JavaScript before it reaches the host, so an escape written',
+        '// for the ExtendScript string would be consumed once on the way.',
         'function __mcpEscapeString(value) {',
-        '    return String(value)',
-        '        .replace(/\\\\/g, "\\\\\\\\")',
-        "        .replace(/\"/g, '\\\\\"')",
-        '        .replace(/\\r/g, "\\\\r")',
-        '        .replace(/\\n/g, "\\\\n")',
-        '        .replace(/\\t/g, "\\\\t");',
+        '    var text = String(value);',
+        '    var backslash = String.fromCharCode(92);',
+        '    var out = "";',
+        '    for (var i = 0; i < text.length; i++) {',
+        '        var code = text.charCodeAt(i);',
+        '        if (code === 34) { out += backslash + String.fromCharCode(34); }',
+        '        else if (code === 92) { out += backslash + backslash; }',
+        '        else if (code === 8) { out += backslash + "b"; }',
+        '        else if (code === 9) { out += backslash + "t"; }',
+        '        else if (code === 10) { out += backslash + "n"; }',
+        '        else if (code === 12) { out += backslash + "f"; }',
+        '        else if (code === 13) { out += backslash + "r"; }',
+        '        else if (code < 32 || code === 0x2028 || code === 0x2029) {',
+        '            var hex = code.toString(16);',
+        '            while (hex.length < 4) { hex = "0" + hex; }',
+        '            out += backslash + "u" + hex;',
+        '        }',
+        '        else { out += text.charAt(i); }',
+        '    }',
+        '    return out;',
         '}',
         'function __mcpStringify(value) {',
         '    if (value === null) return "null";',
@@ -42,7 +59,10 @@
         '    return "null";',
         '}',
         'if (typeof JSON === "undefined") { JSON = {}; }',
-        'if (typeof JSON.stringify !== "function") { JSON.stringify = __mcpStringify; }'
+        '// Installed unconditionally, matching the server prelude. The host ships a',
+        '// JSON.stringify that emits control characters raw, so guarding on its',
+        '// absence leaves the broken one in place for the panel own diagnostics.',
+        'JSON.stringify = __mcpStringify;'
     ].join('\n');
 
     function getDefaultTempPath() {
@@ -187,6 +207,15 @@
         }
     };
 
+    // The server polls for this exact filename, so writing it directly publishes the
+    // name before the content is complete and the server can read a truncated response.
+    // rename() within one directory is atomic, so the file appears only once whole.
+    MCPPremiereBridge.prototype.writeResponseAtomic = function(responseFile, payload) {
+        var staging = responseFile + '.part';
+        fs.writeFileSync(staging, JSON.stringify(payload, null, 2));
+        fs.renameSync(staging, responseFile);
+    };
+
     MCPPremiereBridge.prototype.processCommandFile = function(filePath) {
         var self = this;
         try {
@@ -196,15 +225,26 @@
             this.addToQueue(command);
             this.isProcessing = true;
             this.executeCommand(command, function(result) {
+                var responseFile = filePath.replace('command-', 'response-');
+                var responsePublished = false;
                 try {
-                    var responseFile = filePath.replace('command-', 'response-');
-                    fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-                    fs.unlinkSync(filePath);
+                    self.writeResponseAtomic(responseFile, result);
+                    responsePublished = true;
+
+                    // Guarded on its own. The server removes the command file on its
+                    // timeout path, so this unlink can legitimately fail — and if it were
+                    // allowed to reach the catch below it would overwrite the result that
+                    // was just published, turning a completed command into an error.
+                    try { fs.unlinkSync(filePath); } catch (eUnlink) {}
+
                     self.log('Command completed: ' + command.id, 'info');
                     self.updateCommandStatus(command.id, 'completed');
                 } catch (e) {
-                    var errFile = filePath.replace('command-', 'response-');
-                    fs.writeFileSync(errFile, JSON.stringify({ error: e.message, timestamp: new Date().toISOString() }, null, 2));
+                    if (!responsePublished) {
+                        try {
+                            self.writeResponseAtomic(responseFile, { error: e.message, timestamp: new Date().toISOString() });
+                        } catch (eWrite) {}
+                    }
                 }
                 self.isProcessing = false;
             });
@@ -212,8 +252,8 @@
             this.log('Error processing command file: ' + e.message, 'error');
             try {
                 var responseFile = filePath.replace('command-', 'response-');
-                fs.writeFileSync(responseFile, JSON.stringify({ error: e.message, timestamp: new Date().toISOString() }, null, 2));
-                fs.unlinkSync(filePath);
+                this.writeResponseAtomic(responseFile, { error: e.message, timestamp: new Date().toISOString() });
+                try { fs.unlinkSync(filePath); } catch (eUnlink) {}
             } catch (e2) {}
             this.isProcessing = false;
         }
