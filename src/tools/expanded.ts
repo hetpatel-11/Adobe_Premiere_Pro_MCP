@@ -565,6 +565,38 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
     function fail(message, details) { return JSON.stringify({ success: false, tool: toolName, error: String(message), details: details || null }); }
     function secondsToTicks(seconds) { return String(Math.round(Number(seconds || 0) * 254016000000)); }
     function ticksToSeconds(ticks) { return parseInt(String(ticks || "0"), 10) / 254016000000; }
+    // Premiere's marker palette, in setColorByIndex() order. getColorByIndex()
+    // is a getter despite the name — it ignores any argument and returns the
+    // marker's own index. It is not bounded by the 0-7 write domain: a marker
+    // can hold -1, a "no colour assigned" state that renders black, so the name
+    // lookup is guarded and reports null rather than an absent key.
+    var MARKER_COLOR_NAMES = ["green","red","purple","orange","yellow","white","blue","cyan"];
+    function markerColor(marker) {
+      var index = -1;
+      try { index = Number(marker.getColorByIndex()); } catch (e) { return { index: null, name: null }; }
+      if (isNaN(index)) return { index: null, name: null };
+      var withinPalette = index >= 0 && index < MARKER_COLOR_NAMES.length;
+      return { index: index, name: withinPalette ? MARKER_COLOR_NAMES[index] : null };
+    }
+    // Mirrors the sequence-marker resolver: a name (case-insensitive) or an
+    // index 0-7. Returns null for "not supplied" and the string "invalid" for
+    // input that cannot be honoured, so the caller can be told rather than
+    // silently given the default colour.
+    function resolveMarkerColorIndex(value) {
+      if (value === undefined || value === null || value === "") return null;
+      if (typeof value === "number") {
+        if (value !== Math.floor(value) || value < 0 || value > 7) return "invalid";
+        return value;
+      }
+      // \\s, not \s: inside a template literal \s collapses to a bare "s",
+      // so the emitted code would strip the letter s instead of whitespace.
+      var text = String(value).replace(/^\\s+|\\s+$/g, "").toLowerCase();
+      if (/^[0-7]$/.test(text)) return Number(text);
+      for (var ci = 0; ci < MARKER_COLOR_NAMES.length; ci++) {
+        if (MARKER_COLOR_NAMES[ci] === text) return ci;
+      }
+      return "invalid";
+    }
     function valueOfTime(timeValue) {
       if (!timeValue) return 0;
       if (typeof timeValue.seconds !== "undefined") return Number(timeValue.seconds);
@@ -581,6 +613,84 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         if (seq.sequenceID === idOrName || seq.name === idOrName) return seq;
       }
       return null;
+    }
+    // Returns an error message when the caller named a sequence that does not
+    // resolve, and null otherwise. targetSequence() already distinguishes "no id
+    // given" (use the active sequence) from "id given but unresolvable" (null),
+    // but every call site fell back to the active sequence anyway, which
+    // collapsed the two — so a stale id silently operated on whatever sequence
+    // happened to be on screen and reported success.
+    // Maps a DOM sequence to its QE counterpart. QE exposes .guid, which is the
+    // same value as sequence.sequenceID, so this is exact — no name matching and
+    // no assumption that QE and DOM index orders agree.
+    //
+    // This exists because qe.project.getActiveSequence() is what most QE work
+    // used, which silently retargets to whatever is on screen. QE can address any
+    // sequence, so honouring a sequenceId needs no activation and no restore.
+    function parRatioString(value) {
+      // videoPixelAspectRatio is a string in "N:M" form, not a number. Assigning a
+      // number throws "Illegal Parameter type" — verified against 26.0.2, where every
+      // ratio string tried (1:1, 10:11, 40:33, 4:3, 3:2, 2:1, 64:45, 16:9, 1:2) was
+      // accepted verbatim and read back unchanged.
+      var text = String(value);
+      if (text.indexOf(":") !== -1) return text;
+      var num = Number(value);
+      if (!isFinite(num) || num <= 0) return null;
+      // Reduce the decimal to a fraction so 1.5 becomes "3:2" rather than a value
+      // Premiere will not accept.
+      var denominator = 1000;
+      var numerator = Math.round(num * denominator);
+      function gcd(a, b) { while (b) { var t = a % b; a = b; b = t; } return a; }
+      var g = gcd(numerator, denominator);
+      return (numerator / g) + ":" + (denominator / g);
+    }
+    function qeSequenceFor(seq) {
+      if (!seq) return null;
+      try { app.enableQE(); } catch (eEnable) { return null; }
+      var count = 0;
+      try { count = qe.project.numSequences; } catch (eCount) { return null; }
+      for (var qi = 0; qi < count; qi++) {
+        // Each index is guarded separately: qe.project.numSequences can report
+        // more sequences than getSequenceAt() will actually return, and a throw
+        // at one index must not abort the scan before the target is reached.
+        try {
+          var cand = qe.project.getSequenceAt(qi);
+          if (cand && String(cand.guid) === String(seq.sequenceID)) return cand;
+        } catch (eAt) {}
+      }
+      // getSequenceAt() does not expose every sequence: one created by
+      // duplicate_sequence and never opened in a timeline is invisible to it, even
+      // while it is the active sequence. getActiveSequence() still returns a
+      // working handle in that case — verified against 26.0.2, guid and all — so
+      // fall back to it, but only once the guid confirms it is the sequence that
+      // was asked for. Addressing the wrong one is the bug this helper exists to
+      // prevent.
+      try {
+        var activeCandidate = qe.project.getActiveSequence();
+        if (activeCandidate && String(activeCandidate.guid) === String(seq.sequenceID)) return activeCandidate;
+      } catch (eActive) {}
+      return null;
+    }
+    function sequenceRequestError() {
+      // An empty or whitespace-only id is a supplied id, not an omitted one.
+      // Treating "" as absent let it fall through to the active sequence, which
+      // is the exact substitution this guard exists to prevent.
+      // Only fall back to the snake_case alias when sequenceId is genuinely
+      // absent. Treating "" as absent would send an empty id down the
+      // omitted-id path, which is the substitution this guard exists to stop.
+      var requested = args.sequenceId;
+      if (requested === undefined || requested === null) requested = args.sequence_id;
+      if (requested === undefined || requested === null) return null;
+      // \\s, not \s: this lives in a template literal, where \s collapses to a
+      // bare "s" and would strip the letter s instead of whitespace.
+      requested = String(requested).replace(/^\\s+|\\s+$/g, "");
+      if (requested === "") {
+        return "sequenceId was supplied but empty. Omit it to use the active sequence, " +
+          "or pass an id from list_sequences or get_active_sequence.";
+      }
+      if (findSequence(requested)) return null;
+      return "Sequence not found by id: " + requested +
+        ". Use list_sequences or get_active_sequence to obtain a valid sequence ID.";
     }
     function targetSequence() {
       return args.sequenceId || args.sequence_id ? findSequence(args.sequenceId || args.sequence_id) : activeSequence();
@@ -630,8 +740,16 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       });
       return found;
     }
+    // Set when a lookup helper bailed because the caller's sequenceId could not
+    // be resolved. The helpers can only return null to mean "not found", so the
+    // specific reason is parked here and preferred over the generic message at
+    // the call site. One tool call per generated script, so this cannot leak
+    // between requests.
+    var pendingSequenceError = null;
     function findClip(nodeId) {
-      var seq = targetSequence() || activeSequence();
+      var seqErr = sequenceRequestError();
+      if (seqErr) { pendingSequenceError = seqErr; return null; }
+      var seq = targetSequence();
       if (!seq) return null;
       function scan(collection, type) {
         for (var t = 0; t < collection.numTracks; t++) {
@@ -693,7 +811,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       return data;
     }
     function setSelection(matchFn, selected, additive) {
-      var seq = targetSequence() || activeSequence();
+      var seqErr = sequenceRequestError();
+      if (seqErr) return fail(seqErr);
+      var seq = targetSequence();
       if (!seq) return fail("No active sequence");
       var changed = [];
       function apply(collection, type) {
@@ -868,16 +988,23 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       return null;
     }
     function qeClipForClip(found) {
+      // findClip() searches every sequence, so the clip may not live in the active
+      // one; and QE track items include gaps and transitions, so the DOM clip index
+      // addresses a different item. Both were fixed at the tool call sites but missed
+      // here, which meant every tool routing through this helper -- set_frame_blend,
+      // set_time_interpolation, set_clip_volume, set_clip_pan, set_clip_opacity --
+      // kept mutating whatever sat at that index in whatever sequence was on screen.
       if (!found) return null;
-      app.enableQE();
-      var qeSeq = qe.project.getActiveSequence();
+      var qeSeq = qeSequenceFor(found.sequence);
       if (!qeSeq) return null;
       var qeTrack = found.trackType === "video" ? qeSeq.getVideoTrackAt(found.trackIndex) : qeSeq.getAudioTrackAt(found.trackIndex);
       if (!qeTrack) return null;
-      return qeTrack.getItemAt(found.clipIndex);
+      return __findQeClipByDomClip(qeTrack, found.clip);
     }
     function markerCollectionForTool() {
-      var seq = targetSequence() || activeSequence();
+      var seqErr = sequenceRequestError();
+      if (seqErr) { pendingSequenceError = seqErr; return null; }
+      var seq = targetSequence();
       if (args.projectItemId || args.itemId || args.item_id) {
         var markerItem = findItem(args.projectItemId || args.itemId || args.item_id);
         if (markerItem && markerItem.getMarkers) return markerItem.getMarkers();
@@ -940,9 +1067,13 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "get_sequence_structure":
         case "get_full_sequence_info":
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
           return ok(sequenceStructure(targetSequence()));
 
         case "get_timeline_summary":
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
           var sumSeq = targetSequence();
           var structure = sequenceStructure(sumSeq);
           var videoClips = 0;
@@ -957,6 +1088,8 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ count: app.project && app.project.sequences ? app.project.sequences.numSequences : 0 });
 
         case "get_total_clip_count":
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
           var countStruct = sequenceStructure(targetSequence());
           var vCount = 0, aCount = 0;
           if (countStruct) {
@@ -1048,7 +1181,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ value: app.project.getGraphicsWhiteLuminance() });
 
         case "is_work_area_enabled":
-          var workSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var workSeq = targetSequence();
           if (!workSeq) return fail("No active sequence");
           var workAreaEnabled = null;
           try { if (workSeq.isWorkAreaEnabled) workAreaEnabled = Boolean(workSeq.isWorkAreaEnabled()); } catch (workEnabledError) {}
@@ -1057,7 +1192,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ enabled: workAreaEnabled });
 
         case "get_timeline_gaps":
-          var gapSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var gapSeq = targetSequence();
           if (!gapSeq) return fail("No active sequence");
           var gaps = [];
           for (var gt = 0; gt < gapSeq.videoTracks.numTracks; gt++) {
@@ -1168,7 +1305,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "insert_from_source":
         case "overwrite_from_source":
-          var editSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var editSeq = targetSequence();
           var editItem = app.sourceMonitor.getProjectItem();
           if (!editSeq || !editItem) return fail("Need active sequence and source monitor item");
           var editPos = editSeq.getPlayerPosition().ticks;
@@ -1193,7 +1332,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return setSelection(function(clip) { return clip.nodeId === (args.clipId || args.node_id || args.nodeId); }, Boolean(args.selected !== false), true);
 
         case "get_target_tracks":
-          var targetSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var targetSeq = targetSequence();
           if (!targetSeq) return fail("No active sequence");
           var videoTargets = [], audioTargets = [];
           for (var tv = 0; tv < targetSeq.videoTracks.numTracks; tv++) { try { if (targetSeq.videoTracks[tv].isTargeted()) videoTargets.push({ index: tv, name: targetSeq.videoTracks[tv].name }); } catch (e) {} }
@@ -1201,7 +1342,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ video: videoTargets, audio: audioTargets });
 
         case "set_target_track":
-          var targetTrackSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var targetTrackSeq = targetSequence();
           if (!targetTrackSeq) return fail("No active sequence");
           var targetCollection = String(args.track_type || args.trackType || "video") === "audio" ? targetTrackSeq.audioTracks : targetTrackSeq.videoTracks;
           var targetTrack = targetCollection[Number(args.track_index || args.trackIndex || 0)];
@@ -1210,14 +1353,18 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ targeted: Boolean(args.targeted !== false) });
 
         case "rename_track":
-          var renameSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var renameSeq = targetSequence();
           if (!renameSeq) return fail("No active sequence");
           var renameTracks = String(args.track_type || args.trackType || "video") === "audio" ? renameSeq.audioTracks : renameSeq.videoTracks;
           renameTracks[Number(args.track_index || args.trackIndex || 0)].name = String(args.name || args.newName);
           return ok({ renamed: true, name: String(args.name || args.newName) });
 
         case "get_track_info":
-          var infoSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var infoSeq = targetSequence();
           if (!infoSeq) return fail("No active sequence");
           var trackType = String(args.track_type || args.trackType || "video");
           var trackIndex = Number(args.track_index || args.trackIndex || 0);
@@ -1417,7 +1564,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "remove_effect":
         case "remove_effect_by_name":
           var removeEffectClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!removeEffectClip) return fail("Clip not found");
+          if (!removeEffectClip) return fail(pendingSequenceError || "Clip not found");
           var effectToRemove = findComponent(removeEffectClip.clip, args.effectName || args.name);
           if (!effectToRemove) return ok({ removed: true, changed: false, effect: args.effectName || args.name, note: "Effect was already absent from clip" });
           var removeEffectResult = tryCall(effectToRemove.component, ["remove", "delete"], []);
@@ -1427,7 +1574,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "ripple_delete":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("ripple_delete requires clipId.");
           var rippleClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!rippleClip) return fail("Clip not found");
+          if (!rippleClip) return fail(pendingSequenceError || "Clip not found");
           rippleClip.clip.remove(true, true);
           return ok({ removed: true, ripple: true, clipId: args.clipId || args.node_id || args.nodeId });
 
@@ -1436,7 +1583,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "slip_edit":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail(toolName + " requires clipId.");
           var trimClipInfo = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!trimClipInfo) return fail("Clip not found");
+          if (!trimClipInfo) return fail(pendingSequenceError || "Clip not found");
           var editDelta = Number(args.delta || args.deltaSeconds || args.amount || 0);
           if (toolName === "slip_edit") {
             trimClipInfo.clip.inPoint = secondsToTime(valueOfTime(trimClipInfo.clip.inPoint) + editDelta);
@@ -1466,7 +1613,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "move_clip_to_track":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("move_clip_to_track requires clipId.");
           var moveTrackClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!moveTrackClip) return fail("Clip not found");
+          if (!moveTrackClip) return fail(pendingSequenceError || "Clip not found");
           var moveTrackResult = tryCall(moveTrackClip.clip, ["moveToTrack", "setTrack"], [Number(args.trackIndex || args.newTrackIndex || 0)]);
           if (moveTrackResult.called) return ok({ moved: true, trackIndex: Number(args.trackIndex || args.newTrackIndex || 0), method: moveTrackResult.method });
           var moveTargetIndex = Number(args.trackIndex || args.newTrackIndex || 0);
@@ -1486,7 +1633,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "remove_all_effects":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("remove_all_effects requires clipId.");
           var removeAllClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!removeAllClip) return fail("Clip not found");
+          if (!removeAllClip) return fail(pendingSequenceError || "Clip not found");
           var removedEffects = [];
           var failedEffects = [];
           for (var rai = removeAllClip.clip.components.numItems - 1; rai >= 0; rai--) {
@@ -1503,11 +1650,12 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_clip_speed_qe":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("set_clip_speed_qe requires clipId.");
           var speedClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!speedClip) return fail("Clip not found");
-          app.enableQE();
-          var speedQeSeq = qe.project.getActiveSequence();
+          if (!speedClip) return fail(pendingSequenceError || "Clip not found");
+          var speedQeSeq = qeSequenceFor(speedClip.sequence);
+          if (!speedQeSeq) return fail("Could not address sequence '" + speedClip.sequence.name + "' through the QE API.");
           var speedQeTrack = speedClip.trackType === "video" ? speedQeSeq.getVideoTrackAt(speedClip.trackIndex) : speedQeSeq.getAudioTrackAt(speedClip.trackIndex);
-          var speedQeClip = speedQeTrack.getItemAt(speedClip.clipIndex);
+          if (!speedQeTrack) return fail("QE track not found at index " + speedClip.trackIndex);
+          var speedQeClip = __findQeClipByDomClip(speedQeTrack, speedClip.clip);
           if (!speedQeClip || !speedQeClip.setSpeed) return fail("QE clip setSpeed API unavailable");
           var requestedSpeed = Number(args.speed || args.percent || 100);
           try {
@@ -1524,7 +1672,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_time_interpolation":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail(toolName + " requires clipId.");
           var interpClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!interpClip) return fail("Clip not found");
+          if (!interpClip) return fail(pendingSequenceError || "Clip not found");
           var interpQeClip = qeClipForClip(interpClip);
           if (!interpQeClip) return fail("QE clip not found");
           var interpMethod = "setFrameBlend";
@@ -1536,7 +1684,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ method: interpResult.method, value: interpValue, before: interpBefore, after: interpAfter });
 
         case "overwrite_clip":
-          var overwriteSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var overwriteSeq = targetSequence();
           var overwriteItem = findItem(args.projectItemId || args.itemId || args.item_id);
           if (!overwriteSeq || !overwriteItem) return fail("Need sequence and project item");
           overwriteSeq.overwriteClip(overwriteItem, secondsToTicks(args.time || args.start || 0), Number(args.videoTrackIndex || args.video_track_index || args.trackIndex || 0), Number(args.audioTrackIndex || args.audio_track_index || 0));
@@ -1556,21 +1706,27 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ created: true, name: sequenceFromClips.name, sequenceId: sequenceFromClips.sequenceID, itemCount: clipItems.length });
 
         case "close_sequence":
-          var closeSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var closeSeq = targetSequence();
           if (!closeSeq) return fail("No sequence found");
           var closeSeqResult = tryCall(closeSeq, ["close"], []);
           if (!closeSeqResult.called) return fail(closeSeqResult.error, { available: false });
           return ok({ closed: true, sequenceId: closeSeq.sequenceID, sequenceName: closeSeq.name, method: closeSeqResult.method });
 
         case "export_as_project":
-          var exportProjectSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var exportProjectSeq = targetSequence();
           if (!exportProjectSeq) return fail("No sequence found");
           var exportProjectResult = tryCall(exportProjectSeq, ["exportAsProject"], [String(args.outputPath || args.path || "")]);
           if (!exportProjectResult.called) return fail(exportProjectResult.error, { available: false });
           return ok({ exported: true, outputPath: String(args.outputPath || args.path || ""), method: exportProjectResult.method });
 
         case "export_omf":
-          var omfSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var omfSeq = targetSequence();
           if (!omfSeq) return fail("No sequence found");
           var omfPath = String(args.outputPath || args.path || "");
           var omfResult = tryCall(omfSeq, ["exportAsOMF", "exportOMF"], [omfPath]);
@@ -1579,7 +1735,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ exported: true, outputPath: omfPath, method: omfResult.method });
 
         case "set_zero_point":
-          var zeroSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var zeroSeq = targetSequence();
           if (!zeroSeq) return fail("No sequence found");
           var zeroTicks = secondsToTicks(args.time || args.seconds || 0);
           var zeroResult = tryCall(zeroSeq, ["setZeroPoint"], [zeroTicks]);
@@ -1590,7 +1748,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ zeroPointSeconds: Number(args.time || args.seconds || 0), method: zeroResult.method });
 
         case "scene_edit_detection":
-          var sceneSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var sceneSeq = targetSequence();
           if (!sceneSeq) return fail("No sequence found");
           if (!sceneSeq.performSceneEditDetectionOnSelection) return fail("performSceneEditDetectionOnSelection API unavailable");
           if (args.allowUnsafeSynchronous !== true) {
@@ -1607,14 +1767,18 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ performed: true, action: String(args.action || "CreateMarkers"), sensitivity: String(args.sensitivity || "Medium") });
 
         case "delete_preview_files":
-          var previewSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var previewSeq = targetSequence();
           if (!previewSeq) return fail("No sequence found");
           var previewResult = tryCall(previewSeq, ["deletePreviewFiles"], []);
           if (!previewResult.called) {
             try {
               app.enableQE();
-              var qePreviewSeq = qe.project.getActiveSequence();
-              previewResult = tryCall(qePreviewSeq, ["deletePreviewFiles"], []);
+              var qePreviewSeq = qeSequenceFor(previewSeq);
+              previewResult = qePreviewSeq
+                ? tryCall(qePreviewSeq, ["deletePreviewFiles"], [])
+                : { called: false, error: "Could not address sequence '" + previewSeq.name + "' through the QE API." };
             } catch (qePreviewError) {
               previewResult = { called: false, error: qePreviewError.toString() };
             }
@@ -1626,7 +1790,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_effect_property":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail(toolName + " requires clipId.");
           var propertyClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!propertyClip) return fail("Clip not found");
+          if (!propertyClip) return fail(pendingSequenceError || "Clip not found");
           var propertyComponent = findComponent(propertyClip.clip, args.effectName || args.componentName || args.component || "Motion");
           if (!propertyComponent) return fail("Component/effect not found on clip");
           var propertyResult = setComponentProperty(propertyComponent.component, args.propertyName || args.property || args.name, args.value);
@@ -1636,7 +1800,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "get_value_at_time":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("get_value_at_time requires clipId.");
           var valueClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!valueClip) return fail("Clip not found");
+          if (!valueClip) return fail(pendingSequenceError || "Clip not found");
           var valueComponent = findComponent(valueClip.clip, args.effectName || args.componentName || args.component || "Motion");
           if (!valueComponent) return fail("Component/effect not found on clip");
           var valuePropName = args.propertyName || args.property || args.name;
@@ -1648,7 +1812,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_keyframe_interpolation":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail(toolName + " requires clipId.");
           var keyClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!keyClip) return fail("Clip not found");
+          if (!keyClip) return fail(pendingSequenceError || "Clip not found");
           var keyComponent = findComponent(keyClip.clip, args.effectName || args.componentName || args.component || "Motion");
           if (!keyComponent) return fail("Component/effect not found on clip");
           var keyProperty = findProperty(keyComponent.component, args.propertyName || args.property || args.name);
@@ -1671,7 +1835,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return setSelection(function(clip) { try { return Number(clip.projectItem.getColorLabel()) === labelValue; } catch (e) { return false; } }, true, Boolean(args.add_to_selection || args.addToSelection));
 
         case "invert_selection":
-          var invertSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var invertSeq = targetSequence();
           if (!invertSeq) return fail("No active sequence");
           var inverted = [];
           var invertClips = allClips(invertSeq);
@@ -1717,16 +1883,27 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ replaced: true, item: replaceItem.name, newFilePath: String(args.newFilePath || args.filePath || args.path || "") });
 
         case "batch_apply_effect":
-          var batchSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var batchSeq = targetSequence();
           if (!batchSeq) return fail("No active sequence");
           app.enableQE();
+          // Resolved once, outside the loop: qeSequenceFor() scans every QE
+          // sequence, so doing it per clip made the tool O(clips x sequences),
+          // and its failure is a property of the sequence rather than of any
+          // one clip — returning from inside the per-clip catch abandoned the
+          // whole batch instead of recording one clip's error and continuing.
+          var qeBatchSeq = qeSequenceFor(batchSeq);
+          if (!qeBatchSeq) return fail("Could not address sequence '" + batchSeq.name + "' through the QE API.");
           var batchClips = allClips(batchSeq);
           var batchResults = [];
           for (var bai = 0; bai < batchClips.length; bai++) {
             try {
-              var qeBatchSeq = qe.project.getActiveSequence();
               var qeBatchTrack = batchClips[bai].trackType === "video" ? qeBatchSeq.getVideoTrackAt(batchClips[bai].trackIndex) : qeBatchSeq.getAudioTrackAt(batchClips[bai].trackIndex);
-              var qeBatchClip = qeBatchTrack.getItemAt(batchClips[bai].clipIndex);
+              // Matched on start time, not DOM index: QE track items include gaps and
+              // transitions, so an index addresses a different item whenever anything
+              // precedes the target.
+              var qeBatchClip = __findQeClipByDomClip(qeBatchTrack, batchClips[bai].clip);
               var batchEffect = batchClips[bai].trackType === "video" ? qe.project.getVideoEffectByName(String(args.effectName || args.name)) : qe.project.getAudioEffectByName(String(args.effectName || args.name));
               if (!batchEffect || !qeBatchClip) batchResults.push({ clipId: batchClips[bai].clip.nodeId, ok: false, error: "QE clip/effect unavailable" });
               else { qeBatchClip.addVideoEffect ? (batchClips[bai].trackType === "video" ? qeBatchClip.addVideoEffect(batchEffect) : qeBatchClip.addAudioEffect(batchEffect)) : qeBatchClip.addAudioEffect(batchEffect); batchResults.push({ clipId: batchClips[bai].clip.nodeId, ok: true }); }
@@ -1739,7 +1916,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_blend_mode":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("set_blend_mode requires clipId.");
           var blendClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!blendClip) return fail("Clip not found");
+          if (!blendClip) return fail(pendingSequenceError || "Clip not found");
           var opacityComponent = findComponent(blendClip.clip, "Opacity");
           if (!opacityComponent) return fail("Opacity component not found");
           var blendResult = setComponentProperty(opacityComponent.component, "Blend Mode", args.mode || args.blendMode || args.value);
@@ -1747,7 +1924,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ blendMode: args.mode || args.blendMode || args.value, result: blendResult });
 
         case "set_all_tracks_targeted":
-          var allTargetSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var allTargetSeq = targetSequence();
           if (!allTargetSeq) return fail("No active sequence");
           for (var atv = 0; atv < allTargetSeq.videoTracks.numTracks; atv++) try { allTargetSeq.videoTracks[atv].setTargeted(Boolean(args.targeted !== false), true); } catch (e) {}
           for (var ata = 0; ata < allTargetSeq.audioTracks.numTracks; ata++) try { allTargetSeq.audioTracks[ata].setTargeted(Boolean(args.targeted !== false), true); } catch (e) {}
@@ -1755,13 +1934,16 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "razor_all_tracks":
           app.enableQE();
-          var razorSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var razorSeq = targetSequence();
           if (!razorSeq) return fail("No active sequence");
           var razorFps = razorSeq.timebase ? (254016000000 / parseInt(razorSeq.timebase, 10)) : 30;
           var razorFrames = Math.round(Number(args.time || args.seconds || 0) * razorFps);
           function pad(n) { return n < 10 ? "0" + n : "" + n; }
           var razorTc = pad(Math.floor(razorFrames / (razorFps * 3600))) + ":" + pad(Math.floor((razorFrames % (razorFps * 3600)) / (razorFps * 60))) + ":" + pad(Math.floor((razorFrames % (razorFps * 60)) / razorFps)) + ":" + pad(Math.round(razorFrames % razorFps));
-          var qeRazorSeq = qe.project.getActiveSequence();
+          var qeRazorSeq = qeSequenceFor(razorSeq);
+          if (!qeRazorSeq) return fail("Could not address sequence '" + razorSeq.name + "' through the QE API.");
           for (var rv = 0; rv < razorSeq.videoTracks.numTracks; rv++) qeRazorSeq.getVideoTrackAt(rv).razor(razorTc);
           for (var ra = 0; ra < razorSeq.audioTracks.numTracks; ra++) qeRazorSeq.getAudioTrackAt(ra).razor(razorTc);
           return ok({ razorTimecode: razorTc, seconds: Number(args.time || args.seconds || 0) });
@@ -1769,7 +1951,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_clip_start_time":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("set_clip_start_time requires clipId.");
           var startClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!startClip) return fail("Clip not found");
+          if (!startClip) return fail(pendingSequenceError || "Clip not found");
           startClip.clip.start = secondsToTime(args.time || args.start || 0);
           return ok({ clipId: startClip.clip.nodeId, start: valueOfTime(startClip.clip.start) });
 
@@ -1790,7 +1972,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_scale_width_height":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail(toolName + " requires clipId.");
           var transformClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!transformClip) return fail("Clip not found");
+          if (!transformClip) return fail(pendingSequenceError || "Clip not found");
           var componentName = (toolName === "set_clip_volume" || toolName === "set_clip_pan") ? "Volume" : "Motion";
           if (toolName === "set_clip_opacity") componentName = "Opacity";
           var transformComponent = findComponent(transformClip.clip, componentName);
@@ -1825,7 +2007,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ component: componentName, property: transformMap[toolName], result: transformSet });
 
         case "batch_rename_clips":
-          var renameSeqBatch = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var renameSeqBatch = targetSequence();
           if (!renameSeqBatch) return fail("No active sequence");
           var renameClips = allClips(renameSeqBatch);
           var renamePrefix = String(args.prefix || args.namePrefix || "Clip");
@@ -1833,7 +2017,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ renamed: renameClips.length, prefix: renamePrefix });
 
         case "batch_enable_disable":
-          var enableSeqBatch = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var enableSeqBatch = targetSequence();
           if (!enableSeqBatch) return fail("No active sequence");
           var enableClips = allClips(enableSeqBatch);
           var enableValue = Boolean(args.enabled !== false);
@@ -1841,7 +2027,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ changed: enableClips.length, enabled: enableValue });
 
         case "clear_sequence_in_out":
-          var clearSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var clearSeq = targetSequence();
           if (!clearSeq) return fail("No sequence found");
           var clearSeqResult = tryCall(clearSeq, ["clearInPoint"], []);
           var clearOutResult = tryCall(clearSeq, ["clearOutPoint"], []);
@@ -1882,7 +2070,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ destination: destBin.name, results: moveResults });
 
         case "add_adjustment_layer":
-          var adjustmentSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var adjustmentSeq = targetSequence();
           if (!adjustmentSeq) return fail("No active sequence");
           var adjustmentResult = tryCall(app.project, ["createAdjustmentLayer"], [Number(args.width || adjustmentSeq.frameSizeHorizontal || 1920), Number(args.height || adjustmentSeq.frameSizeVertical || 1080), Number(args.duration || 5)]);
           if (!adjustmentResult.called) return fail(adjustmentResult.error, { available: false });
@@ -1891,7 +2081,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "freeze_frame":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("freeze_frame requires clipId.");
           var freezeClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!freezeClip) return fail("Clip not found");
+          if (!freezeClip) return fail(pendingSequenceError || "Clip not found");
           var freezeResult = tryCall(freezeClip.clip, ["setFrameHold", "freezeFrame"], [secondsToTicks(args.time || args.seconds || 0)]);
           if (!freezeResult.called) {
             var freezePath = "";
@@ -1907,21 +2097,23 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "set_sequence_pixel_aspect_ratio":
         case "set_sequence_field_type":
         case "set_sequence_display_format":
-          var settingsSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var settingsSeq = targetSequence();
           if (!settingsSeq || !settingsSeq.getSettings || !settingsSeq.setSettings) return fail("Sequence settings API unavailable");
           var seqSettings = settingsSeq.getSettings();
           if (toolName === "set_sequence_pixel_aspect_ratio") {
             var requestedPar = Number(args.pixelAspectRatio || args.value || 1);
             try {
               app.enableQE();
-              var qeParSeq = qe.project.getActiveSequence();
+              var qeParSeq = qeSequenceFor(settingsSeq);
               if (qeParSeq && Number(qeParSeq.par) === requestedPar) return ok({ sequenceId: settingsSeq.sequenceID, changed: false, par: Number(qeParSeq.par), method: "qe.par readback" });
             } catch (parReadError) {}
           }
           if (toolName === "set_sequence_field_type") {
             try {
               app.enableQE();
-              var qeFieldSeq = qe.project.getActiveSequence();
+              var qeFieldSeq = qeSequenceFor(settingsSeq);
               var requestedField = args.fieldType || args.value;
               if (qeFieldSeq && (String(requestedField).toLowerCase() === "no fields" || String(requestedField) === String(qeFieldSeq.fieldType))) return ok({ sequenceId: settingsSeq.sequenceID, changed: false, fieldType: Number(qeFieldSeq.fieldType), method: "qe.fieldType readback" });
             } catch (fieldReadError) {}
@@ -1929,7 +2121,11 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (toolName === "set_sequence_frame_rate") seqSettings.videoFrameRate = secondsToTicks(1 / Number(args.frameRate || args.value || 30));
           if (toolName === "set_sequence_resolution") { seqSettings.videoFrameWidth = Number(args.width || 1920); seqSettings.videoFrameHeight = Number(args.height || 1080); }
           if (toolName === "set_sequence_audio_settings") { seqSettings.audioSampleRate = Number(args.sampleRate || 48000); seqSettings.audioChannelType = args.channelType || seqSettings.audioChannelType; }
-          if (toolName === "set_sequence_pixel_aspect_ratio") seqSettings.videoPixelAspectRatio = Number(args.pixelAspectRatio || args.value || 1);
+          if (toolName === "set_sequence_pixel_aspect_ratio") {
+            var parText = parRatioString(args.pixelAspectRatio !== undefined ? args.pixelAspectRatio : (args.value !== undefined ? args.value : 1));
+            if (!parText) return fail("pixelAspectRatio must be a positive number or an 'N:M' ratio string.");
+            seqSettings.videoPixelAspectRatio = parText;
+          }
           if (toolName === "set_sequence_field_type") seqSettings.videoFieldType = String(args.fieldType || args.value || "No Fields");
           if (toolName === "set_sequence_display_format") seqSettings.videoDisplayFormat = args.displayFormat || args.value || seqSettings.videoDisplayFormat;
           settingsSeq.setSettings(seqSettings);
@@ -1942,26 +2138,40 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var itemMarker = itemMarkers.createMarker(Number(args.time || args.seconds || 0));
           itemMarker.name = String(args.name || "");
           itemMarker.comments = String(args.comment || args.comments || "");
-          return ok({ markerId: itemMarker.guid, item: markerItemTarget.name, time: Number(args.time || args.seconds || 0) });
+          // Clip-marker colour was readable through get_clip_markers but not
+          // writable here, so a caller could see a colour it had no way to set.
+          // Resolve the same way the sequence-marker tools do, and refuse an
+          // unrecognised value rather than silently leaving the default.
+          var itemColorIndex = resolveMarkerColorIndex(args.color);
+          if (itemColorIndex === "invalid") {
+            return fail("Unrecognised marker colour: " + String(args.color) +
+              ". Use a name (" + MARKER_COLOR_NAMES.join(", ") + ") or an index 0-7.");
+          }
+          if (itemColorIndex !== null) { itemMarker.setColorByIndex(itemColorIndex); }
+          var appliedColor = markerColor(itemMarker);
+          return ok({ markerId: itemMarker.guid, item: markerItemTarget.name, time: Number(args.time || args.seconds || 0), color: appliedColor.index, colorName: appliedColor.name });
 
         case "get_clip_markers":
         case "get_sequence_markers_by_type":
           var markers = markerCollectionForTool();
-          if (!markers) return fail("Marker collection unavailable");
+          if (!markers) return fail(pendingSequenceError || "Marker collection unavailable");
           var markerOutput = [];
           var marker = markers.getFirstMarker ? markers.getFirstMarker() : null;
           while (marker) {
             var markerType = "";
             try { markerType = String(marker.type); } catch (e) {}
             if (toolName === "get_clip_markers" || !args.type || markerType === String(args.type)) {
-              markerOutput.push({ id: marker.guid, name: marker.name, comments: marker.comments, type: markerType, start: valueOfTime(marker.start), end: valueOfTime(marker.end) });
+              var markerColorInfo = markerColor(marker);
+              markerOutput.push({ id: marker.guid, name: marker.name, comments: marker.comments, type: markerType, start: valueOfTime(marker.start), end: valueOfTime(marker.end), color: markerColorInfo.index, colorName: markerColorInfo.name });
             }
             marker = markers.getNextMarker ? markers.getNextMarker(marker) : null;
           }
           return ok({ count: markerOutput.length, markers: markerOutput });
 
         case "get_next_edit_point":
-          var editPointSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var editPointSeq = targetSequence();
           if (!editPointSeq) return fail("No active sequence");
           var fromTime = Number(args.time || args.seconds || 0);
           var nextPoint = null;
@@ -1973,7 +2183,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ from: fromTime, nextEditPoint: nextPoint });
 
         case "move_playhead_to_edit":
-          var moveEditSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var moveEditSeq = targetSequence();
           if (!moveEditSeq) return fail("No active sequence");
           var moveFrom = Number(args.time || args.seconds || 0);
           var moveNext = null;
@@ -1988,27 +2200,29 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "get_clip_adjustment_layer":
           var adjustmentClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!adjustmentClip) return fail("Clip not found");
+          if (!adjustmentClip) return fail(pendingSequenceError || "Clip not found");
           var isAdjustment = false;
           try { isAdjustment = Boolean(adjustmentClip.clip.projectItem && adjustmentClip.clip.projectItem.isAdjustmentLayer && adjustmentClip.clip.projectItem.isAdjustmentLayer()); } catch (e) {}
           return ok({ clipId: adjustmentClip.clip.nodeId, isAdjustmentLayer: isAdjustment });
 
         case "get_linked_items":
           var linkedClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!linkedClip) return fail("Clip not found");
+          if (!linkedClip) return fail(pendingSequenceError || "Clip not found");
           var linkedItemsResult = tryCall(linkedClip.clip, ["getLinkedItems"], []);
           if (!linkedItemsResult.called) return fail(linkedItemsResult.error, { available: false });
           return ok({ linkedItems: linkedItemsResult.result });
 
         case "get_mogrt_component":
           var mogrtClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!mogrtClip) return fail("Clip not found");
+          if (!mogrtClip) return fail(pendingSequenceError || "Clip not found");
           var mogrtComponents = [];
           for (var mg = 0; mg < mogrtClip.clip.components.numItems; mg++) mogrtComponents.push({ name: String(mogrtClip.clip.components[mg].displayName), properties: componentProperties(mogrtClip.clip.components[mg]) });
           return ok({ components: mogrtComponents });
 
         case "capture_frame":
-          var frameSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var frameSeq = targetSequence();
           if (!frameSeq) return fail("No active sequence");
           var framePath = String(args.outputPath || args.path || "");
           if (!framePath) return fail("capture_frame requires outputPath");
@@ -2016,8 +2230,8 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             try { frameSeq.openInTimeline(); } catch (frameOpenError) {}
           }
           app.enableQE();
-          var qeFrameSeq = qe.project.getActiveSequence();
-          if (!qeFrameSeq) return fail("QE active sequence not available for frame export");
+          var qeFrameSeq = qeSequenceFor(frameSeq);
+          if (!qeFrameSeq) return fail("Could not address sequence '" + frameSeq.name + "' through the QE API.");
           var frameFormat = String(args.format || "png").toLowerCase();
           var frameMethod = frameFormat === "jpg" || frameFormat === "jpeg" ? "exportFrameJPEG" : (frameFormat === "tiff" || frameFormat === "tif" ? "exportFrameTiff" : "exportFramePNG");
           if (typeof qeFrameSeq[frameMethod] !== "function") return fail("Frame export method unavailable: " + frameMethod, { available: false });
@@ -2051,7 +2265,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "nest_clips":
           if (!app.project || !app.project.createNewSequenceFromClips) return commandByName("Nest...");
-          var nestSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var nestSeq = targetSequence();
           if (!nestSeq) return fail("No active sequence");
           var nestClipIds = args.clipIds || args.clip_ids || [];
           var nestItems = [];
@@ -2076,7 +2292,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "unnest_sequence":
           var unnestInfo = findClip(args.nestedSequenceClipId || args.clipId || args.nodeId || args.node_id);
           if (!unnestInfo) return fail("Nested sequence clip not found");
-          var unnestParentSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var unnestParentSeq = targetSequence();
           if (!unnestParentSeq) return fail("No active parent sequence");
           var unnestClip = unnestInfo.clip;
           var unnestItem = unnestClip.projectItem;
@@ -2156,12 +2374,15 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "add_tracks":
           app.enableQE();
-          var addTracksSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var addTracksSeq = targetSequence();
           if (!addTracksSeq) return fail("No active sequence");
           var beforeVideoTracks = addTracksSeq.videoTracks.numTracks;
           var beforeAudioTracks = addTracksSeq.audioTracks.numTracks;
-          var addQeSeq = qe.project.getActiveSequence();
-          if (!addQeSeq || !addQeSeq.addTracks) return fail("QE addTracks API unavailable");
+          var addQeSeq = qeSequenceFor(addTracksSeq);
+          if (!addQeSeq) return fail("Could not address sequence '" + addTracksSeq.name + "' through the QE API.");
+          if (!addQeSeq.addTracks) return fail("QE addTracks API unavailable");
           var requestedVideoTracks = Number(args.videoTracks || args.videoTrackCount || 0);
           var requestedAudioTracks = Number(args.audioTracks || args.audioTrackCount || 0);
           if (requestedVideoTracks > 0) addQeSeq.addTracks(requestedVideoTracks, beforeVideoTracks, 0, 1, beforeAudioTracks, 0, 0);
@@ -2189,7 +2410,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           });
 
         case "get_clip_at_playhead":
-          var playSeq = activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var playSeq = targetSequence();
           if (!playSeq) return fail("No active sequence");
           args.time = ticksToSeconds(playSeq.getPlayerPosition().ticks);
           var clipAt = findClip(null);
@@ -2202,7 +2425,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         case "get_effect_properties":
         case "get_qe_clip_info":
           var foundClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!foundClip) return fail("Clip not found");
+          if (!foundClip) return fail(pendingSequenceError || "Clip not found");
           var fullClip = clipInfo(foundClip.clip, foundClip.trackType, foundClip.trackIndex, foundClip.clipIndex);
           fullClip.components = [];
           try {
@@ -2222,14 +2445,16 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "rename_clip":
           var renameClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!renameClip) return fail("Clip not found");
+          if (!renameClip) return fail(pendingSequenceError || "Clip not found");
           renameClip.clip.name = String(args.new_name || args.newName || args.name);
           return ok({ renamed: true, name: renameClip.clip.name });
 
         case "remove_selected_clips":
         case "lift_selection":
         case "extract_selection":
-          var selectionSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var selectionSeq = targetSequence();
           if (!selectionSeq) return fail("No active sequence");
           if (typeof selectionSeq.getSelection !== "function") return fail("sequence.getSelection is unavailable");
           var selectedItems = selectionSeq.getSelection();
@@ -2257,14 +2482,18 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "link_selection":
         case "unlink_selection":
-          var linkSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var linkSeq = targetSequence();
           if (!linkSeq) return fail("No active sequence");
           var linkResult = tryCall(linkSeq, [toolName === "link_selection" ? "linkSelection" : "unlinkSelection"], []);
           if (!linkResult.called) return commandByName(toolName === "link_selection" ? "Link" : "Unlink");
           return ok({ linked: toolName === "link_selection", method: linkResult.method });
 
         case "match_frame":
-          var matchSeq = targetSequence() || activeSequence();
+          var seqErr = sequenceRequestError();
+          if (seqErr) return fail(seqErr);
+          var matchSeq = targetSequence();
           if (!matchSeq) return fail("No active sequence");
           var matchTime = matchSeq.getPlayerPosition ? ticksToSeconds(matchSeq.getPlayerPosition().ticks) : Number(args.time || args.seconds || 0);
           args.time = matchTime;
