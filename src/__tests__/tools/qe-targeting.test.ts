@@ -21,6 +21,41 @@ describe('QE targeting, second pass', () => {
     return script;
   };
 
+  /**
+   * The block for one tool inside the shared script.
+   *
+   * All 171 expanded tools emit the same ~123 KB body, differing only in the tool
+   * name near the top, so asserting `toContain` against the whole script says
+   * nothing about the tool under test: `sequenceRequestError()` appears in it 39
+   * times no matter which tool asked. Every case below therefore passed while the
+   * silent active-sequence fallback was restored in one of them.
+   */
+  const caseBlock = (script: string, tool: string): string => {
+    const start = script.indexOf(`case "${tool}":`);
+    expect(start).toBeGreaterThan(-1);
+
+    // Several tools share one body through consecutive case labels
+    // (`case "insert_from_source":` sits directly above `case
+    // "overwrite_from_source":`). Cutting at the next label would return an empty
+    // block and assert nothing, so leading labels are consumed first and the
+    // block ends at the next label that follows actual statements.
+    const lines = script.slice(start).split('\n');
+    const isLabel = (line: string): boolean => /^\s*case "/.test(line);
+    const body: string[] = [];
+    let seenStatement = false;
+    for (const line of lines) {
+      if (isLabel(line) && seenStatement) break;
+      if (!isLabel(line) && line.trim()) seenStatement = true;
+      body.push(line);
+    }
+
+    const block = body.join('\n');
+    // A block that collapsed to nothing would make every assertion below vacuous.
+    expect(seenStatement).toBe(true);
+    expect(block.length).toBeGreaterThan(40);
+    return block;
+  };
+
   describe('shared helpers', () => {
     it('qeClipForClip resolves the clip own sequence, not the active one', async () => {
       // This helper feeds set_frame_blend, set_time_interpolation, set_clip_volume,
@@ -77,10 +112,15 @@ describe('QE targeting, second pass', () => {
       'rename_track', 'set_target_track', 'get_track_info', 'get_target_tracks',
       'insert_from_source', 'unnest_sequence', 'get_clip_at_playhead',
     ])('%s resolves the requested sequence', async (tool) => {
-      const script = await expandedScript(tool);
+      const block = caseBlock(await expandedScript(tool), tool);
 
-      expect(script).toContain('var seqErr = sequenceRequestError();');
-      expect(script).toContain('targetSequence()');
+      expect(block).toContain('var seqErr = sequenceRequestError();');
+      expect(block).toContain('targetSequence()');
+      // The defect this pins is a fallback to whatever is on screen. It was
+      // reintroduced here spelled with an `if` rather than `||` and nothing
+      // noticed, so both spellings are named.
+      expect(block).not.toContain('|| activeSequence()');
+      expect(block).not.toMatch(/if \(![A-Za-z]+\)\s*[A-Za-z]+ = activeSequence\(\)/);
     });
 
     it.each([
@@ -88,9 +128,10 @@ describe('QE targeting, second pass', () => {
     ])('%s rejects an id that does not resolve', async (tool) => {
       // These answered a stale id with success:true and a null sequence, which a
       // caller cannot tell apart from a genuinely empty one.
-      const script = await expandedScript(tool);
+      const block = caseBlock(await expandedScript(tool), tool);
 
-      expect(script).toContain('var seqErr = sequenceRequestError();');
+      expect(block).toContain('var seqErr = sequenceRequestError();');
+      expect(block).not.toContain('|| activeSequence()');
     });
   });
 

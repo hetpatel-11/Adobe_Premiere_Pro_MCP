@@ -1,6 +1,7 @@
 import { parse } from "acorn";
 import { expandedToolNames, executeExpandedTool } from "../../tools/expanded";
 import { PremiereProTools } from "../../tools/index";
+import { seedArgs } from "../helpers/schema-args";
 
 /**
  * The expanded tools are emitted as ExtendScript from TypeScript template
@@ -40,7 +41,7 @@ describe("generated ExtendScript is syntactically valid", () => {
    * This used `new Function`, which compiles under whatever V8 the test runner
    * ships. That accepts a great deal ExtendScript will not, including a raw
    * U+2028 inside a string literal — the precise failure
-   * repairScriptLineTerminators exists to prevent, so the guard could not catch
+   * a U+2028 in a generated string literal produces, so the guard could not catch
    * the bug it was written for. Verified: V8 accepts raw U+2028, U+2029, `const`
    * and ES5 getters; acorn in ES3 mode rejects all four.
    *
@@ -176,21 +177,6 @@ describe("generated ExtendScript is syntactically valid", () => {
      * no-arg call is usually rejected before a script is generated. Filling
      * plausible arguments from the schema gets most of them to emit.
      */
-    const argsFor = (tool: { inputSchema?: { shape?: Record<string, unknown> } }): Record<string, unknown> => {
-      const shape = tool.inputSchema?.shape ?? {};
-      const args: Record<string, unknown> = {};
-      for (const key of Object.keys(shape)) {
-        const field = shape[key] as { _def?: { typeName?: string } };
-        const name = field?._def?.typeName;
-        if (name === "ZodNumber") args[key] = 1;
-        else if (name === "ZodBoolean") args[key] = true;
-        else if (name === "ZodArray") args[key] = [];
-        else if (name === "ZodObject") args[key] = {};
-        else args[key] = "x";
-      }
-      return args;
-    };
-
     const localScripts = async (): Promise<Array<[string, string]>> => {
       const captured: Array<[string, string]> = [];
       const expanded = new Set<string>([...expandedToolNames]);
@@ -205,7 +191,7 @@ describe("generated ExtendScript is syntactically valid", () => {
           executeScript: async (s: string) => { script = s; return { success: true }; },
         } as never);
         try {
-          await tools.executeTool(tool.name, argsFor(tool as never));
+          await tools.executeTool(tool.name, seedArgs(tool as never));
         } catch {
           // Schema rejections and handlers that never reach the bridge are fine;
           // an empty capture is skipped below.
@@ -233,13 +219,16 @@ describe("generated ExtendScript is syntactically valid", () => {
 
     it("actually captures a meaningful number of them", async () => {
       // Without this, a broken capture would make the parse check pass vacuously
-      // -- which is exactly how the expanded-only version hid the gap. Around 36
-      // of the 112 local tools emit a script under generic arguments; the rest are
-      // rejected by their schema first or are handled entirely in TypeScript. This
-      // is a floor to detect a broken harness, not a coverage target.
+      // -- which is exactly how the expanded-only version hid the gap.
+      //
+      // This used to build arguments by dispatching on `_def.typeName`, which is
+      // undefined in this zod build, so every field became the string "x" and any
+      // tool with a numeric parameter was rejected before emitting. It reached 36
+      // of the 112 local tools and the floor was calibrated to that broken number.
+      // Seeding from the schema reaches 77.
       const captured = await localScripts();
 
-      expect(captured.length).toBeGreaterThanOrEqual(30);
+      expect(captured.length).toBeGreaterThanOrEqual(70);
     }, 120_000);
   });
 
@@ -254,7 +243,7 @@ describe("generated ExtendScript is syntactically valid", () => {
     it("rejects a raw U+2028 inside a string literal", () => {
       // ExtendScript is ES3, where a line terminator inside a string literal is a
       // syntax error. V8 accepts it (ES2019 made it legal), so the old check could
-      // not catch the very bug repairScriptLineTerminators prevents.
+      // not catch a U+2028 smuggled into a generated string literal.
       expect(() => parses(`var a = "x${LS}y";`)).toThrow();
     });
 

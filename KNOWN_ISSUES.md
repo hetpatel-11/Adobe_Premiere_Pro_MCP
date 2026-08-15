@@ -47,7 +47,7 @@ Status: corrects an earlier claim in this file
 An earlier revision stated that "QE only reaches `qe.project.getActiveSequence()`; there is
 no QE accessor for an arbitrary sequence", and that the resulting limit was "specific to the
 QE deletion path". Both statements are wrong, and the second one was wrong in a way that hid
-real bugs: the same pattern appeared at fourteen sites in `src/tools/index.ts` and seven in
+real bugs: the same pattern appeared at sixteen sites in `src/tools/index.ts` and nine in
 `src/tools/expanded.ts`.
 
 What is actually true, verified live against 26.0.2:
@@ -221,13 +221,11 @@ These issues were real and are now resolved in the current code:
   format extension to the path they are given. It now addresses the requested sequence and
   reports the path actually written. Its argument probe also treated "did not throw" as "did
   export", so an accepted-but-inert call ended the probe and reported success over an empty disk.
-- A single control character anywhere in a clip or marker name made the entire tool response
-  unparseable, and a NUL truncated it. Premiere does ship a `JSON.stringify`, but it emits
-  control characters raw, so the conformant implementation is now installed unconditionally
-  rather than only as a fallback. U+2028 in an argument broke the generated script instead —
-  legal in JSON, but a line terminator to a JavaScript parser — and is re-escaped as the script
-  is assembled. Arguments carrying a NUL are refused by name, since Premiere truncates at one
-  when assigning and reports success for the shortened value.
+- A single control character anywhere in a clip or marker name makes the entire tool response
+  unparseable, and a NUL truncates it. **Not addressed here.** The escaper, the U+2028 repair
+  and the NUL refusal all live in the bridge, and are covered by the separate change to
+  serialization and the file handoff; this file previously described them as done in this
+  branch, which they are not.
 - `findClip()` and `markerCollectionForTool()` returned a `fail()` string when a `sequenceId`
   could not be resolved. A string is truthy, so every `if (!x)` guard downstream was dead code:
   `get_sequence_markers_by_type` with a bogus id answered "this sequence has no markers" with

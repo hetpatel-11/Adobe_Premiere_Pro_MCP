@@ -26,6 +26,11 @@ All notable changes are documented here. Releases use semantic versioning.
   resolved, then renaming it and, with `clearContents`, emptying it.
 - Caller-supplied strings interpolated into generated ExtendScript are now serialised, closing an
   arbitrary-code-execution path and fixing ordinary names containing a double quote.
+- Fixed `set_sequence_settings` never writing anything. It compared the requested width and
+  height against the current ones, wrote no settings, and reported a match; a caller asking for
+  a different frame size got `success: true` and an unchanged sequence. It now applies the
+  settings and reports what it wrote. Frame size can be changed after creation — assigned
+  through `getSettings()`/`setSettings()` and confirmed by read-back on 26.0.2.
 ### Breaking
 
 - `move_clip` now rejects `newTrackIndex` instead of accepting and ignoring it. The parameter
