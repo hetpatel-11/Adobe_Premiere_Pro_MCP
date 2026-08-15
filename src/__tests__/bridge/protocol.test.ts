@@ -81,6 +81,18 @@ describe('bridge file-queue protocol', () => {
       const staged = mockFs.writeFile.mock.calls[0][0] as string;
       expect(path.basename(staged).startsWith('command-')).toBe(false);
     });
+
+    it('removes the scratch file when the rename into place fails', async () => {
+      // Nothing else ever matches that name, so a failed rename leaves it on disk
+      // for good. The shared bridge directory is not removed on shutdown, so these
+      // accumulate there indefinitely.
+      mockFs.rename.mockRejectedValue(new Error('EXDEV'));
+      const bridge = await readyBridge();
+
+      await expect(bridge.executeScript('return 1;')).rejects.toThrow();
+
+      expect(mockFs.unlink).toHaveBeenCalledWith(stagingPath);
+    });
   });
 
   describe('a response that will not parse', () => {

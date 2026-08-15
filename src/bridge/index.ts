@@ -64,7 +64,9 @@ function __mcpStringify(value) {
   if (valueType === 'object') {
     var objectParts = [];
     for (var key in value) {
-      if (value.hasOwnProperty && !value.hasOwnProperty(key)) continue;
+      // typeof, not truthiness: an object carrying a non-function property
+      // named hasOwnProperty would otherwise throw here and lose the response.
+      if (typeof value.hasOwnProperty === 'function' && !value.hasOwnProperty(key)) continue;
       if (typeof value[key] === 'undefined' || typeof value[key] === 'function') continue;
       objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(value[key]));
     }
@@ -73,23 +75,30 @@ function __mcpStringify(value) {
   return 'null';
 }
 if (typeof JSON === 'undefined') { JSON = {}; }
-// Installed unconditionally, not just as a fallback. The host does ship a
-// JSON.stringify, but it emits control characters raw, so a single U+0001
-// anywhere in a clip or marker name makes the entire tool response unparseable
-// rather than corrupting one field. Every tool returns its payload through this
-// function, so one bad character in one field takes down the whole call.
+// This engine has no JSON of its own. Measured on ExtendScript build
+// 80.1060872: JSON.parse is undefined and nothing here ever assigns it, so the
+// object created on the line above is fabricated by this prelude and the
+// assignment below is the only stringify in the process.
 //
-// This displaces the host implementation for every tool, so its limits matter.
-// It covers what the tools actually return -- strings, finite numbers, booleans,
-// null, arrays and plain objects -- and differs from a conformant JSON.stringify
-// in ways that are latent today but would not stay latent:
+// It replaces one that escaped only backslash, quote, carriage return, line
+// feed and tab, passing every other control character through raw. Every tool
+// returns its payload through this function, so a single U+0001 in a clip or
+// marker name did not corrupt one field -- it made the entire response
+// unparseable and the whole call was lost.
 //
-//   Date           serialised as {} rather than an ISO string. Nothing returns
-//                  one today; every timestamp is formatted before it gets here.
-//   toJSON()       ignored.
-//   circular refs  recurse until the stack gives out, rather than throwing a
-//                  clean TypeError.
-//   boxed String   serialised as an object of indexed characters.
+// Assigned unconditionally rather than behind a typeof guard. On this engine
+// the guard can never be false; should a later host ship its own, a measured
+// escaper is still preferable to an unmeasured one. That makes the limits below
+// the limits, so they are listed in full. This covers what the tools return --
+// strings, finite numbers, booleans, null, arrays and plain objects -- and
+// differs from a conformant JSON.stringify:
+//
+//   Date              {} rather than an ISO string, and toJSON() is ignored.
+//   circular refs     recurses until the stack gives out; no clean TypeError.
+//   boxed primitives  new String/Number/Boolean serialise as objects.
+//   undefined, fn     at the top level return "null" rather than undefined.
+//   replacer, space   accepted positionally by callers and ignored; output is
+//                     never indented.
 //
 // Add any of those to a tool response and this needs extending first.
 JSON.stringify = __mcpStringify;
@@ -351,6 +360,9 @@ export class PremiereProBridge implements PremiereProTransport {
     const commandId = randomUUID();
     const commandFile = join(this.tempDir, `command-${commandId}.json`);
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
+    // Declared out here so the finally below can remove it: if rename() fails the
+    // scratch file is still on disk, and nothing else ever matches that name.
+    const commandStaging = join(this.tempDir, `.tmp-${commandId}.json`);
 
     try {
       const fullScript = this.buildExecutableScript(script, callerAuthored);
@@ -369,7 +381,6 @@ export class PremiereProBridge implements PremiereProTransport {
       //
       // The scratch name must not itself look like a command to the panel, which matches on
       // a "command-" prefix; a leading dot keeps it out of that test.
-      const commandStaging = join(this.tempDir, `.tmp-${commandId}.json`);
       await fs.writeFile(commandStaging, JSON.stringify({
         id: commandId,
         script: fullScript,
@@ -387,8 +398,13 @@ export class PremiereProBridge implements PremiereProTransport {
       throw error;
     } finally {
       // Cleanup has to run on the failure path too. Previously it sat after the await, so a
-      // timeout skipped it and left the response file behind once the panel finally wrote
-      // one — observed as stale response-*.json accumulating in the bridge directory.
+      // timeout skipped it entirely and left the command file behind for the panel to pick
+      // up and execute long after the caller had given up on it.
+      //
+      // One case this does not close: when the panel is merely slow, the response file is
+      // written after this has already run, so it stays until the directory is cleaned. The
+      // command file is the one that matters here, because a stale command still executes.
+      await fs.unlink(commandStaging).catch(() => {});
       await fs.unlink(commandFile).catch(() => {});
       await fs.unlink(responseFile).catch(() => {});
     }

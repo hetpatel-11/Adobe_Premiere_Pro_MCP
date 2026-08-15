@@ -50,7 +50,7 @@
         '    if (valueType === "object") {',
         '        var objectParts = [];',
         '        for (var key in value) {',
-        '            if (value.hasOwnProperty && !value.hasOwnProperty(key)) continue;',
+        '            if (typeof value.hasOwnProperty === "function" && !value.hasOwnProperty(key)) continue;',
         '            if (typeof value[key] === "undefined" || typeof value[key] === "function") continue;',
         '            objectParts.push(__mcpStringify(String(key)) + ":" + __mcpStringify(value[key]));',
         '        }',
@@ -59,9 +59,9 @@
         '    return "null";',
         '}',
         'if (typeof JSON === "undefined") { JSON = {}; }',
-        '// Installed unconditionally, matching the server prelude. The host ships a',
-        '// JSON.stringify that emits control characters raw, so guarding on its',
-        '// absence leaves the broken one in place for the panel own diagnostics.',
+        '// Installed unconditionally, matching the server prelude. This engine has',
+        '// no JSON of its own, so the previous escaper was always the live one and',
+        '// it passed control characters through raw. See src/bridge/index.ts.',
         'JSON.stringify = __mcpStringify;'
     ].join('\n');
 

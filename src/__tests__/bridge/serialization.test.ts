@@ -155,6 +155,36 @@ describe('script serialization', () => {
       }
     });
 
+    it('replaces a conformant JSON.stringify rather than deferring to it', async () => {
+      // The vm context already has a real JSON.stringify, so this fails if the
+      // install goes back behind `if (typeof JSON.stringify !== "function")`.
+      // Without this, that guard could be restored and every escaper test above
+      // still passed: they reach __mcpStringify by name and never check what
+      // JSON.stringify ended up pointing at.
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      expect(vm.runInContext('typeof JSON.stringify', sandbox)).toBe('function');
+      vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+
+      expect(vm.runInContext('JSON.stringify === __mcpStringify', sandbox)).toBe(true);
+      expect(vm.runInContext('JSON.stringify("a\\u0001b")', sandbox)).toBe('"a\\u0001b"');
+    });
+
+    it('serialises an object whose own key shadows hasOwnProperty', async () => {
+      // Reachable through inspect_dom_object. Testing truthiness instead of
+      // callability here throws TypeError out of the escaper, which loses the
+      // entire response -- the failure this whole prelude exists to prevent.
+      const stringify = await loadEscaper();
+
+      const shadowed = { hasOwnProperty: 'not a function', name: 'clip' };
+      expect(() => stringify(shadowed)).not.toThrow();
+      expect(JSON.parse(stringify(shadowed))).toEqual(shadowed);
+    });
+
     it('produces four hex digits, not a truncated escape', async () => {
       const stringify = await loadEscaper();
 
