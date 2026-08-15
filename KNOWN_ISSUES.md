@@ -50,6 +50,26 @@ Current behavior:
 - the tool is still exposed
 - it returns an error explaining that render queue monitoring requires Adobe Media Encoder
 
+### `add_text_overlay` cannot read MOGRT text on this engine
+
+Status: pre-existing, unfixed here, found while measuring the serialization change
+
+The engine ships no `JSON` object at all. `JSON.parse` is `undefined` and nothing in the
+prelude assigns it, which is why the prelude fabricates `JSON` and installs a `stringify`
+onto it. Serialization only ever needed the write direction, so that is all it provides.
+
+`add_text_overlay`'s MOGRT path needs the read direction. It calls `JSON.parse` inside the
+generated script at three sites to decode a component's text payload, trying a four-byte
+header first and then the bare string. Both calls raise
+`ReferenceError: JSON.parse is not a function`, both are caught, and the tool reports
+"Both JSON parse strategies failed" — so the failure is legible but the path can never
+succeed. Verified by running both strategies through the live bridge on 26.0.2.
+
+Not fixed here because the repair is a real ES3 JSON parser, which is well outside a
+serialization change. The obvious shortcut is closed: `eval` exists on the host, but the
+panel rejects any script matching `eval(` before running it, so a one-line polyfill in the
+prelude would make the panel refuse every call.
+
 ## Operational Limits
 
 These are not hidden bugs; they are boundaries of the current architecture.

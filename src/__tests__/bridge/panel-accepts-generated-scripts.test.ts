@@ -16,6 +16,7 @@
  * change to that list is picked up instead of silently diverging.
  */
 
+import vm from 'vm';
 import { PremiereProBridge } from '../../bridge/index.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -32,18 +33,52 @@ jest.mock('node:crypto', () => ({ randomUUID: jest.fn(() => 'test-uuid-1234') })
 const realFs = jest.requireActual<typeof import('fs')>('fs');
 const PANEL = path.join(__dirname, '..', '..', '..', 'cep-plugin', 'bridge-cep.js');
 
-/** The literal regex list out of the panel's validateScript. */
+/**
+ * The regex list out of the panel's validateScript, evaluated rather than scraped.
+ *
+ * Scraping it with a line-anchored regex and slicing to the first `]` was defeated
+ * by two ordinary edits: a pattern containing a character class ended the slice
+ * early, and a trailing `// comment` dropped its line. Either silently shortened
+ * the list, and because the only check was a count floor, the pattern that matters
+ * could vanish while this file still reported success.
+ *
+ * So the array literal is bounded by its closing line — never by a bracket, which
+ * a character class also contains — and evaluated to real RegExp objects.
+ */
 function panelRejectPatterns(): RegExp[] {
   const source = realFs.readFileSync(PANEL, 'utf8');
   const start = source.indexOf('var dangerous = [');
   expect(start).toBeGreaterThan(-1);
-  const body = source.slice(source.indexOf('[', start), source.indexOf(']', start) + 1);
 
-  const patterns = [...body.matchAll(/\/(.+?)\/([a-z]*)\s*,?\s*$/gm)]
-    .map((m) => new RegExp(m[1], m[2]));
+  const lines = source.slice(source.indexOf('[', start)).split('\n');
+  const collected: string[] = [];
+  for (const line of lines) {
+    collected.push(line);
+    if (/^\s*\];?\s*$/.test(line)) break;
+  }
+  const literal = collected.join('\n').replace(/;\s*$/, '');
+  const patterns = vm.runInNewContext(literal) as RegExp[];
 
+  // Duck-typed, not `instanceof`: these are built in the vm's realm, so they are
+  // regexes that fail an instanceof against this realm's RegExp.
+  expect(Array.isArray(patterns)).toBe(true);
+  expect(patterns.every((p) => typeof (p as RegExp).test === 'function')).toBe(true);
+
+  // Positive control. A truncated or partly-dropped list still satisfies a count
+  // floor, so the extraction is checked against text it is known to reject: this
+  // exact wording in a prelude comment made the panel refuse every call.
+  expect(patterns.some((re) => re.test('the only stringify in the process.'))).toBe(true);
+  expect(patterns.some((re) => re.test('var x = eval("1");'))).toBe(true);
   expect(patterns.length).toBeGreaterThan(4);
   return patterns;
+}
+
+/** The panel's own script-length ceiling, read rather than restated. */
+function panelLengthLimit(): number {
+  const source = realFs.readFileSync(PANEL, 'utf8');
+  const match = source.match(/script\.length\s*<=\s*(\d+)/);
+  expect(match).not.toBeNull();
+  return Number(match![1]);
 }
 
 describe('the script the server sends', () => {
@@ -80,6 +115,9 @@ describe('the script the server sends', () => {
   });
 
   it('stays under the panel length limit', async () => {
-    expect((await generatedScript()).length).toBeLessThanOrEqual(500000);
+    // Read from the panel rather than restated here: with the limit hardcoded this
+    // compared roughly 6.7k against 500k and could not fail, and lowering the
+    // panel's real ceiling to 1000 left it green.
+    expect((await generatedScript()).length).toBeLessThanOrEqual(panelLengthLimit());
   });
 });

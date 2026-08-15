@@ -155,6 +155,20 @@ describe('script serialization', () => {
       }
     });
 
+    it('escapes the two line separators rather than passing them through', async () => {
+      // JSON.parse is the wrong oracle here and on its own this branch had no
+      // coverage at all: U+2028 and U+2029 are legal unescaped inside a JSON
+      // string, so parse succeeds whether or not they were escaped. Deleting the
+      // branch left the whole suite green. They are escaped for consumers that
+      // evaluate rather than parse, where a raw one is a line terminator, so the
+      // emitted text is what has to be asserted.
+      const stringify = await loadEscaper();
+
+      expect(stringify(`x${LINE_SEPARATOR}y`)).toBe('"x\\u2028y"');
+      expect(stringify(`x${PARAGRAPH_SEPARATOR}y`)).toBe('"x\\u2029y"');
+      expect(stringify(`x${LINE_SEPARATOR}y`)).not.toContain(LINE_SEPARATOR);
+    });
+
     it('replaces a conformant JSON.stringify rather than deferring to it', async () => {
       // The vm context already has a real JSON.stringify, so this fails if the
       // install goes back behind `if (typeof JSON.stringify !== "function")`.
@@ -172,6 +186,19 @@ describe('script serialization', () => {
 
       expect(vm.runInContext('JSON.stringify === __mcpStringify', sandbox)).toBe(true);
       expect(vm.runInContext('JSON.stringify("a\\u0001b")', sandbox)).toBe('"a\\u0001b"');
+    });
+
+    it('ignores a shadowing hasOwnProperty that would drop every key', async () => {
+      // Worse than the throwing case it replaced: a function returning false made
+      // the walk skip every key and emit {}, which parses cleanly while the whole
+      // payload silently vanishes. A lost response is at least visible.
+      const stringify = await loadEscaper();
+
+      const shadowed = { hasOwnProperty: () => false, name: 'clip', durationSeconds: 12.5 };
+      const emitted = stringify(shadowed);
+
+      expect(emitted).not.toBe('{}');
+      expect(JSON.parse(emitted)).toMatchObject({ name: 'clip', durationSeconds: 12.5 });
     });
 
     it('serialises an object whose own key shadows hasOwnProperty', async () => {

@@ -78,6 +78,25 @@ describe('the panel copy of the prelude', () => {
     expect(panelStringify()('a\u0001b')).toBe('"a\\u0001b"');
   });
 
+  it('escapes the two line separators rather than passing them through', () => {
+    // Asserted on the emitted text, not through JSON.parse: both characters are
+    // legal unescaped in JSON, so parse cannot tell the branch is missing.
+    const stringify = panelStringify();
+
+    expect(stringify(`x${LINE_SEPARATOR}y`)).toBe('"x\\u2028y"');
+    expect(stringify(`x${PARAGRAPH_SEPARATOR}y`)).toBe('"x\\u2029y"');
+  });
+
+  it('is actually prepended to the script the panel runs', () => {
+    // Everything else here proves the array's contents are right. None of it
+    // proves the panel uses them: stopping it from prepending the prelude at all
+    // left every other assertion in this file green while the escaper became dead
+    // code. This pins the one line that puts it in front of the script.
+    const source = realFs.readFileSync(PANEL, 'utf8');
+
+    expect(source).toMatch(/EXTENDSCRIPT_COMPAT_HELPERS\s*\+\s*'\\n'\s*\+\s*script/);
+  });
+
   it('replaces a conformant JSON.stringify rather than deferring to it', () => {
     // JSON is a context global, not an own property of the sandbox object, so
     // this has to be evaluated inside the context. The context supplies a real
@@ -86,6 +105,16 @@ describe('the panel copy of the prelude', () => {
 
     expect(vm.runInContext('JSON.stringify === __mcpStringify', sandbox)).toBe(true);
     expect(vm.runInContext('JSON.stringify("a\\u0001b")', sandbox)).toBe('"a\\u0001b"');
+  });
+
+  it('ignores a shadowing hasOwnProperty that would drop every key', () => {
+    const stringify = panelStringify();
+
+    const shadowed = { hasOwnProperty: () => false, name: 'clip', durationSeconds: 12.5 };
+    const emitted = stringify(shadowed);
+
+    expect(emitted).not.toBe('{}');
+    expect(JSON.parse(emitted)).toMatchObject({ name: 'clip', durationSeconds: 12.5 });
   });
 
   it('serialises an object whose own key shadows hasOwnProperty', () => {

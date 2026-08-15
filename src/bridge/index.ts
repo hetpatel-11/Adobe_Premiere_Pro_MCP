@@ -48,6 +48,9 @@ function __mcpEscapeString(value) {
   }
   return out;
 }
+// Saved before anything can shadow it. Reading hasOwnProperty off the value being
+// serialised lets that value decide which of its own keys are emitted.
+var __mcpOwnProperty = Object.prototype.hasOwnProperty;
 function __mcpStringify(value) {
   if (value === null) return 'null';
   var valueType = typeof value;
@@ -64,9 +67,16 @@ function __mcpStringify(value) {
   if (valueType === 'object') {
     var objectParts = [];
     for (var key in value) {
-      // typeof, not truthiness: an object carrying a non-function property
-      // named hasOwnProperty would otherwise throw here and lose the response.
-      if (typeof value.hasOwnProperty === 'function' && !value.hasOwnProperty(key)) continue;
+      // Through the saved reference, because an own property named hasOwnProperty
+      // shadows the method. A non-function threw and lost the whole response; a
+      // function returning false was worse, emitting {} that parses cleanly while
+      // every field silently vanished. On 26.0.2 this agrees with the method form
+      // on every enumerable key of Sequence, VideoTrack, TrackItem and ProjectItem,
+      // so host objects are unaffected. Keys are kept if the check itself fails:
+      // emitting one extra inherited key is recoverable, dropping data is not.
+      var isOwn = true;
+      try { isOwn = __mcpOwnProperty.call(value, key); } catch (ownError) { isOwn = true; }
+      if (!isOwn) continue;
       if (typeof value[key] === 'undefined' || typeof value[key] === 'function') continue;
       objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(value[key]));
     }
