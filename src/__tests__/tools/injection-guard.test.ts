@@ -42,8 +42,39 @@ const ADD_KEY = 'zz", INJECTED: "yes';
 /** Ordinary names that merely contain a quote. */
 const BENIGN_DOUBLE = '12" Cuts';
 const BENIGN_SINGLE = "Bob's Takes";
+/**
+ * Defeats an escaper that handles quotes but not backslashes. Escaping only the
+ * quote turns this into `"zz\\"` -- a complete literal ending in a backslash --
+ * and everything after it becomes code.
+ */
+const BREAKOUT_BACKSLASH = 'zz\\"); __OWNED = true; ("';
+/** A raw line terminator, which no single-line ExtendScript literal survives. */
+const BREAKOUT_NEWLINE = 'zz\n__OWNED = true;\n';
+/**
+ * Legal unescaped inside a JSON string but a line terminator to a JavaScript
+ * parser, so a value carrying one can split a literal that looked safely quoted.
+ */
+const BREAKOUT_LINE_SEPARATOR = 'zz\u2028__OWNED = true;\u2028';
+/** An ordinary Windows path, which is where the backslash case shows up in real use. */
+const BENIGN_BACKSLASH = 'C:\\Footage\\take "1"';
 
-const PAYLOADS = [BREAKOUT_DOUBLE, BREAKOUT_SINGLE, ADD_KEY, BENIGN_DOUBLE, BENIGN_SINGLE];
+const PAYLOADS = [
+  BREAKOUT_DOUBLE, BREAKOUT_SINGLE, ADD_KEY, BENIGN_DOUBLE, BENIGN_SINGLE,
+  BREAKOUT_BACKSLASH, BREAKOUT_NEWLINE, BREAKOUT_LINE_SEPARATOR, BENIGN_BACKSLASH,
+];
+
+/**
+ * U+2028 is held to the execution check only, not to the parse check.
+ *
+ * Serialising a value containing one produces a script the host cannot parse:
+ * legal inside a JSON string, but a line terminator to a JavaScript parser. That
+ * is a broken call rather than a breakout — measured here as 135 unparseable and
+ * 0 executed — and it is not introduced by this change: interpolating the value
+ * raw, as before, emits the same character. Repairing it belongs to the bridge,
+ * which re-escapes line terminators as it assembles the script, and doing it at
+ * each of the interpolation sites instead would be the wrong layer.
+ */
+const PARSE_EXEMPT = new Set([BREAKOUT_LINE_SEPARATOR]);
 
 /** Runs an emitted script against a host that records whether the payload fired. */
 function payloadRuns(script: string): boolean {
@@ -80,12 +111,11 @@ describe('generated scripts cannot be broken out of', () => {
     const escaped: string[] = [];
     const unparseable: string[] = [];
     let checked = 0;
-    let toolsReached = 0;
+    const emittingTools = new Set<string>();
 
     for (const tool of probe.getAvailableTools()) {
       const base = seedArgs(tool as never);
       const paths = stringPaths(base);
-      if (paths.length) toolsReached++;
 
       for (const path of paths) {
         for (const payload of PAYLOADS) {
@@ -102,11 +132,16 @@ describe('generated scripts cannot be broken out of', () => {
           const where = `${tool.name}.${path.join('.') || '(root)'}`;
           for (const script of scripts) {
             checked++;
+            emittingTools.add(tool.name);
             try {
               parse(script, { ecmaVersion: 3, allowReturnOutsideFunction: true });
             } catch {
-              unparseable.push(where);
-              continue;
+              // Still executed below when exempt: a payload that cannot be parsed
+              // by acorn may still run something once the bridge has repaired it.
+              if (!PARSE_EXEMPT.has(payload)) {
+                unparseable.push(where);
+                continue;
+              }
             }
             if (payloadRuns(script)) escaped.push(where);
           }
@@ -115,14 +150,12 @@ describe('generated scripts cannot be broken out of', () => {
     }
 
     // Floors, so a harness that quietly stopped emitting cannot pass vacuously.
-    // Currently 97 tools carry a string position, 199 positions in all, driven
-    // with 5 payloads each; 545 of those emit a script, the rest being rejected
-    // by a field's own validation before anything is generated. The old selector
-    // reached 61 tools and skipped array and nested-object parameters entirely,
-    // so a raw interpolation there was invisible. These floors sit just under the
-    // present numbers to catch a harness that silently stops reaching most of them.
-    expect(toolsReached).toBeGreaterThan(90);
-    expect(checked).toBeGreaterThan(500);
+    // Floored on tools that actually EMITTED a script, not on how many carry a
+    // string position. The previous floor was schema arithmetic: it never touched
+    // executeTool, so it was satisfied while a third of the tools it counted
+    // emitted nothing at all and were silently absent from the sweep.
+    expect(emittingTools.size).toBeGreaterThan(60);
+    expect(checked).toBeGreaterThan(900);
     expect([...new Set(escaped)]).toEqual([]);
     expect([...new Set(unparseable)]).toEqual([]);
   }, 600_000);

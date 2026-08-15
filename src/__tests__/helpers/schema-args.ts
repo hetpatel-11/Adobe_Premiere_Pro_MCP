@@ -11,22 +11,35 @@
  * field — reaching a third of the tools a working dispatch reaches.
  */
 
+/**
+ * Zod exposes these publicly. Reaching into `_def` is what produced the bugs this
+ * helper exists to avoid: `_def.typeName` is undefined here, `_def.values` is
+ * undefined for enums (members live on `.options`), and `_def.type` is the string
+ * "array" rather than the element schema. Each wrong guess degraded silently to a
+ * default that the schema then rejected, dropping the tool from every sweep.
+ */
 export type Schema = {
   constructor?: { name?: string };
   shape?: Record<string, Schema>;
   element?: Schema;
-  _def?: {
-    innerType?: Schema; type?: Schema; element?: Schema;
-    values?: unknown[]; options?: Schema[];
-  };
+  options?: Schema[] | string[];
+  unwrap?: () => Schema;
+  safeParse?: (value: unknown) => { success: boolean };
 };
 
 export type ToolLike = { name: string; inputSchema?: { shape?: Record<string, Schema> } };
 
 const kindOf = (s: Schema): string => s?.constructor?.name ?? '';
 
-/** The element schema of an array, across the spellings this zod build uses. */
-const elementOf = (s: Schema): Schema | undefined => s._def?.type ?? s._def?.element ?? s.element;
+/** Does this schema accept the value? The only question that actually matters. */
+export const accepts = (schema: Schema, value: unknown): boolean => {
+  if (typeof schema?.safeParse !== 'function') return true;
+  try {
+    return schema.safeParse(value).success;
+  } catch {
+    return false;
+  }
+};
 
 /** Values that must stay plausible or the tool rejects before emitting anything. */
 const NUMERIC: Record<string, number> = {
@@ -35,70 +48,64 @@ const NUMERIC: Record<string, number> = {
   splitTime: 1, duration: 1,
 };
 
-/**
- * Candidate strings, tried in order against the field's own schema.
- *
- * Several string parameters carry a regex or refinement — `color` is
- * `/^[0-7]$/` — and a value that fails it is rejected before the tool emits
- * anything, so the tool drops out of the sweep silently. Rather than keep a map
- * of field name to legal value and let it rot, each candidate is offered to the
- * schema and the first one it accepts is used.
- */
-const CANDIDATES = [
+/** Tried in order against the field's own schema; the first accepted one wins. */
+const CANDIDATES: unknown[] = [
   'x', '0', '1', 'video', 'audio', 'green', 'start', 'end', 'png', 'both',
   'Cross Dissolve', '/tmp/f.xml', '00:00:01:00', 'true', 'none', 'default',
+  1, 0, true, false, [], {}, null,
 ];
 
 /** Preferred value where several are legal and one exercises more of the tool. */
 const STRINGY: Record<string, string> = { position: 'end', format: 'png' };
 
-const accepts = (schema: Schema, value: unknown): boolean => {
-  const parser = schema as unknown as { safeParse?: (v: unknown) => { success: boolean } };
-  if (typeof parser.safeParse !== 'function') return true;
-  try {
-    return parser.safeParse(value).success;
-  } catch {
-    return false;
-  }
-};
-
-/** The first candidate this schema accepts, preferring a named override. */
-function stringFor(schema: Schema, key: string): string {
-  const preferred = STRINGY[key];
-  if (preferred !== undefined && accepts(schema, preferred)) return preferred;
-  for (const candidate of CANDIDATES) if (accepts(schema, candidate)) return candidate;
-  return preferred ?? 'x';
-}
-
-/** A valid-looking value for one schema node. */
-export function seed(schema: Schema, key = ''): unknown {
+/** A structural guess, from public accessors only. */
+function shapedGuess(schema: Schema, key: string): unknown {
   switch (kindOf(schema)) {
     case 'ZodOptional':
     case 'ZodNullable':
-    case 'ZodDefault':
-      return schema._def?.innerType ? seed(schema._def.innerType, key) : 'x';
-    case 'ZodArray': {
-      const element = elementOf(schema);
-      return [element ? seed(element, key) : 'x'];
+    case 'ZodDefault': {
+      const inner = typeof schema.unwrap === 'function' ? schema.unwrap() : undefined;
+      return inner ? seed(inner, key) : 'x';
     }
+    case 'ZodArray':
+      return [schema.element ? seed(schema.element, key) : 'x'];
     case 'ZodObject': {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(schema.shape ?? {})) out[k] = seed(v, k);
       return out;
     }
     case 'ZodUnion': {
-      const first = schema._def?.options?.[0];
-      return first ? seed(first, key) : 'x';
+      const first = (schema.options ?? [])[0];
+      return first && typeof first === 'object' ? seed(first as Schema, key) : 'x';
     }
-    case 'ZodEnum':
-      return (schema._def?.values ?? ['start'])[0];
+    case 'ZodEnum': {
+      const members = (schema.options ?? []) as string[];
+      return members.length ? members[0] : 'x';
+    }
     case 'ZodNumber':
       return NUMERIC[key] ?? 1;
     case 'ZodBoolean':
       return true;
     default:
-      return stringFor(schema, key);
+      return STRINGY[key] ?? 'x';
   }
+}
+
+/**
+ * A value the schema accepts.
+ *
+ * The structural guess is checked rather than trusted: if an accessor is wrong for
+ * this zod build, the guess is rejected and candidates are tried instead, so a
+ * mis-read schema costs a slower path rather than a silently dropped tool.
+ */
+export function seed(schema: Schema, key = ''): unknown {
+  const guess = shapedGuess(schema, key);
+  if (accepts(schema, guess)) return guess;
+
+  const preferred = STRINGY[key];
+  if (preferred !== undefined && accepts(schema, preferred)) return preferred;
+  for (const candidate of CANDIDATES) if (accepts(schema, candidate)) return candidate;
+  return guess;
 }
 
 /**
@@ -111,6 +118,34 @@ export function seedArgs(tool: ToolLike): Record<string, unknown> {
   const shape = tool.inputSchema?.shape ?? {};
   const args: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(shape)) args[k] = seed(v, k);
+
+  const schema = tool.inputSchema as unknown as Schema | undefined;
+  if (!schema || accepts(schema, args)) return args;
+
+  // Some tools carry cross-field rules that supplying everything violates -- 
+  // trim_clip refuses outPoint and duration together. Drop one optional at a
+  // time until the whole object is accepted, so the tool still emits instead of
+  // dropping out of every sweep.
+  const optionalKeys = Object.entries(shape)
+    .filter(([, v]) => kindOf(v) === 'ZodOptional' || kindOf(v) === 'ZodDefault')
+    .map(([k]) => k);
+
+  for (const key of optionalKeys) {
+    const trimmed = { ...args };
+    delete trimmed[key];
+    if (accepts(schema, trimmed)) return trimmed;
+  }
+  return args;
+}
+
+/** Only the parameters a tool actually requires, so omitted-branch code is emitted too. */
+export function seedRequiredArgs(tool: ToolLike): Record<string, unknown> {
+  const shape = tool.inputSchema?.shape ?? {};
+  const args: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(shape)) {
+    if (kindOf(v) === 'ZodOptional' || kindOf(v) === 'ZodDefault') continue;
+    args[k] = seed(v, k);
+  }
   return args;
 }
 

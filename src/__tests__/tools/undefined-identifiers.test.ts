@@ -23,7 +23,8 @@
 
 import { parse } from 'acorn';
 import { PremiereProTools } from '../../tools/index.js';
-import { seedArgs } from '../helpers/schema-args.js';
+import { expandedToolNames } from '../../tools/expanded.js';
+import { seedArgs, seedRequiredArgs } from '../helpers/schema-args.js';
 
 // Provided by the ExtendScript host or by the prelude the bridge prepends.
 const HOST_GLOBALS = new Set([
@@ -136,12 +137,22 @@ describe('generated scripts declare everything they reference', () => {
 
   it('references no identifier that is never declared', async () => {
     const probe = new PremiereProTools({ executeScript: async () => ({ success: true }) } as never);
+    const expanded = new Set<string>([...expandedToolNames]);
     const offenders: string[] = [];
+    const localToolsSeen = new Set<string>();
     let checked = 0;
 
     for (const tool of probe.getAvailableTools()) {
-      for (const script of await capture(tool, seedArgs(tool as never))) {
+      // Both argument sets. Supplying every optional was itself a blind spot: it
+      // fixed "a key the map lacked hid its branch" and created the mirror of it,
+      // where the branch taken when the caller omits that key is never emitted.
+      const argumentSets = [seedArgs(tool as never), seedRequiredArgs(tool as never)];
+      const scripts: string[] = [];
+      for (const args of argumentSets) scripts.push(...await capture(tool, args));
+
+      for (const script of scripts) {
         checked++;
+        if (!expanded.has(tool.name)) localToolsSeen.add(tool.name);
 
         let ast: Node;
         try {
@@ -158,9 +169,10 @@ describe('generated scripts declare everything they reference', () => {
       }
     }
 
-    // Guard against a silently broken capture making this pass vacuously. Driving
-    // from the schema reaches every tool that emits, not the subset one fixed
-    // argument map happened to satisfy.
+    // Floored on distinct LOCAL tools, not on total scripts. The old floor of 100
+    // scripts was met by the expanded tools alone -- they all emit one shared body,
+    // so sabotaging every local tool left it green.
+    expect(localToolsSeen.size).toBeGreaterThan(60);
     expect(checked).toBeGreaterThan(100);
     expect([...new Set(offenders)]).toEqual([]);
     // Walks every generated script; the default 5s limit is not enough.

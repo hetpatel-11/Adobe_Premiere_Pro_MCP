@@ -30,6 +30,16 @@ describe('QE targeting, second pass', () => {
    * times no matter which tool asked. Every case below therefore passed while the
    * silent active-sequence fallback was restored in one of them.
    */
+  /**
+   * Naming the shapes of the fallback did not work. Two spellings were listed,
+   * `x || activeSequence()` and `if (!x) x = activeSequence()`, and a third —
+   * `x = x ? x : activeSequence()` — walked straight past both; the second group
+   * of cases had never been given the check at all, so even a listed spelling
+   * survived there. These blocks resolve through `targetSequence()`, which already
+   * handles an absent id, so none of them has any business naming the active
+   * sequence directly: all ten contain it zero times. Asserting its absence is
+   * independent of how a fallback might be written.
+   */
   const caseBlock = (script: string, tool: string): string => {
     const start = script.indexOf(`case "${tool}":`);
     expect(start).toBeGreaterThan(-1);
@@ -116,11 +126,7 @@ describe('QE targeting, second pass', () => {
 
       expect(block).toContain('var seqErr = sequenceRequestError();');
       expect(block).toContain('targetSequence()');
-      // The defect this pins is a fallback to whatever is on screen. It was
-      // reintroduced here spelled with an `if` rather than `||` and nothing
-      // noticed, so both spellings are named.
-      expect(block).not.toContain('|| activeSequence()');
-      expect(block).not.toMatch(/if \(![A-Za-z]+\)\s*[A-Za-z]+ = activeSequence\(\)/);
+      expect(block).not.toContain('activeSequence()');
     });
 
     it.each([
@@ -131,7 +137,7 @@ describe('QE targeting, second pass', () => {
       const block = caseBlock(await expandedScript(tool), tool);
 
       expect(block).toContain('var seqErr = sequenceRequestError();');
-      expect(block).not.toContain('|| activeSequence()');
+      expect(block).not.toContain('activeSequence()');
     });
   });
 
