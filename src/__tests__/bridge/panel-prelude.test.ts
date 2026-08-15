@@ -87,6 +87,28 @@ describe('the panel copy of the prelude', () => {
     expect(stringify(`x${PARAGRAPH_SEPARATOR}y`)).toBe('"x\\u2029y"');
   });
 
+  it('parses what the platform parses, in the panel copy too', () => {
+    // The panel's copy is generated from the server's, and the two drifting is the
+    // failure this file exists to catch. Parse is checked the same way stringify
+    // is: against the platform implementation, not against hand-written answers.
+    const sandbox = loadPanelPrelude();
+    const parse = sandbox.__mcpParse as (v: string) => unknown;
+
+    for (const value of [
+      null, true, 0, -2.5e8, '', 'q"uote', 'back\\slash', 'tab\there',
+      [1, [2, [3]]], { a: { b: [null, false, 'x'] } }, { mTextString: 'hello' },
+    ]) {
+      const encoded = JSON.stringify(value);
+      expect(parse(encoded)).toEqual(JSON.parse(encoded));
+    }
+
+    for (const bad of ['{', '{"a":1,}', "{'a':1}", 'NaN', '01', '{"a":1} x']) {
+      expect(() => parse(bad)).toThrow();
+    }
+
+    expect(vm.runInContext('JSON.parse === __mcpParse', sandbox)).toBe(true);
+  });
+
   it('is actually prepended to the script the panel runs', () => {
     // Everything else here proves the array's contents are right. None of it
     // proves the panel uses them: stopping it from prepending the prelude at all

@@ -248,6 +248,103 @@ describe('script serialization', () => {
     });
   });
 
+  describe('the installed JSON.parse', () => {
+    /**
+     * The prelude fabricates the JSON object, so installing only stringify left a
+     * JSON that answers `typeof` while having no read direction. Anything that
+     * feature-detects it and calls parse gets "JSON.parse is not a function" --
+     * which is what add_text_overlay hits decoding a MOGRT text payload.
+     *
+     * Correctness is checked against the platform's own JSON.parse rather than
+     * against hand-written expectations, so the comparison is with a conformant
+     * implementation instead of with my reading of the grammar.
+     */
+    const loadParse = async (): Promise<(v: string) => unknown> => {
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+      return (sandbox as { __mcpParse: (v: string) => unknown }).__mcpParse;
+    };
+
+    const VALID: unknown[] = [
+      null, true, false, 0, -1, 3.5, -2.25e10, 1e-7, 12345678901234,
+      '', 'plain', 'with "quotes"', 'back\\slash', 'tab\there', 'newline\nhere',
+      'unicode \u00e9 \u4e2d', `sep${LINE_SEPARATOR}arator`, 'nul-free \u0001 control',
+      [], {}, [1, 2, 3], ['a', ['b', ['c']]],
+      { a: 1 }, { nested: { deep: { deeper: [1, { x: null }] } } },
+      { 'key with spaces': 'v', 'quote"key': 2 },
+      { mTextString: 'hello', fontSize: 48, tracking: -1.5 },
+    ];
+
+    it('agrees with the platform JSON.parse on every value it is given', async () => {
+      const parse = await loadParse();
+
+      for (const value of VALID) {
+        const encoded = JSON.stringify(value);
+        expect({ encoded, got: parse(encoded) }).toEqual({ encoded, got: JSON.parse(encoded) });
+      }
+    });
+
+    it('accepts the whitespace JSON allows between tokens', async () => {
+      const parse = await loadParse();
+
+      expect(parse(' \t\r\n { "a" : [ 1 , 2 ] } \n ')).toEqual({ a: [1, 2] });
+    });
+
+    it('round-trips through the escaper this prelude installs', async () => {
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+      const stringify = (sandbox as { __mcpStringify: (v: unknown) => string }).__mcpStringify;
+      const parse = (sandbox as { __mcpParse: (v: string) => unknown }).__mcpParse;
+
+      // The trip runs entirely inside the sandbox. Handing a value built out here
+      // to the sandbox's stringify would test the wrong thing: it checks
+      // `value instanceof Array`, which is false across realms, so a host array
+      // would serialise as an object. ExtendScript has one realm, so that is an
+      // artifact of this harness rather than a defect being hidden.
+      for (const value of VALID) {
+        const encoded = JSON.stringify(value);
+        const reEncoded = stringify(parse(encoded));
+        expect(JSON.parse(reEncoded)).toEqual(JSON.parse(encoded));
+      }
+    });
+
+    it('rejects what is not JSON rather than guessing', async () => {
+      const parse = await loadParse();
+
+      const REJECTED = [
+        '', '{', '[1,', '[1,]', '{"a":1,}', "{'a':1}", '{a:1}', '{"a" 1}',
+        'undefined', 'NaN', 'Infinity', '+1', '01', '.5', '1.', '0x10',
+        '"unterminated', '"bad \\x escape"', '"raw \u0001 control"',
+        '{"a":1} trailing', 'tru', 'nul',
+      ];
+
+      for (const bad of REJECTED) {
+        expect(() => parse(bad)).toThrow();
+      }
+    });
+
+    it('is installed onto the JSON object, not merely defined', async () => {
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+
+      expect(vm.runInContext('JSON.parse === __mcpParse', sandbox)).toBe(true);
+      expect(vm.runInContext('JSON.parse(JSON.stringify({a:[1,"x"]})).a[1]', sandbox)).toBe('x');
+    });
+  });
+
   describe('caller-authored scripts', () => {
     /**
      * The line-terminator repair is only sound on scripts this server generates,
