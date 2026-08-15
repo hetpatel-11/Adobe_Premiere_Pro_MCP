@@ -78,7 +78,11 @@ if (typeof JSON === 'undefined') { JSON = {}; }
 // This engine has no JSON of its own. Measured on ExtendScript build
 // 80.1060872: JSON.parse is undefined and nothing here ever assigns it, so the
 // object created on the line above is fabricated by this prelude and the
-// assignment below is the only stringify in the process.
+// assignment below installs the only stringify this engine will ever have.
+//
+// Mind the wording here: the panel validates the whole script, prelude included,
+// against a list of patterns that includes a bare "process" followed by a dot.
+// A comment matching one of those makes the panel reject every call.
 //
 // It replaces one that escaped only backslash, quote, carriage return, line
 // feed and tab, passing every other control character through raw. Every tool
