@@ -213,21 +213,36 @@ export class PremiereProBridge implements PremiereProTransport {
   }
 
   private async detectPremiereProInstallation(): Promise<void> {
-    // Check for common Premiere Pro installation paths
-    const commonPaths = [
-      '/Applications/Adobe Premiere Pro 2024/Adobe Premiere Pro 2024.app',
-      '/Applications/Adobe Premiere Pro 2023/Adobe Premiere Pro 2023.app',
-      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2024\\Adobe Premiere Pro.exe',
-      'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2023\\Adobe Premiere Pro.exe'
-    ];
+    // Scan the install root instead of hardcoding release years, so new
+    // versions (2025, 2026, ...) are detected without a code change.
+    const searchDirs = process.platform === 'win32'
+      ? [join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Adobe')]
+      : ['/Applications'];
 
-    for (const path of commonPaths) {
+    for (const dir of searchDirs) {
+      let entries: string[] = [];
       try {
-        await fs.access(path);
-        this.logger.info(`Found Adobe Premiere Pro at: ${path}`);
-        return;
+        const listing = await fs.readdir(dir);
+        entries = Array.isArray(listing) ? listing : [];
       } catch (error) {
-        // Continue checking other paths
+        continue; // Install root is missing on this machine
+      }
+
+      // Newest release first, e.g. "Adobe Premiere Pro 2026" before "... 2024"
+      const candidates = entries
+        .filter(entry => entry.startsWith('Adobe Premiere Pro'))
+        .sort()
+        .reverse();
+
+      for (const candidate of candidates) {
+        const path = join(dir, candidate);
+        try {
+          await fs.access(path);
+          this.logger.info(`Found Adobe Premiere Pro at: ${path}`);
+          return;
+        } catch (error) {
+          // Continue checking other candidates
+        }
       }
     }
 
