@@ -201,6 +201,22 @@ describe('script serialization', () => {
       expect(JSON.parse(emitted)).toMatchObject({ name: 'clip', durationSeconds: 12.5 });
     });
 
+    it('survives a property whose read throws', async () => {
+      // A DOM object reaches the escaper unguarded through evaluate_expression.
+      // One property that raises on access used to take the entire response with
+      // it -- the same blast radius this prelude exists to remove.
+      const stringify = await loadEscaper();
+
+      const hostile: Record<string, unknown> = { name: 'clip' };
+      Object.defineProperty(hostile, 'explodes', {
+        enumerable: true,
+        get() { throw new Error('host refused'); },
+      });
+
+      expect(() => stringify(hostile)).not.toThrow();
+      expect(JSON.parse(stringify(hostile))).toEqual({ name: 'clip' });
+    });
+
     it('serialises an object whose own key shadows hasOwnProperty', async () => {
       // Reachable through inspect_dom_object. Testing truthiness instead of
       // callability here throws TypeError out of the escaper, which loses the
@@ -330,6 +346,30 @@ describe('script serialization', () => {
       for (const bad of REJECTED) {
         expect(() => parse(bad)).toThrow();
       }
+    });
+
+    it('does not let a __proto__ key reparent the object', async () => {
+      // Assigning that key invokes the prototype setter rather than adding a
+      // property: the value becomes unreachable as an own key and the object
+      // starts inheriting from whatever the payload carried. The platform parser
+      // defines an ordinary own property, so this must too.
+      const bridge = await readyBridge();
+      await bridge.executeScript('return 1;');
+      const prelude = writtenScript();
+      const sandbox: Record<string, unknown> = {};
+      vm.createContext(sandbox);
+      vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+
+      const result = vm.runInContext(`
+        var parsed = __mcpParse('{"__proto__":{"polluted":true},"name":"clip"}');
+        [ Object.prototype.hasOwnProperty.call(parsed, '__proto__'),
+          Object.getPrototypeOf(parsed) === Object.prototype,
+          parsed.polluted === undefined,
+          parsed.name,
+          ({}).polluted === undefined ].join('|');
+      `, sandbox);
+
+      expect(result).toBe('true|true|true|clip|true');
     });
 
     it('is installed onto the JSON object, not merely defined', async () => {

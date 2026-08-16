@@ -50,25 +50,25 @@ Current behavior:
 - the tool is still exposed
 - it returns an error explaining that render queue monitoring requires Adobe Media Encoder
 
-### `add_text_overlay` cannot read MOGRT text on this engine
+### `add_text_overlay` decodes MOGRT text again, but the rest of that path is untested
 
-Status: pre-existing, unfixed here, found while measuring the serialization change
+Status: the blocker is fixed in this change; what sits behind it has not been exercised
 
-The engine ships no `JSON` object at all. `JSON.parse` is `undefined` and nothing in the
-prelude assigns it, which is why the prelude fabricates `JSON` and installs a `stringify`
-onto it. Serialization only ever needed the write direction, so that is all it provides.
+The engine ships no `JSON` object at all -- neither `parse` nor `stringify` -- which is
+why the prelude fabricates one. It used to install only `stringify`, leaving a `JSON` that
+answers `typeof` while the read direction is missing.
 
-`add_text_overlay`'s MOGRT path needs the read direction. It calls `JSON.parse` inside the
-generated script at three sites to decode a component's text payload, trying a four-byte
-header first and then the bare string. Both calls raise
-`ReferenceError: JSON.parse is not a function`, both are caught, and the tool reports
-"Both JSON parse strategies failed" — so the failure is legible but the path can never
-succeed. Verified by running both strategies through the live bridge on 26.0.2.
+`add_text_overlay` needs the read direction. It calls `JSON.parse` inside the generated
+script at three sites to decode a component's text payload, trying a four-byte header first
+and then the bare string. Before this change both raised
+`ReferenceError: JSON.parse is not a function`, both were caught, and the tool reported
+"Both JSON parse strategies failed" -- legible, but the path could never succeed. Verified
+against a live 26.0.2 host.
 
-Not fixed here because the repair is a real ES3 JSON parser, which is well outside a
-serialization change. The obvious shortcut is closed: `eval` exists on the host, but the
-panel rejects any script matching `eval(` before running it, so a one-line polyfill in the
-prelude would make the panel refuse every call.
+The prelude now installs a parser as well, and the same payload shape decodes correctly
+through the live bridge. That removes the blocker; it does not establish that the whole
+MOGRT flow works, because confirming that needs a real .mogrt asset in a project and has
+not been done. Treat the remainder of that path as unverified rather than fixed.
 
 ## Operational Limits
 

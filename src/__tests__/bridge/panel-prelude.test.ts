@@ -109,6 +109,97 @@ describe('the panel copy of the prelude', () => {
     expect(vm.runInContext('JSON.parse === __mcpParse', sandbox)).toBe(true);
   });
 
+  it('does not let a __proto__ key reparent the object, in the panel copy too', () => {
+    const sandbox = loadPanelPrelude();
+
+    const result = vm.runInContext(`
+      var parsed = __mcpParse('{"__proto__":{"polluted":true},"name":"clip"}');
+      [ Object.prototype.hasOwnProperty.call(parsed, '__proto__'),
+        Object.getPrototypeOf(parsed) === Object.prototype,
+        parsed.polluted === undefined,
+        parsed.name ].join('|');
+    `, sandbox);
+
+    expect(result).toBe('true|true|true|clip');
+  });
+
+  it('is actually handed to evalScript, prelude and all', () => {
+    // This used to match the panel SOURCE for the line that builds `fullScript`.
+    // That pins the assignment, not the use: changing `evalScript(fullScript)` to
+    // `evalScript(script)` left the phrase in place and the whole suite green,
+    // with the escaper reduced to dead code -- the failure this file exists to
+    // prevent. It was also falsely strict, going red for `"\n"` over `'\n'`.
+    //
+    // So the panel is loaded and driven, and the assertion is on what actually
+    // reaches evalScript.
+    const source = realFs.readFileSync(PANEL, 'utf8');
+    let handed = '';
+    const sandbox: Record<string, unknown> = {
+      window: {} as Record<string, unknown>,
+      document: { addEventListener() {}, getElementById: () => null, readyState: 'complete' },
+      navigator: { userAgent: 'test' },
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+      setInterval: () => 0,
+      clearInterval: () => {},
+      console: { log() {}, warn() {}, error() {} },
+      // The panel is a CEP page with Node integration; it pulls these in at load.
+      require: (name: string) => {
+        if (name === 'fs') {
+          return {
+            existsSync: () => false, mkdirSync: () => {}, readdirSync: () => [],
+            readFileSync: () => '', writeFileSync: () => {}, unlinkSync: () => {},
+            renameSync: () => {}, statSync: () => ({ isDirectory: () => false }),
+          };
+        }
+        if (name === 'path') {
+          return { join: (...p: string[]) => p.join('/'), basename: (v: string) => v, dirname: (v: string) => v };
+        }
+        if (name === 'os') return { tmpdir: () => '/tmp', homedir: () => '/tmp' };
+        return {};
+      },
+      CSInterface: function () {
+        return {
+          getHostEnvironment: () => ({ appName: 'PPRO', appVersion: '26.0.0' }),
+          evalScript: (script: string) => { handed = script; },
+          addEventListener() {},
+        };
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(source, sandbox);
+
+    const Bridge = (sandbox.window as { MCPPremiereBridge?: new () => never }).MCPPremiereBridge;
+    expect(typeof Bridge).toBe('function');
+
+    const bridge = Object.create((Bridge as unknown as { prototype: object }).prototype) as {
+      csInterface: unknown;
+      normalizeHostEnvironment: (v: unknown) => unknown;
+      executeExtendScript: (s: string, cb: (e: unknown, r?: unknown) => void) => void;
+    };
+    bridge.csInterface = new (sandbox.CSInterface as new () => never)();
+    bridge.normalizeHostEnvironment = (value: unknown) => value;
+    bridge.executeExtendScript('return 1;', () => {});
+
+    expect(handed).toContain('function __mcpStringify');
+    expect(handed).toContain('function __mcpParse');
+    expect(handed.endsWith('return 1;')).toBe(true);
+  });
+
+  it('does not let a __proto__ key reparent the object, in the panel copy too', () => {
+    const sandbox = loadPanelPrelude();
+
+    const result = vm.runInContext(`
+      var parsed = __mcpParse('{"__proto__":{"polluted":true},"name":"clip"}');
+      [ Object.prototype.hasOwnProperty.call(parsed, '__proto__'),
+        Object.getPrototypeOf(parsed) === Object.prototype,
+        parsed.polluted === undefined,
+        parsed.name ].join('|');
+    `, sandbox);
+
+    expect(result).toBe('true|true|true|clip');
+  });
+
   it('is actually prepended to the script the panel runs', () => {
     // Everything else here proves the array's contents are right. None of it
     // proves the panel uses them: stopping it from prepending the prelude at all

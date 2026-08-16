@@ -70,25 +70,37 @@ function __mcpStringify(value) {
       // Through the saved reference, because an own property named hasOwnProperty
       // shadows the method. A non-function threw and lost the whole response; a
       // function returning false was worse, emitting {} that parses cleanly while
-      // every field silently vanished. On 26.0.2 this agrees with the method form
-      // on every enumerable key of Sequence, VideoTrack, TrackItem and ProjectItem,
-      // so host objects are unaffected. Keys are kept if the check itself fails:
-      // emitting one extra inherited key is recoverable, dropping data is not.
+      // every field silently vanished.
+      //
+      // Switching to the reference would drop data if a host object carried its
+      // values on a prototype, so that was measured rather than assumed: across
+      // Application, Project, ProjectItem, Sequence, SequenceSettings, Track,
+      // TrackCollection, TrackItem and MarkerCollection on 26.0.2 -- 101 enumerable
+      // keys -- every one is an own property and none inherited. Keys are kept if
+      // the check itself throws: one extra inherited key is recoverable, dropping
+      // data is not.
       var isOwn = true;
       try { isOwn = __mcpOwnProperty.call(value, key); } catch (ownError) { isOwn = true; }
       if (!isOwn) continue;
-      if (typeof value[key] === 'undefined' || typeof value[key] === 'function') continue;
-      objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(value[key]));
+      // Read once, and survive a read that throws. Guarding the ownership check
+      // while leaving the read unguarded still lost the whole response to a
+      // property that raises on access -- and a DOM object reaches here directly
+      // through evaluate_expression. Reading twice also ran any side effect twice.
+      var member;
+      try { member = value[key]; } catch (readError) { continue; }
+      if (typeof member === 'undefined' || typeof member === 'function') continue;
+      objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(member));
     }
     return '{' + objectParts.join(',') + '}';
   }
   return 'null';
 }
 if (typeof JSON === 'undefined') { JSON = {}; }
-// This engine has no JSON of its own. Measured on ExtendScript build
-// 80.1060872: JSON.parse is undefined and nothing here ever assigns it, so the
-// object created on the line above is fabricated by this prelude and the
-// assignment below installs the only stringify this engine will ever have.
+// This engine has no JSON of its own. Measured on ExtendScript build 80.1060872:
+// neither JSON.parse nor JSON.stringify exists, so the object created on the line
+// above is fabricated by this prelude, and both directions installed below are the
+// only ones the engine will ever have. The parser is further down, after the
+// escaper it mirrors.
 //
 // Mind the wording here: the panel validates the whole script, prelude included,
 // against a list of patterns that includes a bare "process" followed by a dot.
@@ -128,6 +140,12 @@ JSON.stringify = __mcpStringify;
 // generated-script test enforces. Characters are compared by code rather than by
 // literal for the same reason __mcpEscapeString does it -- a backslash written
 // here is consumed by the template literal before it reaches the host.
+// Two limits, measured rather than assumed. Nesting is bounded by the JavaScript
+// call stack: around 6,000 levels before it gives out, against no observed limit
+// in a modern engine. And each string is built one character at a time, which is
+// linear where the engine has rope strings and quadratic where it does not; both
+// are far outside the shape of a tool payload, but a caller feeding this arbitrary
+// third-party JSON should know. The host cost of either is unmeasured.
 function __mcpParse(text) {
   var source = String(text);
   var at = 0;
@@ -179,6 +197,9 @@ function __mcpParse(text) {
     }
     fail('unterminated string');
   }
+  // The escape below is doubled deliberately. A single backslash is consumed by
+  // the template literal, and the host then receives a dot that matches any
+  // character -- which accepted 012, 000 and 0123 as numbers on a live 26.0.2.
   function parseNumber() {
     var start = at;
     if (source.charCodeAt(at) === 45) at++;
@@ -195,7 +216,7 @@ function __mcpParse(text) {
       while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;
     }
     var literal = source.substring(start, at);
-    if (!/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$/.test(literal)) fail('bad number');
+    if (!/^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][-+]?[0-9]+)?$/.test(literal)) fail('bad number');
     return Number(literal);
   }
   function parseWord() {
@@ -218,7 +239,23 @@ function __mcpParse(text) {
         var key = parseString();
         skipWhitespace();
         expect(58);
-        object[key] = parseValue();
+        var member = parseValue();
+        if (key === '__proto__') {
+          // Plain assignment here replaces the object's prototype instead of
+          // adding a key: the value is then unreachable as an own property and
+          // the object inherits from whatever the payload contained. Define it
+          // where the engine allows, and otherwise drop it -- losing one key is
+          // recoverable, silently reparenting the object is not.
+          if (typeof Object.defineProperty === 'function') {
+            try {
+              Object.defineProperty(object, key, {
+                value: member, enumerable: true, writable: true, configurable: true
+              });
+            } catch (defineError) { /* left out rather than assigned */ }
+          }
+        } else {
+          object[key] = member;
+        }
         skipWhitespace();
         if (source.charCodeAt(at) === 44) { at++; continue; }
         expect(125);
