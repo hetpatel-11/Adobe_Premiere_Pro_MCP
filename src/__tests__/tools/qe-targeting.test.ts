@@ -37,8 +37,9 @@ describe('QE targeting, second pass', () => {
    * of cases had never been given the check at all, so even a listed spelling
    * survived there. These blocks resolve through `targetSequence()`, which already
    * handles an absent id, so none of them has any business naming the active
-   * sequence directly: all ten contain it zero times. Asserting its absence is
-   * independent of how a fallback might be written.
+   * sequence directly: all ten contain it zero times. The substring is matched
+   * without the call parentheses, because `app.project.activeSequence || seq`
+   * reaches the same result without ever writing them.
    */
   const caseBlock = (script: string, tool: string): string => {
     const start = script.indexOf(`case "${tool}":`);
@@ -126,7 +127,7 @@ describe('QE targeting, second pass', () => {
 
       expect(block).toContain('var seqErr = sequenceRequestError();');
       expect(block).toContain('targetSequence()');
-      expect(block).not.toContain('activeSequence()');
+      expect(block).not.toContain('activeSequence');
     });
 
     it.each([
@@ -137,7 +138,7 @@ describe('QE targeting, second pass', () => {
       const block = caseBlock(await expandedScript(tool), tool);
 
       expect(block).toContain('var seqErr = sequenceRequestError();');
-      expect(block).not.toContain('activeSequence()');
+      expect(block).not.toContain('activeSequence');
     });
   });
 

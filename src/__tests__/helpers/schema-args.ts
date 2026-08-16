@@ -52,8 +52,12 @@ const NUMERIC: Record<string, number> = {
 const CANDIDATES: unknown[] = [
   'x', '0', '1', 'video', 'audio', 'green', 'start', 'end', 'png', 'both',
   'Cross Dissolve', '/tmp/f.xml', '00:00:01:00', 'true', 'none', 'default',
-  1, 0, true, false, [], {}, null,
+  1, 0, true, false,
 ];
+// Deliberately absent: [], {} and null. A schema accepts them, so they satisfy
+// the acceptance check while carrying no string to fuzz -- which turned a broken
+// array accessor into a silent loss of coverage rather than a visible rejection.
+
 
 /** Preferred value where several are legal and one exercises more of the tool. */
 const STRINGY: Record<string, string> = { position: 'end', format: 'png' };
@@ -99,11 +103,15 @@ function shapedGuess(schema: Schema, key: string): unknown {
  * mis-read schema costs a slower path rather than a silently dropped tool.
  */
 export function seed(schema: Schema, key = ''): unknown {
-  const guess = shapedGuess(schema, key);
-  if (accepts(schema, guess)) return guess;
-
+  // A named preference comes first. Falling through to the structural guess took
+  // the first enum member instead, which silently moved add_transition_to_clip
+  // from 'end' to 'start' and stopped exercising the branch that preference was
+  // chosen for.
   const preferred = STRINGY[key];
   if (preferred !== undefined && accepts(schema, preferred)) return preferred;
+
+  const guess = shapedGuess(schema, key);
+  if (accepts(schema, guess)) return guess;
   for (const candidate of CANDIDATES) if (accepts(schema, candidate)) return candidate;
   return guess;
 }
@@ -171,4 +179,66 @@ export function withPayloadAt(base: unknown, path: (string | number)[], payload:
   const copy = { ...(base as Record<string, unknown>) };
   copy[head as string] = withPayloadAt(copy[head as string], rest, payload);
   return copy;
+}
+
+/**
+ * The argument names a tool actually reads, taken from the script it emits.
+ *
+ * The 171 "expanded" tools declare `z.record(z.string(), z.any())` — a free-form
+ * bag with no `.shape` — so seeding from the schema yields `{}` and they carry no
+ * fuzzable position at all. That silently excluded 60% of the catalogue from the
+ * injection sweep while every floor and every acceptance check still passed,
+ * because an empty object is a perfectly valid record.
+ *
+ * Their generated script names what it reads (`args.sequenceId`, `args.name`), so
+ * the names come from there. Derived rather than hand-listed, so a tool that
+ * starts reading a new argument is covered without anyone remembering to add it.
+ */
+export function argNamesFromScript(script: string, tool: string, includeHelpers = true): string[] {
+  const start = script.indexOf(`case "${tool}":`);
+  if (start === -1) return [];
+
+  // Consume leading fall-through labels, then stop at the next label after code.
+  const lines = script.slice(start).split('\n');
+  const isLabel = (line: string): boolean => /^\s*case "/.test(line);
+  const body: string[] = [];
+  let seenStatement = false;
+  for (const line of lines) {
+    if (isLabel(line) && seenStatement) break;
+    if (!isLabel(line) && line.trim()) seenStatement = true;
+    body.push(line);
+  }
+
+  // The shared helpers above the switch read arguments too -- rename_track never
+  // names a sequence itself, it calls targetSequence(), which reads
+  // args.sequenceId. Scoping to the case block alone missed every argument
+  // consumed that way, which is most of the targeting surface.
+  const firstCase = script.indexOf('case "');
+  const helperRegion = firstCase === -1 ? '' : script.slice(0, firstCase);
+
+  const names = new Set<string>();
+  for (const region of includeHelpers ? [body.join('\n'), helperRegion] : [body.join('\n')]) {
+    for (const match of region.matchAll(/args\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      if (match[1]) names.add(match[1]);
+    }
+  }
+  return [...names];
+}
+
+/**
+ * Arguments for a tool whose schema declares no fields.
+ *
+ * Values are chosen the same way as elsewhere: a name that looks numeric or
+ * boolean gets that, everything else a string, so the tool is not rejected before
+ * it emits.
+ */
+export function seedFreeFormArgs(names: string[]): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  for (const name of names) {
+    if (name in NUMERIC) args[name] = NUMERIC[name];
+    else if (/^(is|has|should|enable|enabled|visible|locked|muted|selected|ripple|linked)/.test(name)) args[name] = true;
+    else if (/(index|count|duration|time|level|width|height|rate|speed|volume|opacity|scale|rotation)$/i.test(name)) args[name] = 1;
+    else args[name] = STRINGY[name] ?? 'x';
+  }
+  return args;
 }
