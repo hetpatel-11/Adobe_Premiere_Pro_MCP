@@ -348,28 +348,69 @@ describe('script serialization', () => {
       }
     });
 
-    it('does not let a __proto__ key reparent the object', async () => {
-      // Assigning that key invokes the prototype setter rather than adding a
-      // property: the value becomes unreachable as an own key and the object
-      // starts inheriting from whatever the payload carried. The platform parser
-      // defines an ordinary own property, so this must too.
+    /**
+     * Both paths, because the host takes the one Node does not.
+     *
+     * ExtendScript implements the __proto__ setter, so plain assignment grafts the
+     * payload onto the prototype: a value carrying {"__proto__":{"mTextString":"X"}}
+     * reads back X from a field nobody set, and {"__proto__":null} yields an object
+     * whose String() throws. Object.defineProperty does not exist there either, so
+     * the conformant repair is unavailable and the key is dropped.
+     *
+     * Asserting only the Node outcome would test a branch the host never takes,
+     * which is what the first version of this did.
+     */
+    const parseProtoPayload = async (withDefineProperty: boolean): Promise<string> => {
       const bridge = await readyBridge();
       await bridge.executeScript('return 1;');
       const prelude = writtenScript();
+
       const sandbox: Record<string, unknown> = {};
       vm.createContext(sandbox);
+      if (!withDefineProperty) {
+        // Stand in for the engine the prelude actually runs on.
+        vm.runInContext('Object.defineProperty = undefined;', sandbox);
+      }
       vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
 
-      const result = vm.runInContext(`
-        var parsed = __mcpParse('{"__proto__":{"polluted":true},"name":"clip"}');
-        [ Object.prototype.hasOwnProperty.call(parsed, '__proto__'),
+      return vm.runInContext(`
+        var parsed = __mcpParse('{"__proto__":{"mTextString":"INJECTED"},"name":"clip"}');
+        var nulled = __mcpParse('{"__proto__":null,"a":1}');
+        var stringifies = 'ok';
+        try { String(nulled); } catch (e) { stringifies = 'throws'; }
+        [ parsed.name,
+          parsed.mTextString === undefined,
           Object.getPrototypeOf(parsed) === Object.prototype,
-          parsed.polluted === undefined,
-          parsed.name,
-          ({}).polluted === undefined ].join('|');
-      `, sandbox);
+          nulled.a,
+          stringifies,
+          ({}).mTextString === undefined ].join('|');
+      `, sandbox) as string;
+    };
 
-      expect(result).toBe('true|true|true|clip|true');
+    it('never injects a field or reparents, whichever path the engine takes', async () => {
+      // The safety property holds in both environments; it is what actually matters.
+      expect(await parseProtoPayload(true)).toBe('clip|true|true|1|ok|true');
+      expect(await parseProtoPayload(false)).toBe('clip|true|true|1|ok|true');
+    });
+
+    it('defines the key where the engine allows it, and drops it where it cannot', async () => {
+      const owns = async (withDefineProperty: boolean): Promise<unknown> => {
+        const bridge = await readyBridge();
+        await bridge.executeScript('return 1;');
+        const prelude = writtenScript();
+        const sandbox: Record<string, unknown> = {};
+        vm.createContext(sandbox);
+        if (!withDefineProperty) vm.runInContext('Object.defineProperty = undefined;', sandbox);
+        vm.runInContext(prelude.slice(0, prelude.indexOf('function __findSequence')), sandbox);
+        return vm.runInContext(`
+          Object.prototype.hasOwnProperty.call(__mcpParse('{"__proto__":{"a":1}}'), '__proto__');
+        `, sandbox);
+      };
+
+      // Conformant where possible...
+      expect(await owns(true)).toBe(true);
+      // ...and lossy rather than dangerous where it is not. This is the host case.
+      expect(await owns(false)).toBe(false);
     });
 
     it('is installed onto the JSON object, not merely defined', async () => {

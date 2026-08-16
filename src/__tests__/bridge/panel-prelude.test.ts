@@ -29,7 +29,7 @@ const PARAGRAPH_SEPARATOR = '\u2029';
  * how the lines are quoted or joined cannot quietly produce a different string
  * here than the panel builds at runtime.
  */
-function loadPanelPrelude(): Record<string, unknown> {
+function loadPanelPrelude(withDefineProperty = true): Record<string, unknown> {
   const source = realFs.readFileSync(PANEL, 'utf8');
 
   const start = source.indexOf('var EXTENDSCRIPT_COMPAT_HELPERS = [');
@@ -46,6 +46,9 @@ function loadPanelPrelude(): Record<string, unknown> {
 
   const sandbox: Record<string, unknown> = {};
   vm.createContext(sandbox);
+  // The host has no Object.defineProperty; passing false stands in for it so the
+  // branch the panel actually takes there is the one under test.
+  if (!withDefineProperty) vm.runInContext('Object.defineProperty = undefined;', sandbox);
   vm.runInContext(prelude, sandbox);
   return sandbox;
 }
@@ -85,6 +88,46 @@ describe('the panel copy of the prelude', () => {
 
     expect(stringify(`x${LINE_SEPARATOR}y`)).toBe('"x\\u2028y"');
     expect(stringify(`x${PARAGRAPH_SEPARATOR}y`)).toBe('"x\\u2029y"');
+  });
+
+  it('parses what the platform parses, in the panel copy too', () => {
+    // The panel's copy is generated from the server's, and the two drifting is the
+    // failure this file exists to catch. Parse is checked the same way stringify
+    // is: against the platform implementation, not against hand-written answers.
+    const sandbox = loadPanelPrelude();
+    const parse = sandbox.__mcpParse as (v: string) => unknown;
+
+    for (const value of [
+      null, true, 0, -2.5e8, '', 'q"uote', 'back\\slash', 'tab\there',
+      [1, [2, [3]]], { a: { b: [null, false, 'x'] } }, { mTextString: 'hello' },
+    ]) {
+      const encoded = JSON.stringify(value);
+      expect(parse(encoded)).toEqual(JSON.parse(encoded));
+    }
+
+    for (const bad of ['{', '{"a":1,}', "{'a':1}", 'NaN', '01', '{"a":1} x']) {
+      expect(() => parse(bad)).toThrow();
+    }
+
+    expect(vm.runInContext('JSON.parse === __mcpParse', sandbox)).toBe(true);
+  });
+
+  it('never injects a field or reparents, on either engine path', () => {
+    // Same two paths as the server copy: the host has no Object.defineProperty and
+    // does implement the __proto__ setter, so it takes the drop path.
+    const check = (withDefineProperty: boolean): string => {
+      const sandbox = loadPanelPrelude(withDefineProperty);
+      return vm.runInContext(`
+        var parsed = __mcpParse('{"__proto__":{"mTextString":"INJECTED"},"name":"clip"}');
+        [ parsed.name,
+          parsed.mTextString === undefined,
+          Object.getPrototypeOf(parsed) === Object.prototype,
+          ({}).mTextString === undefined ].join('|');
+      `, sandbox) as string;
+    };
+
+    expect(check(true)).toBe('clip|true|true|true');
+    expect(check(false)).toBe('clip|true|true|true');
   });
 
   it('parses what the platform parses, in the panel copy too', () => {

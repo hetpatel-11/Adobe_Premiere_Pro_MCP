@@ -241,11 +241,18 @@ function __mcpParse(text) {
         expect(58);
         var member = parseValue();
         if (key === '__proto__') {
-          // Plain assignment here replaces the object's prototype instead of
-          // adding a key: the value is then unreachable as an own property and
-          // the object inherits from whatever the payload contained. Define it
-          // where the engine allows, and otherwise drop it -- losing one key is
-          // recoverable, silently reparenting the object is not.
+          // Measured on 26.0.2: this engine implements the __proto__ setter, so
+          // plain assignment grafts the payload onto the prototype instead of
+          // adding a key -- a value carrying {"__proto__":{"mTextString":"X"}}
+          // then reads back X from a field nobody set, and {"__proto__":null}
+          // yields an object whose String() throws.
+          //
+          // Object.defineProperty does not exist here either, so the key cannot be
+          // created as an ordinary property. It is dropped instead. That differs
+          // from a conformant parser, which defines an own property, and the
+          // difference is deliberate: losing one key is recoverable, silent field
+          // injection is not. Where defineProperty does exist the conformant
+          // behaviour is used.
           if (typeof Object.defineProperty === 'function') {
             try {
               Object.defineProperty(object, key, {
