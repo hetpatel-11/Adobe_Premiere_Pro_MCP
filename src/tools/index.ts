@@ -5737,7 +5737,17 @@ export class PremiereProTools {
           var marker = sequence.markers.createMarker(${time});
           marker.name = ${JSON.stringify(name)};
           ${comment ? `marker.comments = ${JSON.stringify(comment)};` : ''}
-          ${color ? `marker.setColorByIndex(${color === 'red' ? '5' : color === 'green' ? '3' : color === 'blue' ? '1' : '0'});` : ''}
+          // Color indices: 0 green, 1 red, 2 purple, 3 orange, 4 yellow, 5 white, 6 blue, 7 cyan
+          ${color ? `marker.setColorByIndex(${
+            color === 'red' ? '1' :
+            color === 'purple' ? '2' :
+            color === 'orange' ? '3' :
+            color === 'yellow' || color === 'tan' ? '4' :
+            color === 'white' ? '5' :
+            color === 'blue' ? '6' :
+            color === 'cyan' || color === 'turquoise' || color === 'aquamarine' ? '7' :
+            color === 'green' ? '0' : '0'
+          });` : ''}
           ${duration && duration > 0 ? `marker.end = ${time + duration};` : ''}
 
           return JSON.stringify({
@@ -5814,7 +5824,16 @@ export class PremiereProTools {
             if (marker.guid === ${JSON.stringify(markerId)}) {
               ${updates.name ? `marker.name = ${JSON.stringify(updates.name)};` : ''}
               ${updates.comment ? `marker.comments = ${JSON.stringify(updates.comment)};` : ''}
-              ${updates.color ? `marker.setColorByIndex(${updates.color === 'red' ? '5' : updates.color === 'green' ? '3' : updates.color === 'blue' ? '1' : '0'});` : ''}
+              ${updates.color ? `marker.setColorByIndex(${
+                updates.color === 'red' ? '1' :
+                updates.color === 'purple' ? '2' :
+                updates.color === 'orange' ? '3' :
+                updates.color === 'yellow' || updates.color === 'tan' ? '4' :
+                updates.color === 'white' ? '5' :
+                updates.color === 'blue' ? '6' :
+                updates.color === 'cyan' || updates.color === 'turquoise' || updates.color === 'aquamarine' ? '7' :
+                updates.color === 'green' ? '0' : '0'
+              });` : ''}
               found = true;
               break;
             }
