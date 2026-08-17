@@ -2,7 +2,7 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
-## [Unreleased]
+## [1.2.0] - 2026-08-17
 
 - Fixed `add_marker`, `update_marker`, `delete_marker`, `list_markers`, `lock_track` and
   `toggle_track_visibility` ignoring the required `sequenceId` and always operating on the
@@ -31,6 +31,30 @@ All notable changes are documented here. Releases use semantic versioning.
   a different frame size got `success: true` and an unchanged sequence. It now applies the
   settings and reports what it wrote. Frame size can be changed after creation — assigned
   through `getSettings()`/`setSettings()` and confirmed by read-back on 26.0.2.
+- Fixed the bridge's response serializer silently passing raw control characters through
+  instead of escaping them. A single stray control character anywhere in a clip or marker
+  name could make the entire tool response unparseable, not just that field. The bridge and
+  CEP panel now share a conformant serializer, tested against the platform's own parser plus
+  a large generated corpus.
+- Added the missing `JSON.parse` read direction to the ExtendScript prelude. The engine ships
+  no native `JSON` object; the prelude previously installed only `stringify`, so any generated
+  script that needed to *decode* a payload — including `add_text_overlay`'s MOGRT text
+  decoding — failed with `JSON.parse is not a function` on every call.
+- Made the command/response file handoff between the server and CEP panel atomic (write to a
+  scratch name, then rename into place) instead of writing directly to the polled filename.
+  Previously a truncated read during a write could permanently fail a command that had
+  actually executed, and a slow response could be overwritten before the caller read it.
+
+### Security
+
+- Fixed an ExtendScript injection vulnerability ([GHSA-rc48-rh69-7487](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/security/advisories/GHSA-rc48-rh69-7487)):
+  a small set of tool arguments (including `clipId` in `split_clip`, `add_transition`, and
+  `add_transition_to_clip`) were interpolated unquoted into generated ExtendScript. A value
+  containing a double quote could break out of the string literal and execute arbitrary
+  ExtendScript, including forging a fake `success: true` tool result. All interpolated values
+  are now serialised with `JSON.stringify` at the point of use. Reported and patched by
+  [@medazizktata](https://github.com/medazizktata).
+
 ### Breaking
 
 - `move_clip` now rejects `newTrackIndex` instead of accepting and ignoring it. The parameter
