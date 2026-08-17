@@ -60,6 +60,61 @@ function __findSequence(id) {
   }
   return null;
 }
+function __qeSequenceFor(seq) {
+  if (!seq) return null;
+  try { app.enableQE(); } catch (eEnable) { return null; }
+  var count = 0;
+  try { count = qe.project.numSequences; } catch (eCount) { return null; }
+  for (var qi = 0; qi < count; qi++) {
+    // Each index is guarded separately: qe.project.numSequences can report more
+    // sequences than getSequenceAt() will actually return, and a throw at one
+    // index must not abort the scan before the target index is reached.
+    try {
+      var candidate = qe.project.getSequenceAt(qi);
+      if (candidate && String(candidate.guid) === String(seq.sequenceID)) return candidate;
+    } catch (eAt) {}
+  }
+  // getSequenceAt() does not expose every sequence: one created by
+  // duplicate_sequence and never opened in a timeline is invisible to it, even
+  // while it is the active sequence. getActiveSequence() still returns a
+  // working handle in that case — verified against 26.0.2, guid and all — so
+  // fall back to it, but only once the guid confirms it is the sequence that
+  // was asked for. Addressing the wrong one is the bug this helper exists to
+  // prevent.
+  try {
+    var activeCandidate = qe.project.getActiveSequence();
+    if (activeCandidate && String(activeCandidate.guid) === String(seq.sequenceID)) return activeCandidate;
+  } catch (eActive) {}
+  return null;
+}
+function __findQeClipByDomClip(qeTrack, domClip) {
+  // QE track items are not the DOM clip list: they include gaps and
+  // transitions, so the DOM clip index addresses a different item as soon as
+  // anything precedes the target. Verified against 26.0.2 — a track holding
+  // three clips with one gap reported five QE items, and color_correct on DOM
+  // clip 2 landed on the gap at QE index 2 and reported success having done
+  // nothing. Match on start time instead, and skip anything that is not a clip.
+  if (!qeTrack || !domClip) return null;
+  var targetTicks = null;
+  try { targetTicks = String(domClip.start.ticks); } catch (eTarget) {}
+  var best = null, bestDelta = null;
+  for (var qi = 0; qi < qeTrack.numItems; qi++) {
+    var item = qeTrack.getItemAt(qi);
+    if (!item) continue;
+    var itemType = null;
+    try { itemType = String(item.type); } catch (eType) {}
+    if (itemType !== "Clip") continue;
+    if (targetTicks === null) return item;
+    var itemTicks = null;
+    try { itemTicks = String(item.start.ticks); } catch (eItem) {}
+    if (itemTicks === targetTicks) return item;
+    if (itemTicks !== null) {
+      var delta = Math.abs(parseInt(itemTicks, 10) - parseInt(targetTicks, 10));
+      if (best === null || delta < bestDelta) { best = item; bestDelta = delta; }
+    }
+  }
+  return best;
+}
 function __findClipInSequence(seq, nodeId) {
   if (!seq) return null;
   for (var t = 0; t < seq.videoTracks.numTracks; t++) {
@@ -640,15 +695,21 @@ export class PremiereProBridge implements PremiereProTransport {
     return await this.executeScript(script);
   }
 
-  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<PremiereProClip> {
+  async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number, insertMode: string = 'overwrite'): Promise<PremiereProClip> {
+    const useInsert = insertMode === 'insert';
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
+        // Both ids are caller-supplied and are embedded in generated ExtendScript.
+        // Naive quoting here was a full code-execution hole, not just a bad error
+        // message: an id of zz"); return JSON.stringify({PWNED:"..."}); (" closed
+        // the call, ran arbitrary script, and returned a forged tool result while
+        // the real work never happened.
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
         if (!sequence) {
-          return JSON.stringify({ success: false, error: "Sequence not found" });
+          return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         }
 
-        var projectItem = __findProjectItem("${projectItemId}");
+        var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) {
           return JSON.stringify({ success: false, error: "Project item not found" });
         }
@@ -709,7 +770,24 @@ export class PremiereProBridge implements PremiereProTransport {
           }
         }
 
-        track.overwriteClip(projectItem, ${time});
+        // insertMode was accepted by the tool, echoed back in its response, and then
+        // dropped: placement was always an overwrite. A caller asking to insert-and-shift
+        // therefore had existing footage destroyed and was told the opposite. Both methods
+        // exist on video and audio tracks in 26.0.2, so honour the request — and refuse
+        // rather than silently overwriting if this build lacks insertClip, since falling
+        // back would be the destructive direction.
+        var requestedInsert = ${useInsert ? 'true' : 'false'};
+        if (requestedInsert) {
+          if (typeof track.insertClip !== "function") {
+            return JSON.stringify({
+              success: false,
+              error: "insertMode 'insert' was requested but this Premiere build exposes no track.insertClip. Refusing rather than overwriting, which would delete existing footage."
+            });
+          }
+          track.insertClip(projectItem, ${time});
+        } else {
+          track.overwriteClip(projectItem, ${time});
+        }
 
         var placedClip = null;
         for (var i = 0; i < track.clips.numItems; i++) {
@@ -720,12 +798,19 @@ export class PremiereProBridge implements PremiereProTransport {
           }
         }
 
-        if (!placedClip && track.clips.numItems > 0) {
-          placedClip = track.clips[track.clips.numItems - 1];
-        }
-
+        // No fallback to track.clips[numItems - 1]. That guessed at the last clip on the
+        // track — which is simply whatever was already there when the placement did not
+        // happen — and then reported its name, times and id back as though they were the
+        // new clip. Worse, its start time drove the linkAudio=false sweep below, so a
+        // placement that did nothing could delete a completely unrelated audio clip.
+        // If the clip cannot be identified, nothing downstream may act on a guess.
         if (!placedClip) {
-          return JSON.stringify({ success: false, error: "Clip placement did not produce a track item" });
+          return JSON.stringify({
+            success: false,
+            error: "Placement could not be confirmed: no clip from this project item appears at " + ${time} + "s on the target track. Nothing was reported back and no linked audio was removed.",
+            trackKind: trackKind,
+            requestedTime: ${time}
+          });
         }
 
         // linkAudio=false post-processing: when placing a video-track clip whose source
@@ -767,6 +852,7 @@ export class PremiereProBridge implements PremiereProTransport {
           outPoint: placedClip.end.seconds,
           duration: placedClip.duration.seconds,
           mediaPath: placedClip.projectItem && placedClip.projectItem.getMediaPath ? placedClip.projectItem.getMediaPath() : "",
+          insertMode: ${JSON.stringify(useInsert ? 'insert' : 'overwrite')},
           linkAudio: ${linkAudio},
           unlinkedAudioRemoved: unlinkedAudioRemoved,
           appliedSourceInOut: appliedSourceInOut,
@@ -848,10 +934,15 @@ export class PremiereProBridge implements PremiereProTransport {
                 break;
               }
             }
-            if (!placedClip && track.clips.numItems > 0) {
-              placedClip = track.clips[track.clips.numItems - 1];
+            // Same reasoning as the single-call path: never fall back to the last clip on
+            // the track. An unconfirmed placement here fed both this result row and the
+            // linkAudio=false sweep below, so one no-op could report a pre-existing clip
+            // as placed and delete an unrelated audio clip alongside it.
+            if (!placedClip) {
+              r.error = "Placement could not be confirmed: no clip from this project item appears at " + spec.time + "s on the target track. No linked audio was removed.";
+              results.push(r);
+              continue;
             }
-            if (!placedClip) { r.error = "Clip placement did not produce a track item"; results.push(r); continue; }
 
             r.success = true;
             r.id = placedClip.nodeId;

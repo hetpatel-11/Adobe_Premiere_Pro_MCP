@@ -227,6 +227,40 @@ const clipPlanSchema = z.object({
   }).optional()
 });
 
+/**
+ * Premiere's marker colours, in `setColorByIndex()` order. The write domain is
+ * exactly 0-7: verified against Premiere 26.0.2, where an index of 8 or above
+ * is a silent no-op (there is no ninth colour) and a non-integer is silently
+ * truncated toward zero. Index 0 (Green) is the default for a marker created
+ * without an explicit colour.
+ */
+const MARKER_COLOR_NAMES = [
+  'green', 'red', 'purple', 'orange', 'yellow', 'white', 'blue', 'cyan',
+] as const;
+
+/**
+ * Accepts a colour name (case-insensitive, surrounding whitespace ignored) or
+ * an index 0-7. Anything else is rejected here, at the schema layer, so the
+ * caller gets a truthful error rather than a marker that silently keeps the
+ * default colour.
+ */
+const MarkerColorSchema = z.union([
+  z.preprocess(
+    (value) => (typeof value === 'string' ? value.trim().toLowerCase() : value),
+    z.enum(MARKER_COLOR_NAMES),
+  ),
+  z.number().int().min(0).max(7),
+  // Some MCP clients stringify every argument, which would otherwise drop index
+  // input entirely. Accept the string form of a valid index, but nothing looser.
+  // Deliberately no .transform(): executeTool() discards the parse() result and
+  // passes the raw args on, so a transform here would silently never apply.
+  // The string-to-number conversion lives in resolveMarkerColor instead.
+  z.string().trim().regex(/^[0-7]$/),
+]);
+
+const MARKER_COLOR_DESCRIPTION =
+  `Marker colour — a name (${MARKER_COLOR_NAMES.join(', ')}) or an index 0-7. Defaults to green.`;
+
 export class PremiereProTools {
   private bridge: PremiereProTransport;
   private logger: Logger;
@@ -256,7 +290,7 @@ export class PremiereProTools {
         name: 'list_sequence_tracks',
         description: 'Lists all video and audio tracks in a specific sequence with their properties and clips.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to list tracks for')
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) to list tracks for, as returned in the "id" field by list_sequences or get_active_sequence')
         })
       },
       {
@@ -472,12 +506,15 @@ export class PremiereProTools {
       },
       {
         name: 'move_clip',
-        description: 'Moves a clip to a different position on the timeline.',
+        description: 'Moves a clip along the timeline, keeping it on its current track. To move a clip to a different track, use move_clip_to_track: on this Premiere build that is a remove-and-reinsert, which can overwrite whatever occupies the destination and gives the clip a new id, so it is deliberately a separate call rather than an option here.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to move'),
-          newTime: z.number().describe('The new time position in seconds'),
-          newTrackIndex: z.number().optional().describe('The new track index (if moving to different track)')
-        })
+          newTime: z.number().describe('The new time position in seconds')
+        // .strict() so a leftover newTrackIndex is an error rather than being
+        // silently dropped. Zod strips unknown keys by default, which would have
+        // let a caller migrating from the old signature keep passing it and keep
+        // believing the clip changed track.
+        }).strict()
       },
       {
         name: 'trim_clip',
@@ -706,40 +743,40 @@ export class PremiereProTools {
       // Markers
       {
         name: 'add_marker',
-        description: 'Adds a marker to the timeline for navigation or notes.',
+        description: 'Adds a marker to the specified sequence for navigation or notes. The sequence does not have to be the active one.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to add the marker to'),
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) to add the marker to, as returned in the "id" field by list_sequences or get_active_sequence'),
           time: z.number().describe('The time in seconds where the marker should be placed'),
           name: z.string().describe('The name/label for the marker'),
           comment: z.string().optional().describe('Optional comment or description for the marker'),
-          color: z.string().optional().describe('Marker color (e.g., "red", "green", "blue")'),
+          color: MarkerColorSchema.optional().describe(MARKER_COLOR_DESCRIPTION),
           duration: z.number().optional().describe('Duration in seconds for a span marker (0 for point marker)')
         })
       },
       {
         name: 'delete_marker',
-        description: 'Deletes a marker from the timeline.',
+        description: 'Deletes a marker from the specified sequence. The sequence does not have to be the active one.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
-          markerId: z.string().describe('The ID of the marker to delete')
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) as returned in the "id" field by list_sequences or get_active_sequence'),
+          markerId: z.string().min(1).describe('The ID of the marker to delete')
         })
       },
       {
         name: 'update_marker',
-        description: 'Updates an existing marker\'s properties.',
+        description: 'Updates an existing marker\'s properties in the specified sequence. The sequence does not have to be the active one.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
-          markerId: z.string().describe('The ID of the marker to update'),
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) as returned in the "id" field by list_sequences or get_active_sequence'),
+          markerId: z.string().min(1).describe('The ID of the marker to update'),
           name: z.string().optional().describe('New name for the marker'),
           comment: z.string().optional().describe('New comment'),
-          color: z.string().optional().describe('New color')
+          color: MarkerColorSchema.optional().describe(`New colour. ${MARKER_COLOR_DESCRIPTION}`)
         })
       },
       {
         name: 'list_markers',
-        description: 'Lists all markers in a sequence.',
+        description: 'Lists all markers in the specified sequence. The sequence does not have to be the active one.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence')
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) as returned in the "id" field by list_sequences or get_active_sequence')
         })
       },
 
@@ -755,18 +792,18 @@ export class PremiereProTools {
       },
       {
         name: 'delete_track',
-        description: 'Deletes a video or audio track from the sequence. Caption track deletion is accepted by the schema but returns an explicit unsupported result because Premiere Pro exposes no caption-track delete/read API to scripting.',
+        description: 'Deletes a video or audio track from the specified sequence. The sequence does not have to be the active one, but it does have to be open in Premiere: there is no DOM track-deletion API, so this falls through to the QE DOM, which only reaches sequences Premiere has open. A sequence QE cannot address is reported by name rather than deleted from the wrong timeline. Caption track deletion is accepted by the schema but returns an explicit unsupported result because Premiere Pro exposes no caption-track delete/read API to scripting.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) as returned in the "id" field by list_sequences or get_active_sequence'),
           trackType: z.enum(['video', 'audio', 'caption']).describe('Type of track'),
           trackIndex: z.number().describe('The index of the track to delete')
         })
       },
       {
         name: 'lock_track',
-        description: 'Locks or unlocks a track to prevent/allow editing.',
+        description: 'Locks or unlocks a track to prevent/allow editing. The sequence does not have to be the active one.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) as returned in the "id" field by list_sequences or get_active_sequence'),
           trackType: z.enum(['video', 'audio']).describe('Type of track'),
           trackIndex: z.number().describe('The index of the track'),
           locked: z.boolean().describe('Whether to lock (true) or unlock (false)')
@@ -774,9 +811,9 @@ export class PremiereProTools {
       },
       {
         name: 'toggle_track_visibility',
-        description: 'Shows or hides a video track.',
+        description: 'Shows or hides a video track by toggling its output (the eye icon) in the specified sequence. The sequence does not have to be the active one. This is track OUTPUT, not track targeting -- use set_target_track for the V1/A1 patch buttons.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
+          sequenceId: z.string().min(1).describe('The sequence ID (GUID) as returned in the "id" field by list_sequences or get_active_sequence'),
           trackIndex: z.number().describe('The index of the video track'),
           visible: z.boolean().describe('Whether to show (true) or hide (false)')
         })
@@ -854,14 +891,18 @@ export class PremiereProTools {
       },
       {
         name: 'set_sequence_settings',
-        description: 'Updates sequence settings.',
+        description: 'Updates sequence settings. Applies width, height, frameRate and pixelAspectRatio, reads the values back afterwards, and reports any field Premiere accepted but did not actually change. Frame size CAN be changed after creation, contrary to an earlier note in this codebase.',
         inputSchema: z.object({
           sequenceId: z.string().describe('The ID of the sequence'),
           settings: z.object({
-            width: z.number().optional().describe('Frame width'),
-            height: z.number().optional().describe('Frame height'),
-            frameRate: z.number().optional().describe('Frame rate'),
-            pixelAspectRatio: z.number().optional().describe('Pixel aspect ratio')
+            width: z.number().optional().describe('Frame width in pixels'),
+            height: z.number().optional().describe('Frame height in pixels'),
+            frameRate: z.number().optional().describe('Frames per second, e.g. 23.976, 25, 30'),
+            // Premiere stores this as an "N:M" string. A bare number is converted to the
+            // nearest exact ratio (1.5 becomes "3:2"), but the string form is accepted
+            // directly so callers can name a ratio Premiere already uses, such as "10:11".
+            pixelAspectRatio: z.union([z.number(), z.string()]).optional()
+              .describe('Pixel aspect ratio, either a number (1, 1.5, 2) or an "N:M" string ("1:1", "4:3", "10:11")')
           }).describe('Settings to update')
         })
       },
@@ -1352,9 +1393,23 @@ export class PremiereProTools {
       };
     }
 
-    // Validate input arguments
+    // Validate input arguments, and use what validation produced.
+    //
+    // The parsed value used to be discarded and the raw args passed on, which
+    // made every .transform(), .default() and z.coerce() in every schema in this
+    // file silently inert — a schema could validate correctly and then have no
+    // effect at all. No schema relies on that today, so this changes no current
+    // behaviour; it stops the next one that does from failing silently.
+    //
+    // Parsed values are merged OVER the raw args rather than replacing them.
+    // Zod object schemas strip unknown keys by default, and several handlers
+    // read alternate spellings (args.itemId || args.item_id), so replacing
+    // outright would drop arguments callers are sending today.
     try {
-      tool.inputSchema.parse(args);
+      const validated = tool.inputSchema.parse(args);
+      if (validated && typeof validated === 'object' && !Array.isArray(validated)) {
+        args = { ...args, ...(validated as Record<string, unknown>) };
+      }
     } catch (error) {
       return {
         success: false,
@@ -1438,7 +1493,7 @@ export class PremiereProTools {
         case 'remove_from_timeline':
           return await this.removeFromTimeline(args.clipId, args.sequenceId, args.deleteMode);
         case 'move_clip':
-          return await this.moveClip(args.clipId, args.newTime, args.newTrackIndex);
+          return await this.moveClip(args.clipId, args.newTime);
         case 'trim_clip':
           return await this.trimClip(args.clipId, args.inPoint, args.outPoint, args.duration);
         case 'split_clip':
@@ -1797,16 +1852,7 @@ export class PremiereProTools {
   private async listSequenceTracks(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
-        if (!sequence) {
-          sequence = app.project.activeSequence;
-        }
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-        }
+${this.buildSequenceResolver(sequenceId)}
 
         var videoTracks = [];
         var audioTracks = [];
@@ -1859,7 +1905,7 @@ export class PremiereProTools {
 
         return JSON.stringify({
           success: true,
-          sequenceId: "${sequenceId}",
+          sequenceId: sequence.sequenceID,
           sequenceName: sequence.name,
           videoTracks: videoTracks,
           audioTracks: audioTracks,
@@ -2719,7 +2765,7 @@ export class PremiereProTools {
     const script = `
       try {
         var project = app.project;
-        var newPath = "${location}/${name}.prproj";
+        var newPath = ${JSON.stringify(location)} + "/" + ${JSON.stringify(name)} + ".prproj";
         project.saveAs(newPath);
         
         return JSON.stringify({
@@ -2779,19 +2825,23 @@ export class PremiereProTools {
    */
   private async importFcpXml(filePath: string): Promise<any> {
     try {
-      const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // No hand-escaping here. JSON.stringify below already produces a correctly
+      // quoted literal; escaping first and then serialising doubled every backslash,
+      // so C:\\Users\\bob\\seq.xml reached the host as C:\\\\Users\\\\bob\\\\seq.xml and every
+      // Windows path failed. Introduced by the interpolation sweep, which wrapped a
+      // site that was already escaped.
       const script = `
         try {
-          var f = new File("${escapedPath}");
+          var f = new File(${JSON.stringify(filePath)});
           if (!f.exists) {
-            return JSON.stringify({ success: false, error: "File not found: ${escapedPath}" });
+            return JSON.stringify({ success: false, error: "File not found: " + ${JSON.stringify(filePath)} });
           }
           // suppressUI=true asks Premiere not to surface import warning dialogs.
-          var imported = app.project.importFiles(["${escapedPath}"], true, app.project.rootItem, false);
+          var imported = app.project.importFiles([${JSON.stringify(filePath)}], true, app.project.rootItem, false);
           if (!imported) {
-            return JSON.stringify({ success: false, imported: false, path: "${escapedPath}", method: "importFiles(suppressUI=true)", error: "Premiere rejected the FCP7 XML import" });
+            return JSON.stringify({ success: false, imported: false, path: ${JSON.stringify(filePath)}, method: "importFiles(suppressUI=true)", error: "Premiere rejected the FCP7 XML import" });
           }
-          return JSON.stringify({ success: true, imported: true, path: "${escapedPath}", method: "importFiles(suppressUI=true)" });
+          return JSON.stringify({ success: true, imported: true, path: ${JSON.stringify(filePath)}, method: "importFiles(suppressUI=true)" });
         } catch (e) {
           return JSON.stringify({ success: false, error: e.toString() });
         }
@@ -2832,7 +2882,7 @@ export class PremiereProTools {
   private async importFolder(folderPath: string, binName?: string, recursive = false): Promise<any> {
     const script = `
       try {
-        var folder = new Folder("${folderPath}");
+        var folder = new Folder(${JSON.stringify(folderPath)});
         var importedItems = [];
         var errors = [];
         
@@ -2863,7 +2913,28 @@ export class PremiereProTools {
         }
         
         var targetBin = app.project.rootItem;
-        ${binName ? `targetBin = app.project.rootItem.children["${binName}"] || app.project.rootItem;` : ''}
+        ${binName ? `
+        // Same silent reparent as create_bin: an unresolved destination bin sent the
+        // whole import to the project root instead of failing.
+        function __binByName(parent, wanted) {
+          // children[name] does not resolve: Premiere's ProjectItemCollection is
+          // index-only, so a string key returns undefined even when a child of that
+          // name exists. Verified against 26.0.2. Walk and compare instead.
+          if (!parent || !parent.children) return null;
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var child = parent.children[i];
+            if (child && String(child.name) === String(wanted)) return child;
+          }
+          return null;
+        }
+        targetBin = __binByName(app.project.rootItem, ${JSON.stringify(binName)});
+        if (!targetBin) {
+          return JSON.stringify({
+            success: false,
+            error: "Destination bin not found: " + ${JSON.stringify(binName)} + ". Nothing was imported. Omit binName to import to the project root.",
+            binName: ${JSON.stringify(binName)}
+          });
+        }` : ''}
         
         importFiles(folder, targetBin);
         
@@ -2889,15 +2960,37 @@ export class PremiereProTools {
     const script = `
       try {
         var parentBin = app.project.rootItem;
-        ${parentBinName ? `parentBin = app.project.rootItem.children["${parentBinName}"] || app.project.rootItem;` : ''}
+        ${parentBinName ? `
+        // Naming a parent that does not resolve used to fall through to the project
+        // root, so the bin landed somewhere the caller never asked for while the
+        // response echoed the parent name back as though it had been used.
+        function __binByName(parent, wanted) {
+          // children[name] does not resolve: Premiere's ProjectItemCollection is
+          // index-only, so a string key returns undefined even when a child of that
+          // name exists. Verified against 26.0.2. Walk and compare instead.
+          if (!parent || !parent.children) return null;
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var child = parent.children[i];
+            if (child && String(child.name) === String(wanted)) return child;
+          }
+          return null;
+        }
+        parentBin = __binByName(app.project.rootItem, ${JSON.stringify(parentBinName)});
+        if (!parentBin) {
+          return JSON.stringify({
+            success: false,
+            error: "Parent bin not found: " + ${JSON.stringify(parentBinName)} + ". Nothing was created. Omit parentBinName to create at the project root.",
+            parentBinName: ${JSON.stringify(parentBinName)}
+          });
+        }` : ''}
 
-        var newBin = parentBin.createBin("${name}");
+        var newBin = parentBin.createBin(${JSON.stringify(name)});
 
         return JSON.stringify({
           success: true,
-          binName: "${name}",
+          binName: ${JSON.stringify(name)},
           binId: newBin.nodeId,
-          parentBin: ${parentBinName ? `"${parentBinName}"` : '"Root"'}
+          parentBin: ${parentBinName ? `${JSON.stringify(parentBinName)}` : '"Root"'}
         });
       } catch (e) {
         return JSON.stringify({
@@ -2988,6 +3081,13 @@ export class PremiereProTools {
         // In current Premiere, Sequence.clone() returns the clone's ProjectItem (NOT a Sequence),
         // which has a settable .name but no .sequenceID / .videoTracks. Resolve the real Sequence
         // object via getSequence() before touching tracks; handle builds that return a Sequence too.
+        // Noted before the clone so the fallback below can tell a newly created
+        // sequence apart from the one the user already had open.
+        var priorActiveId = null;
+        try {
+          priorActiveId = app.project.activeSequence ? String(app.project.activeSequence.sequenceID) : null;
+        } catch (ePriorActive) {}
+
         var cloneResult = originalSeq.clone();
         var newItem = null, newSeqObj = null;
         if (cloneResult) {
@@ -2998,8 +3098,36 @@ export class PremiereProTools {
             newSeqObj = cloneResult;
           }
         }
-        // Fallback: a freshly cloned sequence usually becomes the active sequence.
-        if (!newSeqObj) { try { newSeqObj = app.project.activeSequence; } catch (_) {} }
+        // Fallback: a freshly cloned sequence usually becomes the active one.
+        //
+        // Only accept it once it is demonstrably new — a different sequence from
+        // both the clone source and whatever was active before the clone ran.
+        // Taken unconditionally, this clause hands back the user's own open
+        // timeline whenever clone() returns something unexpected or
+        // getSequence() throws, and everything below then renames it and, with
+        // clearContents, removes every clip from it — reported as success.
+        if (!newSeqObj) {
+          try {
+            var activeCandidate = app.project.activeSequence;
+            var activeCandidateId = activeCandidate ? String(activeCandidate.sequenceID) : null;
+            if (activeCandidateId &&
+                activeCandidateId !== String(originalSeq.sequenceID) &&
+                activeCandidateId !== priorActiveId) {
+              newSeqObj = activeCandidate;
+            }
+          } catch (eActiveFallback) {}
+        }
+
+        // Refuse rather than guess. Clearing a sequence that may not be the copy
+        // is irreversible, so an unresolved copy has to stop the operation.
+        if (${clearContents ? 'true' : 'false'} && !newSeqObj) {
+          return JSON.stringify({
+            success: false,
+            error: "The sequence was duplicated but the copy could not be identified, so clearContents was not run. Nothing was cleared. Find the new sequence with list_sequences and clear it explicitly.",
+            duplicated: true,
+            cleared: false
+          });
+        }
 
         // Rename on the ProjectItem (visible in the project panel) AND the Sequence object.
         if (newItem) { try { newItem.name = ${safeName}; } catch (_) {} }
@@ -3096,9 +3224,22 @@ export class PremiereProTools {
     const seqArg = sequenceId ? JSON.stringify(sequenceId) : 'null';
     const script = `
       try {
-        var sequence = ${seqArg} ? __findSequence(${seqArg}) : null;
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        // A supplied ID that does not resolve must fail. Falling back to the
+        // active sequence answers a different question and reports that
+        // sequence's identity as though it were the one asked for.
+        var sequence = null;
+        if (${seqArg}) {
+          sequence = __findSequence(${seqArg});
+          if (!sequence) {
+            return JSON.stringify({
+              success: false,
+              error: "Sequence not found by id: " + ${seqArg} + ". Use list_sequences or get_active_sequence to obtain a valid sequence ID."
+            });
+          }
+        } else {
+          sequence = app.project.activeSequence;
+        }
+        if (!sequence) return JSON.stringify({ success: false, error: "No active sequence" });
 
         // Premiere caption tracks live alongside video/audio tracks. Different
         // Premiere versions expose them differently:
@@ -3196,14 +3337,14 @@ export class PremiereProTools {
   private async deleteSequence(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
         if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
         var sequenceName = sequence.name;
         app.project.deleteSequence(sequence);
         return JSON.stringify({
           success: true,
           message: "Sequence deleted successfully",
-          deletedSequenceId: "${sequenceId}",
+          deletedSequenceId: ${JSON.stringify(sequenceId)},
           deletedSequenceName: sequenceName
         });
       } catch (e) {
@@ -3226,7 +3367,10 @@ export class PremiereProTools {
 
   private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite', linkAudio: boolean = true, sourceInPoint?: number, sourceOutPoint?: number): Promise<any> {
     try {
-      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio, sourceInPoint, sourceOutPoint);
+      // insertMode used to stop here: it was echoed in every response below while
+      // the bridge unconditionally overwrote, so a caller asking to insert-and-shift
+      // had the footage it was moving destroyed and was told the opposite.
+      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio, sourceInPoint, sourceOutPoint, insertMode);
       if (!result.success) {
         return {
           ...result,
@@ -3294,10 +3438,10 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async moveClip(clipId: string, newTime: number, _newTrackIndex?: number): Promise<any> {
+  private async moveClip(clipId: string, newTime: number): Promise<any> {
     const script = `
       try {
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
         var oldTime = clip.start.seconds;
@@ -3306,7 +3450,7 @@ export class PremiereProTools {
         return JSON.stringify({
           success: true,
           message: "Clip moved successfully",
-          clipId: "${clipId}",
+          clipId: ${JSON.stringify(clipId)},
           oldTime: oldTime,
           newTime: ${newTime},
           trackIndex: info.trackIndex
@@ -3628,11 +3772,15 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var splitSeconds = info.clip.start.seconds + ${splitTime};
-        var seq = app.project.activeSequence;
-        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
+        // The timecode must come from the sequence the clip actually lives in, not
+        // from whatever is on screen. Taking it from the active sequence put the cut
+        // on the right timeline at the wrong frame whenever the two differed in frame
+        // rate: a 24 fps clip razored using a 30 fps timebase lands three frames out.
+        var seq = info.sequence;
+        var fps = seq && seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
         var totalFrames = Math.round(splitSeconds * fps);
         var hours = Math.floor(totalFrames / (fps * 3600));
         var mins = Math.floor((totalFrames % (fps * 3600)) / (fps * 60));
@@ -3640,7 +3788,12 @@ export class PremiereProTools {
         var frames = Math.round(totalFrames % fps);
         function pad(n) { return n < 10 ? "0" + n : "" + n; }
         var tc = pad(hours) + ":" + pad(mins) + ":" + pad(secs) + ":" + pad(frames);
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         qeTrack.razor(tc);
         return JSON.stringify({ success: true, message: "Clip split at " + tc, splitTime: ${splitTime}, timecode: tc });
@@ -3661,8 +3814,9 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
-        if (!sequence) return JSON.stringify({ success: false, error: ${sequenceId ? `"Sequence not found by id: ${sequenceId}"` : '"No active sequence"'} });
+        if (!sequence) return JSON.stringify({ success: false, error: ${sequenceId ? `"Sequence not found by id: " + ${JSON.stringify(sequenceId)}` : '"No active sequence"'} });
 
+        var __priorActive = app.project.activeSequence;
         if (app.project.activeSequence && app.project.activeSequence.sequenceID !== sequence.sequenceID) {
           app.project.openSequence(sequence.sequenceID);
         }
@@ -3681,7 +3835,7 @@ export class PremiereProTools {
         function pad(n) { return n < 10 ? "0" + n : "" + n; }
         var tc = pad(hours) + ":" + pad(mins) + ":" + pad(secs) + ":" + pad(frames);
 
-        var qeSeq = qe.project.getActiveSequence();
+        var qeSeq = __qeSequenceFor(sequence);
         if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence unavailable" });
 
         function buildIndices(count, requested) {
@@ -3746,6 +3900,15 @@ export class PremiereProTools {
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+      } finally {
+        // Leave the user where they were. ES3 has try/finally, and this runs
+        // before the return above completes.
+        try {
+          if (__priorActive && app.project.activeSequence &&
+              app.project.activeSequence.sequenceID !== __priorActive.sequenceID) {
+            app.project.activeSequence = __priorActive;
+          }
+        } catch (eRestore) {}
       }
     `;
 
@@ -3827,7 +3990,12 @@ export class PremiereProTools {
         }
         var beforeComponents = snapshotComponents(clip);
         var beforeCount = beforeComponents.length;
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack, effect;
         if (info.trackType === 'video') {
           qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
@@ -4078,7 +4246,11 @@ export class PremiereProTools {
 
         var effectAdded = false;
         if (!findCropComponent()) {
-          var qeSeq = qe.project.getActiveSequence();
+          // Addressed by id, not by whatever is on screen. __findClip() searches every
+          // sequence in the project, so a clip can be resolved out of one sequence and
+          // then, through getActiveSequence(), have the effect applied to whichever
+          // clip sits at the same track and index in a different one.
+          var qeSeq = __qeSequenceFor(info.sequence);
           if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence not available" });
           var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
           if (!qeTrack) return JSON.stringify({ success: false, error: "QE video track not found for clip" });
@@ -4217,19 +4389,19 @@ export class PremiereProTools {
   private async removeEffect(clipId: string, effectName: string): Promise<any> {
     const script = `
       try {
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
         var found = false;
         for (var i = 0; i < clip.components.numItems; i++) {
-          if (clip.components[i].displayName === "${effectName}" || clip.components[i].matchName === "${effectName}") {
+          if (clip.components[i].displayName === ${JSON.stringify(effectName)} || clip.components[i].matchName === ${JSON.stringify(effectName)}) {
             found = true;
             break;
           }
         }
         return JSON.stringify({
           success: false,
-          error: "Effect removal is not supported by the ExtendScript API. The effect '${effectName}' was " + (found ? "found" : "not found") + " on this clip.",
+          error: "Effect removal is not supported by the ExtendScript API. The effect '" + ${JSON.stringify(effectName)} + "' was " + (found ? "found" : "not found") + " on this clip.",
           note: "Remove effects manually in Premiere Pro"
         });
       } catch (e) {
@@ -4244,18 +4416,25 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info1 = __findClip("${clipId1}");
+        var info1 = __findClip(${JSON.stringify(clipId1)});
         if (!info1) return JSON.stringify({ success: false, error: "First clip not found" });
-        var info2 = __findClip("${clipId2}");
+        var info2 = __findClip(${JSON.stringify(clipId2)});
         var targetInfo = info2 || info1;
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(targetInfo.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + targetInfo.sequenceName + "' through the QE API." });
         var qeTrack = qeSeq.getVideoTrackAt(targetInfo.trackIndex);
         var qeClip = __findQeClipByDomClip(qeTrack, targetInfo.clip);
         if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for transition" });
-        var transition = qe.project.getVideoTransitionByName("${transitionName}");
-        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: ${transitionName}. Use list_available_transitions." });
-        var seq = app.project.activeSequence;
-        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
+        var transition = qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)});
+        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} + ". Use list_available_transitions." });
+        // The clip may live outside the active sequence, and a duration in frames
+        // computed from the wrong timebase gives the transition the wrong length.
+        var seq = targetInfo.sequence;
+        var fps = seq && seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
         var frames = Math.round(${duration} * fps);
         ${this.transitionVerificationScript()}
         var before = __readQeTransitionState(qeClip);
@@ -4268,7 +4447,7 @@ export class PremiereProTools {
           return JSON.stringify({
             success: false,
             error: "Transition call completed but Premiere Pro did not expose a verified transition change",
-            transitionName: "${transitionName}",
+            transitionName: ${JSON.stringify(transitionName)},
             duration: ${duration},
             frames: frames,
             before: before,
@@ -4277,7 +4456,7 @@ export class PremiereProTools {
             afterXml: afterXml
           });
         }
-        return JSON.stringify({ success: true, message: "Transition added and verified", transitionName: "${transitionName}", duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
+        return JSON.stringify({ success: true, message: "Transition added and verified", transitionName: ${JSON.stringify(transitionName)}, duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -4291,18 +4470,25 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         if (!qeClip) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Could not locate matching QE clip for transition" });
         var transition = info.trackType === 'video'
-          ? qe.project.getVideoTransitionByName("${transitionName}")
-          : qe.project.getAudioTransitionByName("${transitionName}");
-        if (!transition) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Transition not found: ${transitionName}" });
-        var seq = app.project.activeSequence;
-        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
+          ? qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)})
+          : qe.project.getAudioTransitionByName(${JSON.stringify(transitionName)});
+        if (!transition) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} });
+        // The clip may live outside the active sequence, and a duration in frames
+        // computed from the wrong timebase gives the transition the wrong length.
+        var seq = info.sequence;
+        var fps = seq && seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
         var frames = Math.round(${duration} * fps);
         ${this.transitionVerificationScript()}
         var before = __readQeTransitionState(qeClip);
@@ -4345,8 +4531,8 @@ export class PremiereProTools {
               after: inspectionAvailable ? { transitionEnumeration: after, finalCutProXml: afterXml } : null
             },
             warning: "Transition command accepted; result could not be independently verified.",
-            transitionName: "${transitionName}",
-            position: "${position}",
+            transitionName: ${JSON.stringify(transitionName)},
+            position: ${JSON.stringify(position)},
             duration: ${duration},
             frames: frames
           });
@@ -4355,7 +4541,7 @@ export class PremiereProTools {
           success: true,
           status: "applied_verified",
           verified: true,
-          message: "Transition added at ${position} and verified",
+          message: "Transition added at " + ${JSON.stringify(position)} + " and verified",
           verification: {
             method: qeVerified ? "transition_enumeration" : "final_cut_pro_xml",
             available: true,
@@ -4363,8 +4549,8 @@ export class PremiereProTools {
             before: qeVerified ? before : beforeXml,
             after: qeVerified ? after : afterXml
           },
-          transitionName: "${transitionName}",
-          position: "${position}",
+          transitionName: ${JSON.stringify(transitionName)},
+          position: ${JSON.stringify(position)},
           duration: ${duration},
           frames: frames
         });
@@ -4585,7 +4771,7 @@ export class PremiereProTools {
   private async adjustAudioLevels(clipId: string, level: number): Promise<any> {
     const script = `
       try {
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
 
@@ -4660,7 +4846,7 @@ export class PremiereProTools {
         return JSON.stringify({
           success: true,
           message: "Audio level adjusted (clip Volume component, locale-aware, calibrated dB scale)",
-          clipId: "${clipId}",
+          clipId: ${JSON.stringify(clipId)},
           requestedDB: dB,
           oldLinearValue: oldLinear,
           oldDB: oldDB,
@@ -4779,15 +4965,15 @@ export class PremiereProTools {
   private async muteTrack(sequenceId: string, trackIndex: number, muted: boolean): Promise<any> {
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var track = sequence.audioTracks[${trackIndex}];
         if (!track) return JSON.stringify({ success: false, error: "Audio track not found" });
         track.setMute(${muted ? 1 : 0});
         return JSON.stringify({
           success: true,
           message: "Track mute status changed",
-          sequenceId: "${sequenceId}",
+          sequenceId: ${JSON.stringify(sequenceId)},
           trackIndex: ${trackIndex},
           muted: ${muted}
         });
@@ -5209,11 +5395,16 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         var effect = qe.project.getVideoEffectByName("Lumetri Color");
         if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color effect not found" });
         qeClip.addVideoEffect(effect);
@@ -5225,7 +5416,7 @@ export class PremiereProTools {
             ${paramCode}
           } catch (e2) {}
         }
-        return JSON.stringify({ success: true, message: "Color correction applied", clipId: "${clipId}" });
+        return JSON.stringify({ success: true, message: "Color correction applied", clipId: ${JSON.stringify(clipId)} });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
@@ -5238,11 +5429,16 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         var effect = qe.project.getVideoEffectByName("Lumetri Color");
         if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color not found" });
         qeClip.addVideoEffect(effect);
@@ -5251,10 +5447,10 @@ export class PremiereProTools {
         for (var j = 0; j < lastComp.properties.numItems; j++) {
           var p = lastComp.properties[j];
           try {
-            if (p.displayName === "Input LUT") p.setValue("${lutPath}", true);
+            if (p.displayName === "Input LUT") p.setValue(${JSON.stringify(lutPath)}, true);
           } catch (e2) {}
         }
-        return JSON.stringify({ success: true, message: "LUT applied", clipId: "${clipId}", lutPath: "${lutPath}" });
+        return JSON.stringify({ success: true, message: "LUT applied", clipId: ${JSON.stringify(clipId)}, lutPath: ${JSON.stringify(lutPath)} });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
@@ -5591,24 +5787,31 @@ export class PremiereProTools {
   private async exportFrame(sequenceId: string, time: number, outputPath: string, format = 'png'): Promise<any> {
     const script = `
       try {
-        var sequence = __findSequence("${sequenceId}");
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
 
         if (sequence.openInTimeline) {
           try { sequence.openInTimeline(); } catch (e0) {}
         }
 
-        app.enableQE();
-        var qeSequence = qe.project.getActiveSequence();
+        // Resolve the QE handle for the sequence the caller named. Reaching for
+        // qe.project.getActiveSequence() here exported whatever happened to be
+        // open in the timeline instead: asking for a non-active sequence
+        // returned success, echoed back the requested sequenceId, and wrote a
+        // frame of the active sequence's content.
+        var qeSequence = __qeSequenceFor(sequence);
         if (!qeSequence) {
-          return JSON.stringify({ success: false, error: "QE active sequence not available for frame export" });
+          return JSON.stringify({
+            success: false,
+            error: "Could not address sequence '" + sequence.name + "' through the QE API, which frame export requires. Open it in a timeline and retry."
+          });
         }
 
-        var methodName = "${format}" === "jpg" ? "exportFrameJPEG" : ("${format}" === "tiff" ? "exportFrameTiff" : "exportFramePNG");
+        var methodName = ${JSON.stringify(format)} === "jpg" ? "exportFrameJPEG" : (${JSON.stringify(format)} === "tiff" ? "exportFrameTiff" : "exportFramePNG");
         if (typeof qeSequence[methodName] !== "function") {
           return JSON.stringify({
             success: false,
-            error: "Frame export format '" + "${format}" + "' is not supported by the available Premiere API"
+            error: "Frame export format '" + ${JSON.stringify(format)} + "' is not supported by the available Premiere API"
           });
         }
 
@@ -5621,39 +5824,106 @@ export class PremiereProTools {
           timeTicks = exportTime.ticks;
         } catch (e1) {}
 
+        // Premiere's exportFrame* methods always append "." + format to the
+        // path they are handed, so passing the caller's "shot.png" wrote
+        // "shot.png.png" while the tool reported "shot.png" — a path with no
+        // file at it. Hand Premiere the stem and let it add the extension back,
+        // so the frame lands exactly where the caller asked.
+        var formatExtension = ${JSON.stringify(format)} === "jpg"
+          ? ".jpg"
+          : (${JSON.stringify(format)} === "tiff" ? ".tiff" : ".png");
+        var requestedPath = ${JSON.stringify(outputPath)};
+        var exportStem = requestedPath;
+        if (requestedPath.length > formatExtension.length) {
+          var tail = requestedPath.substring(requestedPath.length - formatExtension.length);
+          if (tail.toLowerCase() === formatExtension) {
+            exportStem = requestedPath.substring(0, requestedPath.length - formatExtension.length);
+          }
+        }
+
+        // Where the frame should land, and where it would land if some future
+        // version stopped appending the extension.
+        var candidatePaths = [exportStem + formatExtension, requestedPath];
+
+        // A non-throwing call is not proof that a file was written, so record
+        // what is on disk first. Comparing modification stamps rather than mere
+        // existence keeps a stale file from an earlier run from being reported
+        // as this call's output.
+        var beforeState = [];
+        for (var p = 0; p < candidatePaths.length; p++) {
+          var state = { existed: false, stamp: 0, length: -1 };
+          try {
+            var probe = new File(candidatePaths[p]);
+            if (probe.exists) {
+              state.existed = true;
+              state.stamp = probe.modified ? probe.modified.getTime() : 0;
+              state.length = probe.length;
+            }
+          } catch (eProbe) {}
+          beforeState.push(state);
+        }
+
+        // Returns the path that looks freshly written, or null. Freshness is judged
+        // on modification time first and length second, because a filesystem with
+        // one-second timestamp granularity can rewrite a file within the same second
+        // and leave the stamp unchanged.
+        function writtenPath(acceptUnchanged) {
+          for (var w = 0; w < candidatePaths.length; w++) {
+            try {
+              var file = new File(candidatePaths[w]);
+              if (!file.exists) continue;
+              if (!beforeState[w].existed) return candidatePaths[w];
+              var stamp = file.modified ? file.modified.getTime() : 0;
+              if (stamp !== beforeState[w].stamp) return candidatePaths[w];
+              if (file.length !== beforeState[w].length) return candidatePaths[w];
+              // Neither moved. The export may still have written identical bytes over
+              // an existing file, so on the final check accept it rather than report a
+              // failure for a write that did happen -- a false failure invites a retry.
+              if (acceptUnchanged) return candidatePaths[w];
+            } catch (eCheck) {}
+          }
+          return null;
+        }
+
         var exportError = null;
         function tryExport(arg1, arg2) {
           try {
             qeSequence[methodName](arg1, arg2);
-            return true;
           } catch (e2) {
             exportError = e2.toString();
             return false;
           }
+          // Some argument orders are accepted without throwing and without
+          // producing anything, so keep probing the remaining orders rather
+          // than reporting a success that left no file behind.
+          return writtenPath(false) !== null;
         }
 
         var exported =
-          tryExport(timeNumber, "${outputPath}") ||
-          tryExport("${outputPath}", timeNumber) ||
-          tryExport(timeString, "${outputPath}") ||
-          tryExport("${outputPath}", timeString) ||
-          tryExport(timeTicks, "${outputPath}") ||
-          tryExport("${outputPath}", timeTicks);
+          tryExport(timeNumber, exportStem) ||
+          tryExport(exportStem, timeNumber) ||
+          tryExport(timeString, exportStem) ||
+          tryExport(exportStem, timeString) ||
+          tryExport(timeTicks, exportStem) ||
+          tryExport(exportStem, timeTicks);
 
-        if (!exported) {
+        var actualPath = writtenPath(true);
+        if (!exported || !actualPath) {
           return JSON.stringify({
             success: false,
-            error: exportError || "Frame export failed"
+            error: exportError || "Frame export reported no error but wrote no file"
           });
         }
 
         return JSON.stringify({
           success: true,
           message: "Frame exported successfully",
-          sequenceId: "${sequenceId}",
+          sequenceId: ${JSON.stringify(sequenceId)},
+          sequenceName: sequence.name,
           time: ${time},
-          outputPath: "${outputPath}",
-          format: "${format}"
+          outputPath: actualPath,
+          requestedPath: requestedPath,
+          format: ${JSON.stringify(format)}
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -5668,11 +5938,16 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         var effect = qe.project.getVideoEffectByName("Warp Stabilizer");
         if (!effect) return JSON.stringify({ success: false, error: "Warp Stabilizer effect not found" });
         qeClip.addVideoEffect(effect);
@@ -5683,7 +5958,7 @@ export class PremiereProTools {
             if (lastComp.properties[j].displayName === "Smoothness") lastComp.properties[j].setValue(${smoothness}, true);
           } catch (e2) {}
         }
-        return JSON.stringify({ success: true, message: "Warp Stabilizer applied", clipId: "${clipId}", smoothness: ${smoothness} });
+        return JSON.stringify({ success: true, message: "Warp Stabilizer applied", clipId: ${JSON.stringify(clipId)}, smoothness: ${smoothness} });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
@@ -5696,12 +5971,17 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var oldSpeed = info.clip.getSpeed();
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         try { qeClip.setSpeed(${speed}, ${maintainAudio}); } catch(e2) {
           var currentPercent = Number(oldSpeed);
           if (currentPercent <= 10) currentPercent = currentPercent * 100;
@@ -5724,28 +6004,65 @@ export class PremiereProTools {
   // ============================================
 
   // Markers Implementation
-  private async addMarker(_sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
-    const script = `
-      try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
+
+  /**
+   * Builds the ExtendScript preamble that resolves a caller-supplied sequence ID to a real
+   * sequence object.
+   *
+   * Premiere's ExtendScript DOM can read and mutate any sequence in the project, not just
+   * the one on screen, so a tool that accepts a sequenceId must act on that sequence rather
+   * than silently retargeting to `app.project.activeSequence`. When the ID matches nothing
+   * we return a truthful error instead of falling back to the active sequence, which would
+   * quietly write to the wrong timeline.
+   *
+   * The ID compared here is `sequence.sequenceID` (a GUID) — the same value surfaced as `id`
+   * by `list_sequences` and `get_active_sequence`. It is deliberately not `sequence.id` or
+   * `projectItem.nodeId`, which are different identifiers.
+   */
+  private buildSequenceResolver(sequenceId: string, varName: string = 'sequence'): string {
+    const literal = JSON.stringify(sequenceId);
+    return `        var ${varName} = __findSequence(${literal});
+        if (!${varName}) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found by id: " + ${literal} + ". Use list_sequences or get_active_sequence to obtain a valid sequence ID."
           });
-        } else {
-          var marker = sequence.markers.createMarker(${time});
-          marker.name = ${JSON.stringify(name)};
-          ${comment ? `marker.comments = ${JSON.stringify(comment)};` : ''}
-          ${color ? `marker.setColorByIndex(${color === 'red' ? '5' : color === 'green' ? '3' : color === 'blue' ? '1' : '0'});` : ''}
-          ${duration && duration > 0 ? `marker.end = ${time + duration};` : ''}
+        }`;
+  }
 
-          return JSON.stringify({
-            success: true,
-            markerId: marker.guid,
-            message: "Marker added successfully"
-          });
-        }
+  /**
+   * Map a schema-validated colour to its index. Returns null when no colour was
+   * supplied, leaving the marker at Premiere's default rather than silently
+   * recolouring it. Unrecognised values cannot reach here — MarkerColorSchema
+   * rejects them before the bridge is touched.
+   */
+  private static resolveMarkerColor(color?: string | number): number | null {
+    if (color === undefined || color === null || color === '') return null;
+    if (typeof color === 'number') return color;
+    const value = String(color).trim().toLowerCase();
+    if (/^[0-7]$/.test(value)) return Number(value);
+    const index = MARKER_COLOR_NAMES.indexOf(value as typeof MARKER_COLOR_NAMES[number]);
+    return index === -1 ? null : index;
+  }
+
+  private async addMarker(sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
+    const colorIndex = PremiereProTools.resolveMarkerColor(color);
+    const script = `
+      try {
+${this.buildSequenceResolver(sequenceId)}
+        var marker = sequence.markers.createMarker(${time});
+        marker.name = ${JSON.stringify(name)};
+        ${comment ? `marker.comments = ${JSON.stringify(comment)};` : ''}
+        ${colorIndex !== null ? `marker.setColorByIndex(${colorIndex});` : ''}
+        ${duration && duration > 0 ? `marker.end = ${time + duration};` : ''}
+
+        return JSON.stringify({
+          success: true,
+          markerId: marker.guid,
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          message: "Marker added successfully"
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -5756,38 +6073,33 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async deleteMarker(_sequenceId: string, markerId: string): Promise<any> {
+  private async deleteMarker(sequenceId: string, markerId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var deleted = false;
-          for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            var marker = sequence.markers[i];
-            if (marker.guid === ${JSON.stringify(markerId)}) {
-              sequence.markers.deleteMarker(marker);
-              deleted = true;
-              break;
-            }
+${this.buildSequenceResolver(sequenceId)}
+        var deleted = false;
+        for (var i = 0; i < sequence.markers.numMarkers; i++) {
+          var marker = sequence.markers[i];
+          if (marker.guid === ${JSON.stringify(markerId)}) {
+            sequence.markers.deleteMarker(marker);
+            deleted = true;
+            break;
           }
-          var stillPresent = false;
-          for (var j = 0; j < sequence.markers.numMarkers; j++) {
-            if (sequence.markers[j].guid === ${JSON.stringify(markerId)}) {
-              stillPresent = true;
-              break;
-            }
-          }
-
-          return JSON.stringify({
-            success: deleted && !stillPresent,
-            message: deleted && !stillPresent ? "Marker deleted successfully" : (deleted ? "Premiere reported marker deletion but marker is still present" : "Marker not found")
-          });
         }
+        var stillPresent = false;
+        for (var j = 0; j < sequence.markers.numMarkers; j++) {
+          if (sequence.markers[j].guid === ${JSON.stringify(markerId)}) {
+            stillPresent = true;
+            break;
+          }
+        }
+
+        return JSON.stringify({
+          success: deleted && !stillPresent,
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          message: deleted && !stillPresent ? "Marker deleted successfully" : (deleted ? "Premiere reported marker deletion but marker is still present" : "Marker not found")
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -5798,33 +6110,29 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async updateMarker(_sequenceId: string, markerId: string, updates: any): Promise<any> {
+  private async updateMarker(sequenceId: string, markerId: string, updates: any): Promise<any> {
+    const updateColorIndex = PremiereProTools.resolveMarkerColor(updates.color);
     const script = `
       try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var found = false;
-          for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            var marker = sequence.markers[i];
-            if (marker.guid === ${JSON.stringify(markerId)}) {
-              ${updates.name ? `marker.name = ${JSON.stringify(updates.name)};` : ''}
-              ${updates.comment ? `marker.comments = ${JSON.stringify(updates.comment)};` : ''}
-              ${updates.color ? `marker.setColorByIndex(${updates.color === 'red' ? '5' : updates.color === 'green' ? '3' : updates.color === 'blue' ? '1' : '0'});` : ''}
-              found = true;
-              break;
-            }
+${this.buildSequenceResolver(sequenceId)}
+        var found = false;
+        for (var i = 0; i < sequence.markers.numMarkers; i++) {
+          var marker = sequence.markers[i];
+          if (marker.guid === ${JSON.stringify(markerId)}) {
+            ${updates.name !== undefined ? `marker.name = ${JSON.stringify(updates.name)};` : ''}
+            ${updates.comment !== undefined ? `marker.comments = ${JSON.stringify(updates.comment)};` : ''}
+            ${updateColorIndex !== null ? `marker.setColorByIndex(${updateColorIndex});` : ''}
+            found = true;
+            break;
           }
-
-          return JSON.stringify({
-            success: found,
-            message: found ? "Marker updated successfully" : "Marker not found"
-          });
         }
+
+        return JSON.stringify({
+          success: found,
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          message: found ? "Marker updated successfully" : "Marker not found"
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -5835,36 +6143,38 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async listMarkers(_sequenceId: string): Promise<any> {
+  private async listMarkers(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var markers = [];
-          for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            var marker = sequence.markers[i];
-            markers.push({
-              id: marker.guid,
-              name: marker.name,
-              comment: marker.comments,
-              start: marker.start.seconds,
-              end: marker.end.seconds,
-              duration: marker.end.seconds - marker.start.seconds,
-              type: marker.type
-            });
-          }
-
-          return JSON.stringify({
-            success: true,
-            markers: markers,
-            count: markers.length
+${this.buildSequenceResolver(sequenceId)}
+        // getColorByIndex() is not bounded by the write domain: a marker can hold
+        // -1, a persistent "no colour assigned" state that renders black. Guard
+        // the lookup, or an undefined value silently drops colorName from the JSON.
+        var COLOR_NAMES = ["green","red","purple","orange","yellow","white","blue","cyan"];
+        var markers = [];
+        for (var i = 0; i < sequence.markers.numMarkers; i++) {
+          var marker = sequence.markers[i];
+          var colorIndex = marker.getColorByIndex();
+          markers.push({
+            id: marker.guid,
+            name: marker.name,
+            comment: marker.comments,
+            start: marker.start.seconds,
+            end: marker.end.seconds,
+            duration: marker.end.seconds - marker.start.seconds,
+            type: marker.type,
+            color: colorIndex,
+            colorName: (colorIndex >= 0 && colorIndex < COLOR_NAMES.length) ? COLOR_NAMES[colorIndex] : null
           });
         }
+
+        return JSON.stringify({
+          success: true,
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          markers: markers,
+          count: markers.length
+        });
       } catch (e) {
         return JSON.stringify({
           success: false,
@@ -5898,8 +6208,10 @@ export class PremiereProTools {
         app.enableQE();
         var seq = __findSequence(${JSON.stringify(sequenceId)});
         if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var __priorActive = app.project.activeSequence;
         app.project.activeSequence = seq;
-        var qeSeq = qe.project.getActiveSequence();
+        var qeSeq = __qeSequenceFor(seq);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + seq.name + "' through the QE API." });
 
         // Calculate insertion index based on position
         var existingVideoTracks = seq.videoTracks.numTracks;
@@ -5919,7 +6231,7 @@ export class PremiereProTools {
           return JSON.stringify({
             success: false,
             error: "Premiere did not add the requested track",
-            trackType: "${trackType}",
+            trackType: ${JSON.stringify(trackType)},
             position: ${JSON.stringify(position)},
             videoTracksBefore: existingVideoTracks,
             videoTracksAfter: afterVideoTracks,
@@ -5932,8 +6244,8 @@ export class PremiereProTools {
 
         return JSON.stringify({
           success: true,
-          message: "${trackType} track added at " + ${JSON.stringify(position)},
-          trackType: "${trackType}",
+          message: ${JSON.stringify(trackType)} + " track added at " + ${JSON.stringify(position)},
+          trackType: ${JSON.stringify(trackType)},
           position: ${JSON.stringify(position)},
           videoTracksBefore: existingVideoTracks,
           videoTracksAfter: afterVideoTracks,
@@ -5944,17 +6256,26 @@ export class PremiereProTools {
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
+      } finally {
+        // Leave the user where they were. ES3 has try/finally, and this runs
+        // before the return above completes.
+        try {
+          if (__priorActive && app.project.activeSequence &&
+              app.project.activeSequence.sequenceID !== __priorActive.sequenceID) {
+            app.project.activeSequence = __priorActive;
+          }
+        } catch (eRestore) {}
       }
     `;
     return await this.bridge.executeScript(script);
   }
 
-  private async deleteTrack(_sequenceId: string, trackType: string, trackIndex: number): Promise<any> {
+  private async deleteTrack(sequenceId: string, trackType: string, trackIndex: number): Promise<any> {
     if (trackType === 'caption') {
       return {
         success: false,
         error: 'Caption track deletion is not supported by Premiere Pro scripting. The ExtendScript DOM exposes no sequence.captionTracks/getCaptionTracks surface, and the QE DOM exposes no caption-track accessor or delete method.',
-        sequenceId: _sequenceId,
+        sequenceId,
         trackType,
         trackIndex,
         unsupportedByPremiereApi: true,
@@ -5962,58 +6283,69 @@ export class PremiereProTools {
       };
     }
 
+    // Premiere 26 exposes no DOM trackCollection.deleteTrack, so deletion falls through to the
+    // QE DOM — and QE can only reach qe.project.getActiveSequence(). Rather than deleting a
+    // track from whatever timeline happens to be on screen, refuse the cross-sequence case with
+    // a truthful error that names the limitation.
     const script = `
       try {
-        var sequence = __findSequence(${JSON.stringify(_sequenceId)});
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
-        } else {
-          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
-          if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
-            var beforeCount = tracks.numTracks;
-            var deleted = false;
-            if (tracks.deleteTrack) {
-              tracks.deleteTrack(${trackIndex});
-              deleted = true;
-            } else {
-              app.enableQE();
-              var qeSeq = qe.project.getActiveSequence();
-              if (!qeSeq) {
-                return JSON.stringify({ success: false, error: "QE active sequence unavailable for track deletion" });
-              }
-              if (${trackType === 'video' ? 'true' : 'false'} && qeSeq.removeVideoTrack) {
-                qeSeq.removeVideoTrack(${trackIndex});
-                deleted = true;
-              } else if (${trackType === 'audio' ? 'true' : 'false'} && qeSeq.removeAudioTrack) {
-                qeSeq.removeAudioTrack(${trackIndex});
-                deleted = true;
-              }
-            }
-            var afterCount = tracks.numTracks;
-            if (!deleted || afterCount >= beforeCount) {
+${this.buildSequenceResolver(sequenceId)}
+        var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
+        if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
+          var beforeCount = tracks.numTracks;
+          var deleted = false;
+          if (tracks.deleteTrack) {
+            tracks.deleteTrack(${trackIndex});
+            deleted = true;
+          } else {
+            // QE addresses sequences by index through getSequenceAt(), not
+            // only whatever is active, so resolve by guid instead of refusing
+            // every cross-sequence request. What QE actually limits is which
+            // sequences it exposes at all — a sequence it cannot see is
+            // reported as such, naming it, rather than deleting a track from
+            // the timeline that happens to be on screen.
+            var activeSeq = app.project.activeSequence;
+            var qeSeq = __qeSequenceFor(sequence);
+            if (!qeSeq) {
               return JSON.stringify({
                 success: false,
-                error: "Premiere did not remove the requested track",
-                beforeCount: beforeCount,
-                afterCount: afterCount
+                error: "Track deletion needs the QE API, which cannot address sequence '" + sequence.name + "'. Premiere exposes no DOM track-deletion API, and QE only reaches sequences it has open. Open it in a timeline, or call set_active_sequence with " + sequence.sequenceID + ", then retry.",
+                sequenceId: sequence.sequenceID,
+                sequenceName: sequence.name,
+                activeSequenceId: activeSeq ? activeSeq.sequenceID : null,
+                requiresOpenSequence: true
               });
             }
+            if (${trackType === 'video' ? 'true' : 'false'} && qeSeq.removeVideoTrack) {
+              qeSeq.removeVideoTrack(${trackIndex});
+              deleted = true;
+            } else if (${trackType === 'audio' ? 'true' : 'false'} && qeSeq.removeAudioTrack) {
+              qeSeq.removeAudioTrack(${trackIndex});
+              deleted = true;
+            }
+          }
+          var afterCount = tracks.numTracks;
+          if (!deleted || afterCount >= beforeCount) {
             return JSON.stringify({
-              success: true,
-              message: "Track deleted successfully",
+              success: false,
+              error: "Premiere did not remove the requested track",
               beforeCount: beforeCount,
               afterCount: afterCount
             });
-          } else {
-            return JSON.stringify({
-              success: false,
-              error: "Track index out of range"
-            });
           }
+          return JSON.stringify({
+            success: true,
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            message: "Track deleted successfully",
+            beforeCount: beforeCount,
+            afterCount: afterCount
+          });
+        } else {
+          return JSON.stringify({
+            success: false,
+            error: "Track index out of range"
+          });
         }
       } catch (e) {
         return JSON.stringify({
@@ -6025,29 +6357,24 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async lockTrack(_sequenceId: string, trackType: string, trackIndex: number, locked: boolean): Promise<any> {
+  private async lockTrack(sequenceId: string, trackType: string, trackIndex: number, locked: boolean): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
+${this.buildSequenceResolver(sequenceId)}
+        var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
+        if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
+          tracks[${trackIndex}].setLocked(${locked ? 1 : 0});
           return JSON.stringify({
-            success: false,
-            error: "No active sequence"
+            success: true,
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            message: "Track " + (${locked} ? "locked" : "unlocked")
           });
         } else {
-          var tracks = ${trackType === 'video' ? 'sequence.videoTracks' : 'sequence.audioTracks'};
-          if (${trackIndex} >= 0 && ${trackIndex} < tracks.numTracks) {
-            tracks[${trackIndex}].setLocked(${locked ? 1 : 0});
-            return JSON.stringify({
-              success: true,
-              message: "Track " + (${locked} ? "locked" : "unlocked")
-            });
-          } else {
-            return JSON.stringify({
-              success: false,
-              error: "Track index out of range"
-            });
-          }
+          return JSON.stringify({
+            success: false,
+            error: "Track index out of range"
+          });
         }
       } catch (e) {
         return JSON.stringify({
@@ -6059,28 +6386,46 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async toggleTrackVisibility(_sequenceId: string, trackIndex: number, visible: boolean): Promise<any> {
+  private async toggleTrackVisibility(sequenceId: string, trackIndex: number, visible: boolean): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          if (${trackIndex} >= 0 && ${trackIndex} < sequence.videoTracks.numTracks) {
-            sequence.videoTracks[${trackIndex}].setTargeted(${visible}, true);
-            return JSON.stringify({
-              success: true,
-              message: "Track visibility toggled"
-            });
-          } else {
+${this.buildSequenceResolver(sequenceId)}
+        if (${trackIndex} >= 0 && ${trackIndex} < sequence.videoTracks.numTracks) {
+          // This used to call setTargeted(), which is the V1/A1 patch button, not the
+          // eye. Track output was never touched and the caller's track targeting was
+          // silently changed instead, under a response saying "Track visibility
+          // toggled". On a video track, mute IS the eye: setMute(1) disables output.
+          var visibilityTrack = sequence.videoTracks[${trackIndex}];
+          if (!visibilityTrack.setMute) {
+            return JSON.stringify({ success: false, error: "Track.setMute is unavailable on this build, so track output cannot be changed" });
+          }
+          visibilityTrack.setMute(${visible} ? 0 : 1);
+
+          // Read it back: assignment is not evidence of effect anywhere else in this API.
+          var nowMuted = null;
+          try { nowMuted = visibilityTrack.isMuted ? visibilityTrack.isMuted() : null; } catch (eMuted) {}
+          if (nowMuted !== null && nowMuted === ${visible}) {
             return JSON.stringify({
               success: false,
-              error: "Track index out of range"
+              error: "Premiere accepted the change but the track output did not move",
+              requestedVisible: ${visible},
+              muted: nowMuted
             });
           }
+
+          return JSON.stringify({
+            success: true,
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            trackIndex: ${trackIndex},
+            visible: nowMuted === null ? ${visible} : !nowMuted,
+            message: ${visible} ? "Track output enabled" : "Track output disabled"
+          });
+        } else {
+          return JSON.stringify({
+            success: false,
+            error: "Track index out of range"
+          });
         }
       } catch (e) {
         return JSON.stringify({
@@ -6120,13 +6465,15 @@ export class PremiereProTools {
     const script = `
       try {
         app.enableQE();
-        var seq = __findSequence("${sequenceId}");
+        var seq = __findSequence(${JSON.stringify(sequenceId)});
         if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
         // Make target active so QE DOM can address it
+        var __priorActive = app.project.activeSequence;
         app.project.activeSequence = seq;
-        var qeSeq = qe.project.getActiveSequence();
-        var effect = qe.project.getAudioEffectByName("${effectName}");
-        if (!effect) return JSON.stringify({ success: false, error: "Audio effect not found: ${effectName}" });
+        var qeSeq = __qeSequenceFor(seq);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + seq.name + "' through the QE API." });
+        var effect = qe.project.getAudioEffectByName(${JSON.stringify(effectName)});
+        if (!effect) return JSON.stringify({ success: false, error: "Audio effect not found: " + ${JSON.stringify(effectName)} });
 
         var requestedParams = ${paramJson};
         function normalize(s) { return String(s).toLowerCase().replace(/[\\s_-]+/g, ''); }
@@ -6137,7 +6484,9 @@ export class PremiereProTools {
           var qeTrack = qeSeq.getAudioTrackAt(t);
           for (var c = 0; c < track.clips.numItems; c++) {
             var clip = track.clips[c];
-            var qeClip = qeTrack.getItemAt(c);
+            // Same gap/transition mismatch: c is the DOM clip index, which is not the
+            // QE item index once anything non-clip sits earlier on the track.
+            var qeClip = __findQeClipByDomClip(qeTrack, clip);
             try {
               qeClip.addAudioEffect(effect);
               var newCompIdx = clip.components.numItems - 1;
@@ -6182,15 +6531,24 @@ export class PremiereProTools {
 
         return JSON.stringify({
           success: true,
-          sequenceId: "${sequenceId}",
+          sequenceId: ${JSON.stringify(sequenceId)},
           sequenceName: String(seq.name),
-          effectName: "${effectName}",
+          effectName: ${JSON.stringify(effectName)},
           totalClipsProcessed: perClip.length,
           allOk: perClip.every ? perClip.every(function(r){return r.ok;}) : true,
           perClip: perClip
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
+      } finally {
+        // Leave the user where they were. ES3 has try/finally, and this runs
+        // before the return above completes.
+        try {
+          if (__priorActive && app.project.activeSequence &&
+              app.project.activeSequence.sequenceID !== __priorActive.sequenceID) {
+            app.project.activeSequence = __priorActive;
+          }
+        } catch (eRestore) {}
       }
     `;
     return await this.bridge.executeScript(script);
@@ -6328,9 +6686,14 @@ export class PremiereProTools {
           return JSON.stringify({ success: true, clipId: ${JSON.stringify(clipId)}, reversed: true, changed: false, method: "still image already visually reversible" });
         }
         app.enableQE();
-        var qeSeq = qe.project.getActiveSequence();
+        // Addressed by id, not by whatever is on screen. __findClip() searches every
+        // sequence in the project, so a clip can be resolved out of one sequence and
+        // then, through getActiveSequence(), have the effect applied to whichever
+        // clip sits at the same track and index in a different one.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
+        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         if (!qeClip || !qeClip.setReverse) return JSON.stringify({ success: false, error: "QE setReverse API unavailable" });
         try { qeClip.setReverse(true); } catch (reverseError) { return JSON.stringify({ success: false, error: "Reverse via QE DOM not available: " + reverseError.toString() }); }
         return JSON.stringify({ success: true, clipId: ${JSON.stringify(clipId)}, reversed: true, changed: true, maintainAudioPitch: ${maintainAudioPitch !== false} });
@@ -6377,14 +6740,14 @@ export class PremiereProTools {
   }
 
   // Project Settings
-  private async getSequenceSettings(_sequenceId: string): Promise<any> {
+  private async getSequenceSettings(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = __findSequence(${JSON.stringify(_sequenceId)});
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "Sequence not found by id: " + ${JSON.stringify(_sequenceId)}
+            error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)}
           });
         }
         var settings = sequence.getSettings();
@@ -6415,29 +6778,112 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
+        // This used to compare width and height, write nothing at all, and report
+        // "Requested sequence settings already match the active Premiere sequence" —
+        // two falsehoods in one line, since frameRate and pixelAspectRatio were never
+        // even looked at, and the sequence operated on is the resolved one rather than
+        // whatever is active. It also refused any frame size change on the grounds that
+        // Premiere cannot do it, which is untrue: setSettings() resizes a sequence after
+        // creation, verified live by taking one from 1920x1080 to 1280x720.
         var requested = ${JSON.stringify(settings || {})};
-        var current = {
-          width: Number(sequence.frameSizeHorizontal),
-          height: Number(sequence.frameSizeVertical)
-        };
-        var mismatches = [];
-        if (requested.width !== undefined && Number(requested.width) !== current.width) mismatches.push({ field: "width", requested: Number(requested.width), current: current.width });
-        if (requested.height !== undefined && Number(requested.height) !== current.height) mismatches.push({ field: "height", requested: Number(requested.height), current: current.height });
-        if (mismatches.length) {
+        if (!sequence.getSettings || !sequence.setSettings) {
+          return JSON.stringify({ success: false, error: "Sequence settings API unavailable on this build" });
+        }
+
+        function readSettings(seq) {
+          var g = seq.getSettings();
+          var fps = null;
+          try { fps = 254016000000 / parseInt(String(g.videoFrameRate.ticks), 10); } catch (eFps) {}
+          return {
+            width: Number(g.videoFrameWidth),
+            height: Number(g.videoFrameHeight),
+            frameRate: fps,
+            pixelAspectRatio: String(g.videoPixelAspectRatio)
+          };
+        }
+
+        var before = readSettings(sequence);
+        var settingsObject = sequence.getSettings();
+        var applied = [];
+
+        if (requested.width !== undefined) { settingsObject.videoFrameWidth = Number(requested.width); applied.push("width"); }
+        if (requested.height !== undefined) { settingsObject.videoFrameHeight = Number(requested.height); applied.push("height"); }
+
+        if (requested.frameRate !== undefined) {
+          // videoFrameRate is a Time expressed as ticks per frame, and it has to be
+          // assigned as a STRING of ticks. Assigning the number is accepted without
+          // complaint and then corrupts the value — the field reads back as 2^63 ticks,
+          // which works out to a frame rate of 2.75e-08.
+          settingsObject.videoFrameRate = String(Math.round(254016000000 / Number(requested.frameRate)));
+          applied.push("frameRate");
+        }
+
+        if (requested.pixelAspectRatio !== undefined) {
+          // Stored as an "N:M" string; a number throws "Illegal Parameter type".
+          var parValue = requested.pixelAspectRatio;
+          var parText = String(parValue);
+          if (parText.indexOf(":") === -1) {
+            var parNumber = Number(parValue);
+            if (!isFinite(parNumber) || parNumber <= 0) {
+              return JSON.stringify({ success: false, error: "pixelAspectRatio must be a positive number or an \\"N:M\\" ratio string." });
+            }
+            var denominator = 1000;
+            var numerator = Math.round(parNumber * denominator);
+            var a = numerator, b = denominator;
+            while (b) { var t = a % b; a = b; b = t; }
+            parText = (numerator / a) + ":" + (denominator / a);
+          }
+          settingsObject.videoPixelAspectRatio = parText;
+          applied.push("pixelAspectRatio");
+        }
+
+        if (!applied.length) {
           return JSON.stringify({
-            success: false,
-            error: "set_sequence_settings: Sequence frame size cannot be changed after creation in Premiere Pro",
-            mismatches: mismatches,
-            note: "Create a new sequence with desired settings instead"
+            success: true,
+            message: "No recognised settings were supplied, so nothing was changed",
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            settings: before,
+            supported: ["width", "height", "frameRate", "pixelAspectRatio"],
+            changed: false
           });
         }
+
+        try {
+          sequence.setSettings(settingsObject);
+        } catch (eApply) {
+          return JSON.stringify({
+            success: false,
+            error: "Premiere rejected the settings: " + eApply.toString(),
+            sequenceId: sequence.sequenceID,
+            sequenceName: sequence.name,
+            attempted: applied,
+            settings: before
+          });
+        }
+
+        // Read back rather than trusting the write: several of these fields accept an
+        // assignment and silently keep their old value.
+        var after = readSettings(sequence);
+        var unchanged = [];
+        for (var ai = 0; ai < applied.length; ai++) {
+          var field = applied[ai];
+          if (String(after[field]) === String(before[field]) && String(requested[field]) !== String(before[field])) {
+            unchanged.push(field);
+          }
+        }
+
         return JSON.stringify({
-          success: true,
-          message: "Requested sequence settings already match the active Premiere sequence",
-          sequenceId: ${JSON.stringify(sequenceId)},
-          settings: current,
-          changed: false
+          success: unchanged.length === 0,
+          error: unchanged.length ? "Premiere accepted the assignment but did not apply: " + unchanged.join(", ") : undefined,
+          message: unchanged.length ? undefined : "Sequence settings applied",
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          applied: applied,
+          before: before,
+          after: after,
+          changed: true
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -6678,7 +7124,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var pos = sequence.getPlayerPosition();
         return JSON.stringify({
           success: true,
@@ -6696,7 +7142,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var ticks = __secondsToTicks(${time});
         sequence.setPlayerPosition(ticks);
         return JSON.stringify({
@@ -6715,7 +7161,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var selection = sequence.getSelection();
         var clips = [];
         for (var i = 0; i < selection.length; i++) {
@@ -6937,7 +7383,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         sequence.setWorkAreaInPoint(__secondsToTicks(${inPoint}));
         sequence.setWorkAreaOutPoint(__secondsToTicks(${outPoint}));
         return JSON.stringify({
@@ -6957,7 +7403,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var inTime = sequence.getWorkAreaInPointAsTime();
         var outTime = sequence.getWorkAreaOutPointAsTime();
         return JSON.stringify({
@@ -6978,12 +7424,13 @@ export class PremiereProTools {
       try {
         app.enableQE();
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var track = sequence.videoTracks[${trackIndex}];
         if (!track) return JSON.stringify({ success: false, error: "Track not found at index ${trackIndex}" });
         var clipCount = track.clips.numItems;
         if (clipCount < 2) return JSON.stringify({ success: false, error: "Need at least 2 clips to add transitions, found " + clipCount });
-        var qeSeq = qe.project.getActiveSequence();
+        var qeSeq = __qeSequenceFor(sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + sequence.name + "' through the QE API." });
         var qeTrack = qeSeq.getVideoTrackAt(${trackIndex});
         var transition = qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)});
         if (!transition) return JSON.stringify({ success: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} });
@@ -7154,7 +7601,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var tracks = ${JSON.stringify(trackType)} === "video" ? sequence.videoTracks : sequence.audioTracks;
         if (${trackIndex} < 0 || ${trackIndex} >= tracks.numTracks) return JSON.stringify({ success: false, error: "Track index out of range" });
         var track = tracks[${trackIndex}];
@@ -7197,7 +7644,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var reframedName = ${newName ? JSON.stringify(newName) : 'sequence.name + " Reframed"'};
         sequence.autoReframeSequence(${numerator}, ${denominator}, ${JSON.stringify(preset)}, reframedName, false);
         return JSON.stringify({
@@ -7222,7 +7669,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         if (!sequence.performSceneEditDetectionOnSelection) {
           return JSON.stringify({ success: false, error: "performSceneEditDetectionOnSelection API unavailable" });
         }
@@ -7278,7 +7725,7 @@ export class PremiereProTools {
     const script = `
       try {
         var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
         var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
         var startAtTime = ${startTimeVal};

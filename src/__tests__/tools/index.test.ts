@@ -3,6 +3,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { z } from 'zod';
 import { spawn } from 'child_process';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -98,6 +99,460 @@ describe('PremiereProTools', () => {
   });
 
   describe('executeTool()', () => {
+    describe('marker colours', () => {
+      // Premiere's setColorByIndex() order, verified against 26.0.2 by writing
+      // each index and reading the rendered colour back off the timeline.
+      const EXPECTED_INDEX: Array<[string, number]> = [
+        ['green', 0], ['red', 1], ['purple', 2], ['orange', 3],
+        ['yellow', 4], ['white', 5], ['blue', 6], ['cyan', 7],
+      ];
+
+      it.each(EXPECTED_INDEX)('maps %s to index %i', async (name, index) => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('add_marker', {
+          sequenceId: 'seq', time: 1, name: 'm', color: name,
+        });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        expect(script).toContain(`setColorByIndex(${index})`);
+      });
+
+      it('accepts a numeric index directly', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('add_marker', {
+          sequenceId: 'seq', time: 1, name: 'm', color: 5,
+        });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setColorByIndex(5)');
+      });
+
+      it('ignores surrounding whitespace and case', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('add_marker', {
+          sequenceId: 'seq', time: 1, name: 'm', color: '  PuRPle ',
+        });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setColorByIndex(2)');
+      });
+
+      it('leaves the marker at Premiere\'s default when no colour is given', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('add_marker', { sequenceId: 'seq', time: 1, name: 'm' });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).not.toContain('setColorByIndex');
+      });
+
+      // Premiere silently no-ops an index above 7 and silently truncates a
+      // non-integer, so accepting either would report success for a colour the
+      // caller never gets. Reject before the bridge is touched.
+      it.each([
+        ['an unknown colour name', 'chartreuse'],
+        ['an index above the palette', 8],
+        ['a negative index', -1],
+        ['a non-integer index', 3.5],
+      ])('rejects %s rather than silently defaulting', async (_label, color) => {
+        const result = await tools.executeTool('add_marker', {
+          sequenceId: 'seq', time: 1, name: 'm', color,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Invalid arguments');
+        expect(mockBridge.executeScript).not.toHaveBeenCalled();
+      });
+
+      it('applies the same mapping in update_marker', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('update_marker', {
+          sequenceId: 'seq', markerId: 'guid', color: 'cyan',
+        });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setColorByIndex(7)');
+      });
+
+      it('does not touch colour when update_marker omits it', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('update_marker', {
+          sequenceId: 'seq', markerId: 'guid', name: 'renamed',
+        });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).not.toContain('setColorByIndex');
+      });
+
+      it('accepts a numeric index sent as a string', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        // Some MCP clients stringify every argument; without this the caller
+        // silently loses index input.
+        await tools.executeTool('add_marker', {
+          sequenceId: 'seq', time: 1, name: 'm', color: '3',
+        });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setColorByIndex(3)');
+      });
+
+      it.each([
+        ['name', 'marker.name = ""'],
+        ['comment', 'marker.comments = ""'],
+      ])('update_marker applies an empty %s instead of silently ignoring it', async (field, expected) => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        // Same truthiness class the colour fix removed: `updates.name ? ...`
+        // treated "" as absent, so the call reported success and changed nothing.
+        await tools.executeTool('update_marker', {
+          sequenceId: 'seq', markerId: 'guid', [field]: '',
+        });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain(expected);
+      });
+
+      it('add_marker_to_project_item applies colour rather than dropping it', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await executeExpandedTool(mockBridge, 'add_marker_to_project_item', {
+          projectItemId: 'item', time: 1, name: 'm', color: 'cyan',
+        });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        expect(script).toContain('resolveMarkerColorIndex(args.color)');
+        expect(script).toContain('setColorByIndex(itemColorIndex)');
+        // Colour was readable through get_clip_markers but unwritable here.
+        expect(script).toContain('colorName: appliedColor.name');
+      });
+
+      it('add_marker_to_project_item refuses an unrecognised colour', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await executeExpandedTool(mockBridge, 'add_marker_to_project_item', {
+          projectItemId: 'item', time: 1, name: 'm', color: 'chartreuse',
+        });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        // Expanded tools declare z.record(z.any()), so schema-layer rejection is
+        // not available; the guard has to live in the generated script.
+        expect(script).toContain('Unrecognised marker colour');
+      });
+
+      it.each(['get_clip_markers', 'get_sequence_markers_by_type'])(
+        '%s also reports marker colour',
+        async (tool) => {
+          mockBridge.executeScript.mockResolvedValue({ success: true });
+
+          await executeExpandedTool(mockBridge, tool, {});
+
+          const script = mockBridge.executeScript.mock.calls[0][0] as string;
+          // These share one implementation with list_markers' problem: colour was
+          // readable from the DOM but never surfaced, so a caller could not verify
+          // what it had written.
+          expect(script).toContain('markerColor(marker)');
+          expect(script).toContain('color: markerColorInfo.index');
+          expect(script).toContain('colorName: markerColorInfo.name');
+          // Same -1 guard as list_markers.
+          expect(script).toContain('index < MARKER_COLOR_NAMES.length');
+        },
+      );
+
+      it('reads colour back, guarding the unassigned -1 state', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true, markers: [] });
+
+        await tools.executeTool('list_markers', { sequenceId: 'seq' });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        expect(script).toContain('getColorByIndex()');
+        // getColorByIndex() can return -1 ("no colour assigned"). An unguarded
+        // lookup yields undefined, which JSON.stringify drops entirely, making
+        // the response shape unstable.
+        expect(script).toContain('colorIndex >= 0');
+        expect(script).toContain(': null');
+      });
+    });
+
+    describe('ExtendScript interpolation safety', () => {
+      // Two severities, both proven on this codebase before the fix. Full code
+      // execution, where a payload closes the call and runs its own script; and
+      // response-shape injection, where a payload adds keys to the JSON the
+      // calling model reads back — quieter, and worse for an agent.
+      const CLOSE_CALL = 'zz"); return JSON.stringify({PWNED:"x"}); ("';
+      const ADD_KEY = 'zz", INJECTED_KEY: "yes';
+      const EXPRESSION = '" + app.project.name + "';
+
+      it.each([
+        ['get_clip_properties', 'clipId'],
+        ['apply_effect', 'clipId'],
+        ['add_transition_to_clip', 'transitionName'],
+        ['export_frame', 'outputPath'],
+      ])('%s escapes %s', async (tool, param) => {
+        for (const payload of [CLOSE_CALL, ADD_KEY, EXPRESSION]) {
+          jest.clearAllMocks();
+          mockBridge.executeScript.mockResolvedValue({ success: true });
+
+          const args: Record<string, unknown> = {
+            sequenceId: 'seq', clipId: 'clip', time: 0, outputPath: '/tmp/a.png',
+            transitionName: 'Cross Dissolve', effectName: 'Gain', lutPath: '/tmp/a.cube',
+            name: 'bin', [param]: payload,
+          };
+          await tools.executeTool(tool, args);
+          if (!mockBridge.executeScript.mock.calls.length) continue;
+
+          const script = mockBridge.executeScript.mock.calls[0][0] as string;
+          // The payload must appear only as an escaped literal, never bare
+          // between the quotes the generator wrote.
+          expect(script).not.toContain(`"${payload}"`);
+          expect(script).toContain(JSON.stringify(payload));
+        }
+      });
+
+    });
+
+    describe('schema validation output', () => {
+      /** Swap one tool's schema in the catalog executeTool actually reads. */
+      function withSchema(toolName: string, schema: unknown) {
+        const catalog = tools.getAvailableTools();
+        jest.spyOn(tools, 'getAvailableTools').mockReturnValue(
+          catalog.map((t) => (t.name === toolName ? { ...t, inputSchema: schema as never } : t)),
+        );
+      }
+
+      it('passes the validated value to the handler, not the raw args', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+        // parse() used to run and have its result discarded, so every
+        // .transform(), .default() and z.coerce() in this file was inert.
+        withSchema('add_marker', z.object({
+          sequenceId: z.string(),
+          time: z.number(),
+          name: z.string().transform((v) => `${v}-transformed`),
+        }));
+
+        await tools.executeTool('add_marker', { sequenceId: 'seq', time: 1, name: 'probe' });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('probe-transformed');
+      });
+
+      it('applies a schema default for an argument the caller omitted', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+        withSchema('add_marker', z.object({
+          sequenceId: z.string(),
+          time: z.number(),
+          name: z.string().default('defaulted-name'),
+        }));
+
+        await tools.executeTool('add_marker', { sequenceId: 'seq', time: 1 });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('defaulted-name');
+      });
+
+      it('keeps unknown keys the schema would strip', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+        // Zod strips unknown keys, and handlers read alternate spellings such as
+        // args.itemId || args.item_id — so the validated value is merged over
+        // the raw args rather than replacing them.
+        withSchema('add_marker', z.object({ sequenceId: z.string(), time: z.number() }));
+
+        await tools.executeTool('add_marker', { sequenceId: 'seq', time: 1, name: 'survives' });
+
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('survives');
+      });
+    });
+
+    describe('expanded tools reject an unresolvable sequence id', () => {
+      // These declare inputSchema: z.record(z.any()), so schema-layer rejection
+      // is unavailable — the guard has to live in the generated script.
+      it.each([
+        'add_tracks', 'razor_all_tracks', 'get_timeline_gaps',
+        'get_next_edit_point', 'set_all_tracks_targeted', 'nest_clips',
+      ])('%s guards before acting', async (tool) => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await executeExpandedTool(mockBridge, tool, { sequenceId: 'no-such-sequence' });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        // Previously every site did targetSequence() then fell back to the
+        // active sequence, so a stale id silently acted on whatever was on
+        // screen and reported success — razor_all_tracks cut the wrong timeline.
+        expect(script).toContain('var seqErr = sequenceRequestError();');
+        expect(script).toContain('if (seqErr) return fail(seqErr);');
+        expect(script).not.toContain('targetSequence() || activeSequence()');
+      });
+
+      it('emits a guard that can actually reach the empty-id branch', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await executeExpandedTool(mockBridge, 'get_timeline_gaps', { sequenceId: '' });
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+
+        // Asserting only that the message string appears is vacuous — it is in
+        // the function body whether or not the logic ever reaches it. These two
+        // assertions pin the parts that were actually wrong.
+        //
+        // 1. The alias fallback must not treat "" as absent, or an empty id
+        //    takes the omitted-id path and lands on the active sequence.
+        expect(script).toContain('if (requested === undefined || requested === null) requested = args.sequence_id;');
+        expect(script).not.toContain('String(requested) === "") requested = args.sequence_id');
+        // 2. This lives in a template literal, where \s collapses to a bare "s".
+        //    The emitted regex must strip whitespace, not the letter s.
+        expect(script).toContain('replace(/^\\s+|\\s+$/g, "")');
+        expect(script).not.toContain('replace(/^s+|s+$/g, "")');
+        expect(script).toContain('sequenceId was supplied but empty');
+      });
+
+      it('leaves the omitted-id case alone', () => {
+        // An omitted id must still mean "the active sequence" — that is the
+        // documented contract, and only a supplied-but-unresolvable id is an error.
+        const src = require('fs').readFileSync(
+          require('path').join(__dirname, '../../tools/expanded.ts'), 'utf8',
+        ) as string;
+        expect(src).toContain('if (requested === undefined || requested === null) return null;');
+        expect(src).toMatch(/function targetSequence\(\)[\s\S]{0,200}activeSequence\(\)/);
+      });
+
+      it('no silent fallback remains anywhere in the expanded dispatcher', () => {
+        const src = require('fs').readFileSync(
+          require('path').join(__dirname, '../../tools/expanded.ts'), 'utf8',
+        ) as string;
+        expect(src).not.toContain('targetSequence() || activeSequence()');
+      });
+    });
+
+    describe('export_frame', () => {
+      const scriptFor = async (args: Record<string, unknown>): Promise<string> => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+        await tools.executeTool('export_frame', args);
+        return mockBridge.executeScript.mock.calls[0][0] as string;
+      };
+
+      it('exports the sequence that was asked for, not the active one', async () => {
+        // Proven live against 26.0.2: with an empty sequence active, asking for
+        // a populated one returned success, echoed the requested sequenceId,
+        // and wrote the empty sequence's black frame.
+        const script = await scriptFor({
+          sequenceId: 'seq-guid', time: 15, outputPath: '/tmp/f.png',
+        });
+
+        expect(script).toContain('var qeSequence = __qeSequenceFor(sequence);');
+        // Match the assignment, not the bare call: the surrounding comment
+        // names getActiveSequence() to explain what it replaced.
+        expect(script).not.toContain('var qeSequence = qe.project.getActiveSequence()');
+      });
+
+      it('hands Premiere the stem so the frame lands at the requested path', async () => {
+        // exportFramePNG appends "." + format to whatever path it is given, so
+        // passing "shot.png" through wrote "shot.png.png".
+        const script = await scriptFor({
+          sequenceId: 'seq-guid', time: 15, outputPath: '/tmp/shot.png',
+        });
+
+        expect(script).toContain('var exportStem = requestedPath;');
+        expect(script).toContain('tryExport(timeNumber, exportStem)');
+        expect(script).not.toContain('tryExport(timeNumber, "/tmp/shot.png")');
+      });
+
+      it('reports the path it actually wrote rather than the one requested', async () => {
+        const script = await scriptFor({
+          sequenceId: 'seq-guid', time: 15, outputPath: '/tmp/shot.png',
+        });
+
+        expect(script).toContain('outputPath: actualPath');
+        expect(script).toContain('requestedPath: requestedPath');
+      });
+
+      it('fails when the export call throws nothing but writes nothing', async () => {
+        const script = await scriptFor({
+          sequenceId: 'seq-guid', time: 15, outputPath: '/tmp/shot.png',
+        });
+
+        expect(script).toContain('if (!exported || !actualPath)');
+        expect(script).toContain('wrote no file');
+      });
+
+      it('picks the extension from the format, not the supplied path', async () => {
+        const jpg = await scriptFor({
+          sequenceId: 'seq-guid', time: 1, outputPath: '/tmp/shot.png', format: 'jpg',
+        });
+
+        expect(jpg).toContain('=== "jpg"');
+        expect(jpg).toContain('".jpg"');
+      });
+
+      it('escapes the output path instead of interpolating it', async () => {
+        const path = 'INJ"+(1000*1000+7)+"END';
+        const script = await scriptFor({ sequenceId: 'seq-guid', time: 1, outputPath: path });
+
+        expect(script).toContain(JSON.stringify(path));
+        expect(script).not.toContain('= "' + path + '"');
+      });
+    });
+
+    describe('sequence targeting hardening', () => {
+      const INJECTION = 'INJ"+(1000*1000+7)+"END';
+
+      it.each(['add_marker', 'list_markers', 'razor_timeline_at_time'])(
+        '%s escapes the sequence id instead of interpolating it into the script',
+        async (tool) => {
+          mockBridge.executeScript.mockResolvedValue({ success: true });
+
+          const args: Record<string, unknown> = { sequenceId: INJECTION };
+          if (tool === 'add_marker') Object.assign(args, { time: 1, name: 'm' });
+          if (tool === 'razor_timeline_at_time') Object.assign(args, { time: 1 });
+
+          await tools.executeTool(tool, args);
+
+          const script = mockBridge.executeScript.mock.calls[0][0] as string;
+          // Raw interpolation would close the string and let the arithmetic run,
+          // which is how this was proven live: the id came back as INJ1000007END.
+          expect(script).not.toContain('"' + INJECTION + '"');
+          expect(script).toContain(JSON.stringify(INJECTION));
+        },
+      );
+
+      it.each(['add_track', 'apply_audio_effect_to_all_clips', 'razor_timeline_at_time'])(
+        '%s restores the previously active sequence',
+        async (tool) => {
+          mockBridge.executeScript.mockResolvedValue({ success: true });
+
+          const args: Record<string, unknown> = { sequenceId: 'seq-guid' };
+          if (tool === 'add_track') Object.assign(args, { trackType: 'video' });
+          if (tool === 'apply_audio_effect_to_all_clips') Object.assign(args, { effectName: 'Gain' });
+          if (tool === 'razor_timeline_at_time') Object.assign(args, { time: 1 });
+
+          await tools.executeTool(tool, args);
+
+          const script = mockBridge.executeScript.mock.calls[0][0] as string;
+          // Honouring the id by switching the active sequence and leaving it
+          // switched moves the user's timeline and retargets later calls.
+          expect(script).toContain('var __priorActive = app.project.activeSequence');
+          expect(script).toContain('app.project.activeSequence = __priorActive');
+          expect(script).toContain('finally');
+        },
+      );
+
+      it('read_sequence_captions fails on an unresolved id rather than reading the active sequence', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('read_sequence_captions', { sequenceId: 'no-such-sequence' });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        expect(script).toContain('Sequence not found by id');
+        // The old shape silently reassigned to the active sequence on a miss.
+        expect(script).not.toContain('if (!sequence) sequence = app.project.activeSequence;');
+      });
+
+      it('escapes the effect name too', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        await tools.executeTool('apply_audio_effect_to_all_clips', {
+          sequenceId: 'seq-guid', effectName: 'Gain" + (2*2) + "',
+        });
+
+        const script = mockBridge.executeScript.mock.calls[0][0] as string;
+        expect(script).toContain(JSON.stringify('Gain" + (2*2) + "'));
+      });
+    });
+
     it('reports local capabilities without probing the Premiere bridge by default', async () => {
       const result = await tools.executeTool('get_capabilities', {});
 
@@ -1177,6 +1632,171 @@ describe('PremiereProTools', () => {
     });
   });
 
+  describe('marker sequence targeting', () => {
+    // Premiere's ExtendScript DOM can mutate any sequence in the project, not only the one
+    // on screen, so these tools must act on the sequenceId they advertise instead of
+    // silently retargeting app.project.activeSequence.
+    const markerCalls: Array<{ tool: string; args: Record<string, any> }> = [
+      { tool: 'add_marker', args: { sequenceId: 'seq-target', time: 3, name: 'Cue' } },
+      { tool: 'delete_marker', args: { sequenceId: 'seq-target', markerId: 'marker-1' } },
+      { tool: 'update_marker', args: { sequenceId: 'seq-target', markerId: 'marker-1', name: 'Renamed' } },
+      { tool: 'list_markers', args: { sequenceId: 'seq-target' } }
+    ];
+
+    it.each(markerCalls)('resolves the requested sequence for $tool', async ({ tool, args }) => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool(tool, args);
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('__findSequence("seq-target")');
+      expect(script).not.toContain('app.project.activeSequence');
+    });
+
+    it.each(markerCalls)('returns a truthful error instead of retargeting for $tool', async ({ tool, args }) => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool(tool, args);
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('"Sequence not found by id: "');
+      expect(script).toContain('Use list_sequences or get_active_sequence to obtain a valid sequence ID.');
+    });
+
+    it.each(markerCalls)('rejects an empty sequenceId for $tool before touching the bridge', async ({ tool, args }) => {
+      const result = await tools.executeTool(tool, { ...args, sequenceId: '' });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('escapes quoted sequence ids so they cannot break out of the generated script', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('list_markers', { sequenceId: 'seq-"quoted"' });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('__findSequence("seq-\\"quoted\\"")');
+      expect(script).not.toContain('__findSequence("seq-"quoted"")');
+    });
+
+    it('reports which sequence a marker was written to', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('add_marker', { sequenceId: 'seq-target', time: 3, name: 'Cue' });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('sequenceId: sequence.sequenceID');
+      expect(script).toContain('sequenceName: sequence.name');
+    });
+  });
+
+  describe('track tool sequence targeting', () => {
+    // Same class of bug as the marker tools: these declared a sequenceId and then operated on
+    // app.project.activeSequence, or resolved the id and silently fell back to the active
+    // sequence when it did not match.
+    const trackCalls: Array<{ tool: string; args: Record<string, any> }> = [
+      { tool: 'lock_track', args: { sequenceId: 'seq-target', trackType: 'video', trackIndex: 0, locked: true } },
+      { tool: 'toggle_track_visibility', args: { sequenceId: 'seq-target', trackIndex: 0, visible: false } },
+      { tool: 'delete_track', args: { sequenceId: 'seq-target', trackType: 'video', trackIndex: 1 } }
+    ];
+
+    it('fails truthfully instead of falling back for list_sequence_tracks', async () => {
+      // This one keeps its existing lookup and replaces only the silent fallback,
+      // which previously echoed the requested id beside a different sequence's
+      // tracks -- a substitution the caller had no way to detect.
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('list_sequence_tracks', { sequenceId: 'seq-target' });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('Sequence not found by id:');
+      expect(script).not.toContain('sequence = app.project.activeSequence;');
+    });
+
+    it.each(trackCalls)('resolves the requested sequence for $tool', async ({ tool, args }) => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool(tool, args);
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('__findSequence("seq-target")');
+      expect(script).toContain('"Sequence not found by id: "');
+    });
+
+    it.each(trackCalls)('rejects an empty sequenceId for $tool before touching the bridge', async ({ tool, args }) => {
+      const result = await tools.executeTool(tool, { ...args, sequenceId: '' });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid arguments');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { tool: 'list_sequence_tracks', args: { sequenceId: 'seq-target' } },
+      { tool: 'lock_track', args: { sequenceId: 'seq-target', trackType: 'video', trackIndex: 0, locked: true } },
+      { tool: 'toggle_track_visibility', args: { sequenceId: 'seq-target', trackIndex: 0, visible: false } }
+    ])('never falls back to the active sequence for $tool', async ({ tool, args }) => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool(tool, args);
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).not.toContain('app.project.activeSequence');
+    });
+
+    it('echoes the resolved sequence id from list_sequence_tracks rather than the requested one', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('list_sequence_tracks', { sequenceId: 'seq-target' });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('sequenceId: sequence.sequenceID');
+      expect(script).not.toContain('sequenceId: "seq-target"');
+    });
+
+    it('deletes from the requested sequence rather than requiring it to be active', async () => {
+      // Premiere 26 has no DOM trackCollection.deleteTrack, so deletion falls
+      // through to QE. QE reaches sequences by index through getSequenceAt(),
+      // not just the active one — verified against 26.0.2 — so requiring the
+      // target to be active refused work QE can actually do.
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('delete_track', { sequenceId: 'seq-target', trackType: 'video', trackIndex: 1 });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('var qeSeq = __qeSequenceFor(sequence);');
+      expect(script).not.toContain('activeSeq.sequenceID !== sequence.sequenceID');
+      expect(script).not.toContain('var qeSeq = qe.project.getActiveSequence()');
+    });
+
+    it('reports a sequence QE cannot address instead of deleting from the wrong one', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('delete_track', { sequenceId: 'seq-target', trackType: 'video', trackIndex: 1 });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('requiresOpenSequence: true');
+      // The refusal has to name the sequence, so a caller can tell which one
+      // needs opening rather than guessing.
+      expect(script).toContain("cannot address sequence '\" + sequence.name + \"'");
+    });
+
+    it('still reports caption track deletion as unsupported without touching the bridge', async () => {
+      const result = await tools.executeTool('delete_track', {
+        sequenceId: 'seq-target',
+        trackType: 'caption',
+        trackIndex: 0
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.unsupportedByPremiereApi).toBe(true);
+      expect(result.sequenceId).toBe('seq-target');
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+  });
+
   describe('high-level workflow tools', () => {
     it('builds a motion graphics demo sequence', async () => {
       mockBridge.importMedia = jest
@@ -1256,8 +1876,8 @@ describe('PremiereProTools', () => {
       expect(result.message).toContain('directed clip plan');
       expect(result.transitions).toHaveLength(0);
       expect(result.animations).toHaveLength(0);
-      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5, true, undefined, undefined);
-      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6, true, undefined, undefined);
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(1, 'seq-2b', 'item-a', 1, 1.5, true, undefined, undefined, 'overwrite');
+      expect(mockBridge.addToTimeline).toHaveBeenNthCalledWith(2, 'seq-2b', 'item-b', 2, 3.6, true, undefined, undefined, 'overwrite');
     });
 
     it('builds a brand spot from assets without requiring a mogrt', async () => {
