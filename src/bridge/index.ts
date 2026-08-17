@@ -20,13 +20,37 @@ const UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS = new Set([
 
 const EXTENDSCRIPT_HELPERS = `
 function __mcpEscapeString(value) {
-  return String(value)
-    .replace(/\\\\/g, '\\\\\\\\')
-    .replace(/"/g, '\\\\"')
-    .replace(/\\r/g, '\\\\r')
-    .replace(/\\n/g, '\\\\n')
-    .replace(/\\t/g, '\\\\t');
+  // Built from character codes rather than backslash literals on purpose: this
+  // function is written inside a TypeScript template literal, where an escape
+  // is consumed once before it ever reaches Premiere.
+  var text = String(value);
+  var backslash = String.fromCharCode(92);
+  var out = '';
+  for (var i = 0; i < text.length; i++) {
+    var code = text.charCodeAt(i);
+    if (code === 34) { out += backslash + '"'; }
+    else if (code === 92) { out += backslash + backslash; }
+    else if (code === 8) { out += backslash + 'b'; }
+    else if (code === 9) { out += backslash + 't'; }
+    else if (code === 10) { out += backslash + 'n'; }
+    else if (code === 12) { out += backslash + 'f'; }
+    else if (code === 13) { out += backslash + 'r'; }
+    else if (code < 32 || code === 0x2028 || code === 0x2029) {
+      // Everything else below U+0020 has no short form and must go out as a
+      // \\uXXXX escape. U+2028 and U+2029 are legal inside a JSON string but
+      // are line terminators to a JavaScript parser, so they are escaped too
+      // for any consumer that evaluates rather than parses the payload.
+      var hex = code.toString(16);
+      while (hex.length < 4) { hex = '0' + hex; }
+      out += backslash + 'u' + hex;
+    }
+    else { out += text.charAt(i); }
+  }
+  return out;
 }
+// Saved before anything can shadow it. Reading hasOwnProperty off the value being
+// serialised lets that value decide which of its own keys are emitted.
+var __mcpOwnProperty = Object.prototype.hasOwnProperty;
 function __mcpStringify(value) {
   if (value === null) return 'null';
   var valueType = typeof value;
@@ -43,16 +67,231 @@ function __mcpStringify(value) {
   if (valueType === 'object') {
     var objectParts = [];
     for (var key in value) {
-      if (value.hasOwnProperty && !value.hasOwnProperty(key)) continue;
-      if (typeof value[key] === 'undefined' || typeof value[key] === 'function') continue;
-      objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(value[key]));
+      // Through the saved reference, because an own property named hasOwnProperty
+      // shadows the method. A non-function threw and lost the whole response; a
+      // function returning false was worse, emitting {} that parses cleanly while
+      // every field silently vanished.
+      //
+      // Switching to the reference would drop data if a host object carried its
+      // values on a prototype, so that was measured rather than assumed: across
+      // Application, Project, ProjectItem, Sequence, SequenceSettings, Track,
+      // TrackCollection, TrackItem and MarkerCollection on 26.0.2 -- 101 enumerable
+      // keys -- every one is an own property and none inherited. Keys are kept if
+      // the check itself throws: one extra inherited key is recoverable, dropping
+      // data is not.
+      var isOwn = true;
+      try { isOwn = __mcpOwnProperty.call(value, key); } catch (ownError) { isOwn = true; }
+      if (!isOwn) continue;
+      // Read once, and survive a read that throws. Guarding the ownership check
+      // while leaving the read unguarded still lost the whole response to a
+      // property that raises on access -- and a DOM object reaches here directly
+      // through evaluate_expression. Reading twice also ran any side effect twice.
+      var member;
+      try { member = value[key]; } catch (readError) { continue; }
+      if (typeof member === 'undefined' || typeof member === 'function') continue;
+      objectParts.push(__mcpStringify(String(key)) + ':' + __mcpStringify(member));
     }
     return '{' + objectParts.join(',') + '}';
   }
   return 'null';
 }
 if (typeof JSON === 'undefined') { JSON = {}; }
-if (typeof JSON.stringify !== 'function') { JSON.stringify = __mcpStringify; }
+// This engine has no JSON of its own. Measured on ExtendScript build 80.1060872:
+// neither JSON.parse nor JSON.stringify exists, so the object created on the line
+// above is fabricated by this prelude, and both directions installed below are the
+// only ones the engine will ever have. The parser is further down, after the
+// escaper it mirrors.
+//
+// Mind the wording here: the panel validates the whole script, prelude included,
+// against a list of patterns that includes a bare "process" followed by a dot.
+// A comment matching one of those makes the panel reject every call.
+//
+// It replaces one that escaped only backslash, quote, carriage return, line
+// feed and tab, passing every other control character through raw. Every tool
+// returns its payload through this function, so a single U+0001 in a clip or
+// marker name did not corrupt one field -- it made the entire response
+// unparseable and the whole call was lost.
+//
+// Assigned unconditionally rather than behind a typeof guard. On this engine
+// the guard can never be false; should a later host ship its own, a measured
+// escaper is still preferable to an unmeasured one. That makes the limits below
+// the limits, so they are listed in full. This covers what the tools return --
+// strings, finite numbers, booleans, null, arrays and plain objects -- and
+// differs from a conformant JSON.stringify:
+//
+//   Date              {} rather than an ISO string, and toJSON() is ignored.
+//   circular refs     recurses until the stack gives out; no clean TypeError.
+//   boxed primitives  new String/Number/Boolean serialise as objects.
+//   undefined, fn     at the top level return "null" rather than undefined.
+//   replacer, space   accepted positionally by callers and ignored; output is
+//                     never indented.
+//
+// Add any of those to a tool response and this needs extending first.
+JSON.stringify = __mcpStringify;
+// Recursive descent, because the engine has no JSON.parse either and the object
+// above is fabricated: installing only stringify leaves a JSON that answers
+// typeof but has no read direction, so a caller that feature-detects it gets a
+// missing-function error instead. add_text_overlay decodes a MOGRT text payload
+// that way and could never succeed.
+//
+// Recursive descent rather than the usual one-liner built on the dynamic code
+// evaluator: the panel rejects any script mentioning that function by name and
+// would refuse every call. This comment cannot spell it either, which the
+// generated-script test enforces. Characters are compared by code rather than by
+// literal for the same reason __mcpEscapeString does it -- a backslash written
+// here is consumed by the template literal before it reaches the host.
+// Two limits, measured rather than assumed. Nesting is bounded by the JavaScript
+// call stack: around 6,000 levels before it gives out, against no observed limit
+// in a modern engine. And each string is built one character at a time, which is
+// linear where the engine has rope strings and quadratic where it does not; both
+// are far outside the shape of a tool payload, but a caller feeding this arbitrary
+// third-party JSON should know. The host cost of either is unmeasured.
+function __mcpParse(text) {
+  var source = String(text);
+  var at = 0;
+
+  function fail(what) {
+    throw new Error('JSON.parse: ' + what + ' at position ' + at);
+  }
+  function skipWhitespace() {
+    while (at < source.length) {
+      var code = source.charCodeAt(at);
+      if (code === 32 || code === 9 || code === 10 || code === 13) { at++; } else { break; }
+    }
+  }
+  function expect(code) {
+    if (source.charCodeAt(at) !== code) fail('expected character ' + code);
+    at++;
+  }
+  function parseString() {
+    expect(34);
+    var out = '';
+    while (at < source.length) {
+      var code = source.charCodeAt(at);
+      if (code === 34) { at++; return out; }
+      if (code === 92) {
+        at++;
+        var esc = source.charCodeAt(at);
+        at++;
+        if (esc === 34) { out += String.fromCharCode(34); }
+        else if (esc === 92) { out += String.fromCharCode(92); }
+        else if (esc === 47) { out += '/'; }
+        else if (esc === 98) { out += String.fromCharCode(8); }
+        else if (esc === 102) { out += String.fromCharCode(12); }
+        else if (esc === 110) { out += String.fromCharCode(10); }
+        else if (esc === 114) { out += String.fromCharCode(13); }
+        else if (esc === 116) { out += String.fromCharCode(9); }
+        else if (esc === 117) {
+          var hex = source.substr(at, 4);
+          if (hex.length !== 4 || !/^[0-9a-fA-F]{4}$/.test(hex)) fail('bad unicode escape');
+          out += String.fromCharCode(parseInt(hex, 16));
+          at += 4;
+        }
+        else fail('bad escape');
+        continue;
+      }
+      // Unescaped control characters are not legal inside a JSON string.
+      if (code < 32) fail('unescaped control character');
+      out += source.charAt(at);
+      at++;
+    }
+    fail('unterminated string');
+  }
+  // The escape below is doubled deliberately. A single backslash is consumed by
+  // the template literal, and the host then receives a dot that matches any
+  // character -- which accepted 012, 000 and 0123 as numbers on a live 26.0.2.
+  function parseNumber() {
+    var start = at;
+    if (source.charCodeAt(at) === 45) at++;
+    while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;
+    if (source.charCodeAt(at) === 46) {
+      at++;
+      while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;
+    }
+    var exponent = source.charCodeAt(at);
+    if (exponent === 101 || exponent === 69) {
+      at++;
+      var sign = source.charCodeAt(at);
+      if (sign === 43 || sign === 45) at++;
+      while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;
+    }
+    var literal = source.substring(start, at);
+    if (!/^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][-+]?[0-9]+)?$/.test(literal)) fail('bad number');
+    return Number(literal);
+  }
+  function parseWord() {
+    if (source.substr(at, 4) === 'true') { at += 4; return true; }
+    if (source.substr(at, 5) === 'false') { at += 5; return false; }
+    if (source.substr(at, 4) === 'null') { at += 4; return null; }
+    fail('unexpected token');
+  }
+  function parseValue() {
+    skipWhitespace();
+    var code = source.charCodeAt(at);
+    if (code === 34) return parseString();
+    if (code === 123) {
+      at++;
+      var object = {};
+      skipWhitespace();
+      if (source.charCodeAt(at) === 125) { at++; return object; }
+      for (;;) {
+        skipWhitespace();
+        var key = parseString();
+        skipWhitespace();
+        expect(58);
+        var member = parseValue();
+        if (key === '__proto__') {
+          // Measured on 26.0.2: this engine implements the __proto__ setter, so
+          // plain assignment grafts the payload onto the prototype instead of
+          // adding a key -- a value carrying {"__proto__":{"mTextString":"X"}}
+          // then reads back X from a field nobody set, and {"__proto__":null}
+          // yields an object whose String() throws.
+          //
+          // Object.defineProperty does not exist here either, so the key cannot be
+          // created as an ordinary property. It is dropped instead. That differs
+          // from a conformant parser, which defines an own property, and the
+          // difference is deliberate: losing one key is recoverable, silent field
+          // injection is not. Where defineProperty does exist the conformant
+          // behaviour is used.
+          if (typeof Object.defineProperty === 'function') {
+            try {
+              Object.defineProperty(object, key, {
+                value: member, enumerable: true, writable: true, configurable: true
+              });
+            } catch (defineError) { /* left out rather than assigned */ }
+          }
+        } else {
+          object[key] = member;
+        }
+        skipWhitespace();
+        if (source.charCodeAt(at) === 44) { at++; continue; }
+        expect(125);
+        return object;
+      }
+    }
+    if (code === 91) {
+      at++;
+      var array = [];
+      skipWhitespace();
+      if (source.charCodeAt(at) === 93) { at++; return array; }
+      for (;;) {
+        array.push(parseValue());
+        skipWhitespace();
+        if (source.charCodeAt(at) === 44) { at++; continue; }
+        expect(93);
+        return array;
+      }
+    }
+    if (code === 45 || (code >= 48 && code <= 57)) return parseNumber();
+    return parseWord();
+  }
+
+  var result = parseValue();
+  skipWhitespace();
+  if (at < source.length) fail('unexpected trailing content');
+  return result;
+}
+JSON.parse = __mcpParse;
 function __findSequence(id) {
   if (!app.project || !app.project.sequences) return null;
   for (var i = 0; i < app.project.sequences.numSequences; i++) {
@@ -316,16 +555,64 @@ export class PremiereProBridge implements PremiereProTransport {
     return /^\(function\s*\(\)\s*\{[\s\S]*\}\)\s*\(\)\s*;?$/.test(trimmed);
   }
 
-  private buildExecutableScript(script: string): string {
-    if (this.isSelfInvokingScript(script)) {
-      return EXTENDSCRIPT_HELPERS + script.trim();
+  /**
+   * Repairs the two characters that survive JSON.stringify but not the trip
+   * into Premiere. Both were reproduced against a live 26.0.2 host.
+   *
+   * U+2028 and U+2029 are legal unescaped inside a JSON string, so
+   * JSON.stringify leaves them raw — but they are line terminators to a
+   * JavaScript parser, so a marker named with one produced a generated script
+   * with a string literal split across two lines, and the whole call died as
+   * "ExtendScript execution failed via CEP evalScript()". Re-escaping them is
+   * safe here because everything this server generates is otherwise ASCII, so
+   * the only place either can appear is inside a string literal.
+   */
+  private static repairScriptLineTerminators(script: string): string {
+    return script
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+  }
+
+  /**
+   * A NUL truncates the script at that byte on the way through evalScript, so
+   * the host silently receives a prefix of what was sent — a marker named
+   * "p\0q" was created as "p". Truncated input is worse than a rejected call,
+   * so refuse it and say which argument carried it.
+   */
+  private static assertNoNulByte(script: string): void {
+    const index = script.indexOf('\u0000');
+    if (index === -1) return;
+
+    const context = script.slice(Math.max(0, index - 40), index).replace(/\s+/g, ' ');
+    throw new Error(
+      'Script contains a NUL byte, which Premiere truncates at rather than ' +
+      'rejecting, silently discarding everything after it. Remove the NUL ' +
+      `from the offending argument. Context before it: ...${context}`,
+    );
+  }
+
+  private buildExecutableScript(script: string, callerAuthored = false): string {
+    PremiereProBridge.assertNoNulByte(script);
+
+    // The line-terminator repair is only safe on scripts this server generated, where
+    // everything outside a string literal is ASCII and a U+2028 can therefore only be
+    // caller data inside a string. A script handed to execute_extendscript breaks that
+    // assumption: rewriting it blindly turned a U+2028 the caller used as a line break
+    // into the literal characters \u2028, producing a syntax error on a script that
+    // previously ran. Caller-authored source is passed through untouched.
+    const safeScript = callerAuthored
+      ? script
+      : PremiereProBridge.repairScriptLineTerminators(script);
+
+    if (this.isSelfInvokingScript(safeScript)) {
+      return EXTENDSCRIPT_HELPERS + safeScript.trim();
     }
 
     // Wrap script bodies so top-level "return ..." remains valid in ExtendScript.
-    return EXTENDSCRIPT_HELPERS + '(function(){\n' + script + '\n})();';
+    return EXTENDSCRIPT_HELPERS + '(function(){\n' + safeScript + '\n})();';
   }
 
-  async executeScript(script: string, timeoutMs?: number): Promise<any> {
+  async executeScript(script: string, timeoutMs?: number, callerAuthored = false): Promise<any> {
     if (!this.isInitialized) {
       throw new Error('Bridge not initialized. Call initialize() first.');
     }
@@ -333,48 +620,99 @@ export class PremiereProBridge implements PremiereProTransport {
     const commandId = randomUUID();
     const commandFile = join(this.tempDir, `command-${commandId}.json`);
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
+    // Declared out here so the finally below can remove it: if rename() fails the
+    // scratch file is still on disk, and nothing else ever matches that name.
+    const commandStaging = join(this.tempDir, `.tmp-${commandId}.json`);
 
     try {
-      const fullScript = this.buildExecutableScript(script);
+      const fullScript = this.buildExecutableScript(script, callerAuthored);
 
       // Write command to file. Include timeoutMs so the CEP/UXP panel can extend its own
       // execution watchdog to match — otherwise the panel's default (45s) kills long batch
       // scripts well before the server's own timeout elapses.
-      await fs.writeFile(commandFile, JSON.stringify({
+      //
+      // Written to a scratch name and renamed into place, because the panel polls this
+      // directory and picks up anything matching command-*.json the moment it appears. A
+      // plain write publishes the filename before the content is complete, so the panel
+      // can read a truncated command, fail to parse it, and — since its parse failure path
+      // writes an error response and deletes the command — turn a transient race into a
+      // permanent spurious failure with no retry. rename() within one directory is atomic,
+      // so the file becomes visible only once it is whole.
+      //
+      // The scratch name must not itself look like a command to the panel, which matches on
+      // a "command-" prefix; a leading dot keeps it out of that test.
+      await fs.writeFile(commandStaging, JSON.stringify({
         id: commandId,
         script: fullScript,
         timeoutMs: timeoutMs,
         timestamp: new Date().toISOString()
       }));
+      await fs.rename(commandStaging, commandFile);
 
       // Wait for response (in a real implementation, this would be handled by the UXP plugin).
       // Batch operations pass a larger timeout because a single round-trip does the work of
       // dozens of individual calls inside one ExtendScript pass.
-      const response = await this.waitForResponse(responseFile, timeoutMs);
-      
-      // Clean up files
-      await fs.unlink(commandFile).catch(() => {});
-      await fs.unlink(responseFile).catch(() => {});
-
-      return response;
+      return await this.waitForResponse(responseFile, timeoutMs);
     } catch (error) {
       this.logger.error(`Failed to execute script: ${error}`);
       throw error;
+    } finally {
+      // Cleanup has to run on the failure path too. Previously it sat after the await, so a
+      // timeout skipped it entirely and left the command file behind for the panel to pick
+      // up and execute long after the caller had given up on it.
+      //
+      // One case this does not close: when the panel is merely slow, the response file is
+      // written after this has already run, so it stays until the directory is cleaned. The
+      // command file is the one that matters here, because a stale command still executes.
+      await fs.unlink(commandStaging).catch(() => {});
+      await fs.unlink(commandFile).catch(() => {});
+      await fs.unlink(responseFile).catch(() => {});
     }
   }
 
   private async waitForResponse(responseFile: string, timeout = 60000): Promise<any> {
     const startTime = Date.now();
+    // A response that exists but will not parse is a different failure from one that has
+    // not arrived, and reporting it as the latter sends the reader to check whether
+    // Premiere is running when the real problem is the payload. Allow a few attempts for a
+    // torn read — the panel's write is not atomic on every host — then surface the parse
+    // error and a sample of what was actually on disk.
+    let lastParseError: Error | null = null;
+    let lastRawResponse = '';
+    let parseAttempts = 0;
 
     while (Date.now() - startTime < timeout) {
+      let raw: string;
       try {
-        const response = await fs.readFile(responseFile, 'utf8');
-        const parsed = JSON.parse(response);
+        raw = await fs.readFile(responseFile, 'utf8');
+      } catch {
+        // Not written yet. This is the ordinary case while the host is still working.
+        await new Promise(resolve => setTimeout(resolve, 150));
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
         if (parsed.result !== undefined) return parsed.result;
         return parsed;
       } catch (error) {
+        lastParseError = error instanceof Error ? error : new Error(String(error));
+        lastRawResponse = raw;
+        parseAttempts++;
+        // Keep polling to the full timeout rather than giving up after a few
+        // attempts. A response written non-atomically can be unreadable for many
+        // polls, and failing early would turn a slow write into a hard error. The
+        // parse failure is remembered so the diagnosis below can still name it.
         await new Promise(resolve => setTimeout(resolve, 150));
       }
+    }
+
+    if (lastParseError) {
+      throw new Error(
+        `Bridge response never became valid JSON before the ${timeout}ms timeout. Last parse ` +
+        `error: ${lastParseError.message}. First 200 characters on disk: ` +
+        JSON.stringify(lastRawResponse.slice(0, 200))
+      );
     }
 
     throw new Error(

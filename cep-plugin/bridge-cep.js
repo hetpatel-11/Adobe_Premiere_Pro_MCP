@@ -9,14 +9,34 @@
     var path = require('path');
     var os = require('os');
     var EXTENDSCRIPT_COMPAT_HELPERS = [
+        '// Built from character codes rather than backslash literals: this text is',
+        '// assembled in JavaScript before it reaches the host, so an escape written',
+        '// for the ExtendScript string would be consumed once on the way.',
         'function __mcpEscapeString(value) {',
-        '    return String(value)',
-        '        .replace(/\\\\/g, "\\\\\\\\")',
-        "        .replace(/\"/g, '\\\\\"')",
-        '        .replace(/\\r/g, "\\\\r")',
-        '        .replace(/\\n/g, "\\\\n")',
-        '        .replace(/\\t/g, "\\\\t");',
+        '    var text = String(value);',
+        '    var backslash = String.fromCharCode(92);',
+        '    var out = "";',
+        '    for (var i = 0; i < text.length; i++) {',
+        '        var code = text.charCodeAt(i);',
+        '        if (code === 34) { out += backslash + String.fromCharCode(34); }',
+        '        else if (code === 92) { out += backslash + backslash; }',
+        '        else if (code === 8) { out += backslash + "b"; }',
+        '        else if (code === 9) { out += backslash + "t"; }',
+        '        else if (code === 10) { out += backslash + "n"; }',
+        '        else if (code === 12) { out += backslash + "f"; }',
+        '        else if (code === 13) { out += backslash + "r"; }',
+        '        else if (code < 32 || code === 0x2028 || code === 0x2029) {',
+        '            var hex = code.toString(16);',
+        '            while (hex.length < 4) { hex = "0" + hex; }',
+        '            out += backslash + "u" + hex;',
+        '        }',
+        '        else { out += text.charAt(i); }',
+        '    }',
+        '    return out;',
         '}',
+        '// Saved before anything can shadow it: reading hasOwnProperty off the value',
+        '// being serialised lets that value decide which of its keys are emitted.',
+        'var __mcpOwnProperty = Object.prototype.hasOwnProperty;',
         'function __mcpStringify(value) {',
         '    if (value === null) return "null";',
         '    var valueType = typeof value;',
@@ -33,16 +53,159 @@
         '    if (valueType === "object") {',
         '        var objectParts = [];',
         '        for (var key in value) {',
-        '            if (value.hasOwnProperty && !value.hasOwnProperty(key)) continue;',
-        '            if (typeof value[key] === "undefined" || typeof value[key] === "function") continue;',
-        '            objectParts.push(__mcpStringify(String(key)) + ":" + __mcpStringify(value[key]));',
+        '            var isOwn = true;',
+        '            try { isOwn = __mcpOwnProperty.call(value, key); } catch (ownError) { isOwn = true; }',
+        '            if (!isOwn) continue;',
+        '            var member;',
+        '            try { member = value[key]; } catch (readError) { continue; }',
+        '            if (typeof member === "undefined" || typeof member === "function") continue;',
+        '            objectParts.push(__mcpStringify(String(key)) + ":" + __mcpStringify(member));',
         '        }',
         '        return "{" + objectParts.join(",") + "}";',
         '    }',
         '    return "null";',
         '}',
         'if (typeof JSON === "undefined") { JSON = {}; }',
-        'if (typeof JSON.stringify !== "function") { JSON.stringify = __mcpStringify; }'
+        '// Installed unconditionally, matching the server prelude. This engine has',
+        '// no JSON of its own, so the previous escaper was always the live one and',
+        '// it passed control characters through raw. See src/bridge/index.ts.',
+        'JSON.stringify = __mcpStringify;',
+        'function __mcpParse(text) {',
+        '  var source = String(text);',
+        '  var at = 0;',
+        '',
+        '  function fail(what) {',
+        '    throw new Error("JSON.parse: " + what + " at position " + at);',
+        '  }',
+        '  function skipWhitespace() {',
+        '    while (at < source.length) {',
+        '      var code = source.charCodeAt(at);',
+        '      if (code === 32 || code === 9 || code === 10 || code === 13) { at++; } else { break; }',
+        '    }',
+        '  }',
+        '  function expect(code) {',
+        '    if (source.charCodeAt(at) !== code) fail("expected character " + code);',
+        '    at++;',
+        '  }',
+        '  function parseString() {',
+        '    expect(34);',
+        '    var out = "";',
+        '    while (at < source.length) {',
+        '      var code = source.charCodeAt(at);',
+        '      if (code === 34) { at++; return out; }',
+        '      if (code === 92) {',
+        '        at++;',
+        '        var esc = source.charCodeAt(at);',
+        '        at++;',
+        '        if (esc === 34) { out += String.fromCharCode(34); }',
+        '        else if (esc === 92) { out += String.fromCharCode(92); }',
+        '        else if (esc === 47) { out += "/"; }',
+        '        else if (esc === 98) { out += String.fromCharCode(8); }',
+        '        else if (esc === 102) { out += String.fromCharCode(12); }',
+        '        else if (esc === 110) { out += String.fromCharCode(10); }',
+        '        else if (esc === 114) { out += String.fromCharCode(13); }',
+        '        else if (esc === 116) { out += String.fromCharCode(9); }',
+        '        else if (esc === 117) {',
+        '          var hex = source.substr(at, 4);',
+        '          if (hex.length !== 4 || !/^[0-9a-fA-F]{4}$/.test(hex)) fail("bad unicode escape");',
+        '          out += String.fromCharCode(parseInt(hex, 16));',
+        '          at += 4;',
+        '        }',
+        '        else fail("bad escape");',
+        '        continue;',
+        '      }',
+        '      // Unescaped control characters are not legal inside a JSON string.',
+        '      if (code < 32) fail("unescaped control character");',
+        '      out += source.charAt(at);',
+        '      at++;',
+        '    }',
+        '    fail("unterminated string");',
+        '  }',
+        '  function parseNumber() {',
+        '    var start = at;',
+        '    if (source.charCodeAt(at) === 45) at++;',
+        '    while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;',
+        '    if (source.charCodeAt(at) === 46) {',
+        '      at++;',
+        '      while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;',
+        '    }',
+        '    var exponent = source.charCodeAt(at);',
+        '    if (exponent === 101 || exponent === 69) {',
+        '      at++;',
+        '      var sign = source.charCodeAt(at);',
+        '      if (sign === 43 || sign === 45) at++;',
+        '      while (at < source.length && source.charCodeAt(at) >= 48 && source.charCodeAt(at) <= 57) at++;',
+        '    }',
+        '    var literal = source.substring(start, at);',
+        '    if (!/^-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][-+]?[0-9]+)?$/.test(literal)) fail("bad number");',
+        '    return Number(literal);',
+        '  }',
+        '  function parseWord() {',
+        '    if (source.substr(at, 4) === "true") { at += 4; return true; }',
+        '    if (source.substr(at, 5) === "false") { at += 5; return false; }',
+        '    if (source.substr(at, 4) === "null") { at += 4; return null; }',
+        '    fail("unexpected token");',
+        '  }',
+        '  function parseValue() {',
+        '    skipWhitespace();',
+        '    var code = source.charCodeAt(at);',
+        '    if (code === 34) return parseString();',
+        '    if (code === 123) {',
+        '      at++;',
+        '      var object = {};',
+        '      skipWhitespace();',
+        '      if (source.charCodeAt(at) === 125) { at++; return object; }',
+        '      for (;;) {',
+        '        skipWhitespace();',
+        '        var key = parseString();',
+        '        skipWhitespace();',
+        '        expect(58);',
+        '        var member = parseValue();',
+        '        if (key === "__proto__") {',
+        '          // Plain assignment here replaces the object"s prototype instead of',
+        '          // adding a key: the value is then unreachable as an own property and',
+        '          // the object inherits from whatever the payload contained. Define it',
+        '          // where the engine allows, and otherwise drop it -- losing one key is',
+        '          // recoverable, silently reparenting the object is not.',
+        '          if (typeof Object.defineProperty === "function") {',
+        '            try {',
+        '              Object.defineProperty(object, key, {',
+        '                value: member, enumerable: true, writable: true, configurable: true',
+        '              });',
+        '            } catch (defineError) { /* left out rather than assigned */ }',
+        '          }',
+        '        } else {',
+        '          object[key] = member;',
+        '        }',
+        '        skipWhitespace();',
+        '        if (source.charCodeAt(at) === 44) { at++; continue; }',
+        '        expect(125);',
+        '        return object;',
+        '      }',
+        '    }',
+        '    if (code === 91) {',
+        '      at++;',
+        '      var array = [];',
+        '      skipWhitespace();',
+        '      if (source.charCodeAt(at) === 93) { at++; return array; }',
+        '      for (;;) {',
+        '        array.push(parseValue());',
+        '        skipWhitespace();',
+        '        if (source.charCodeAt(at) === 44) { at++; continue; }',
+        '        expect(93);',
+        '        return array;',
+        '      }',
+        '    }',
+        '    if (code === 45 || (code >= 48 && code <= 57)) return parseNumber();',
+        '    return parseWord();',
+        '  }',
+        '',
+        '  var result = parseValue();',
+        '  skipWhitespace();',
+        '  if (at < source.length) fail("unexpected trailing content");',
+        '  return result;',
+        '}',
+        'JSON.parse = __mcpParse;'
     ].join('\n');
 
     function getDefaultTempPath() {
@@ -187,6 +350,15 @@
         }
     };
 
+    // The server polls for this exact filename, so writing it directly publishes the
+    // name before the content is complete and the server can read a truncated response.
+    // rename() within one directory is atomic, so the file appears only once whole.
+    MCPPremiereBridge.prototype.writeResponseAtomic = function(responseFile, payload) {
+        var staging = responseFile + '.part';
+        fs.writeFileSync(staging, JSON.stringify(payload, null, 2));
+        fs.renameSync(staging, responseFile);
+    };
+
     MCPPremiereBridge.prototype.processCommandFile = function(filePath) {
         var self = this;
         try {
@@ -196,15 +368,26 @@
             this.addToQueue(command);
             this.isProcessing = true;
             this.executeCommand(command, function(result) {
+                var responseFile = filePath.replace('command-', 'response-');
+                var responsePublished = false;
                 try {
-                    var responseFile = filePath.replace('command-', 'response-');
-                    fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-                    fs.unlinkSync(filePath);
+                    self.writeResponseAtomic(responseFile, result);
+                    responsePublished = true;
+
+                    // Guarded on its own. The server removes the command file on its
+                    // timeout path, so this unlink can legitimately fail — and if it were
+                    // allowed to reach the catch below it would overwrite the result that
+                    // was just published, turning a completed command into an error.
+                    try { fs.unlinkSync(filePath); } catch (eUnlink) {}
+
                     self.log('Command completed: ' + command.id, 'info');
                     self.updateCommandStatus(command.id, 'completed');
                 } catch (e) {
-                    var errFile = filePath.replace('command-', 'response-');
-                    fs.writeFileSync(errFile, JSON.stringify({ error: e.message, timestamp: new Date().toISOString() }, null, 2));
+                    if (!responsePublished) {
+                        try {
+                            self.writeResponseAtomic(responseFile, { error: e.message, timestamp: new Date().toISOString() });
+                        } catch (eWrite) {}
+                    }
                 }
                 self.isProcessing = false;
             });
@@ -212,8 +395,8 @@
             this.log('Error processing command file: ' + e.message, 'error');
             try {
                 var responseFile = filePath.replace('command-', 'response-');
-                fs.writeFileSync(responseFile, JSON.stringify({ error: e.message, timestamp: new Date().toISOString() }, null, 2));
-                fs.unlinkSync(filePath);
+                this.writeResponseAtomic(responseFile, { error: e.message, timestamp: new Date().toISOString() });
+                try { fs.unlinkSync(filePath); } catch (eUnlink) {}
             } catch (e2) {}
             this.isProcessing = false;
         }

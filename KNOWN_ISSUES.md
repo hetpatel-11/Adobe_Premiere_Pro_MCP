@@ -130,6 +130,26 @@ Current behavior:
 - the tool is still exposed
 - it returns an error explaining that render queue monitoring requires Adobe Media Encoder
 
+### `add_text_overlay` decodes MOGRT text again, but the rest of that path is untested
+
+Status: the blocker is fixed in this change; what sits behind it has not been exercised
+
+The engine ships no `JSON` object at all -- neither `parse` nor `stringify` -- which is
+why the prelude fabricates one. It used to install only `stringify`, leaving a `JSON` that
+answers `typeof` while the read direction is missing.
+
+`add_text_overlay` needs the read direction. It calls `JSON.parse` inside the generated
+script at three sites to decode a component's text payload, trying a four-byte header first
+and then the bare string. Before this change both raised
+`ReferenceError: JSON.parse is not a function`, both were caught, and the tool reported
+"Both JSON parse strategies failed" -- legible, but the path could never succeed. Verified
+against a live 26.0.2 host.
+
+The prelude now installs a parser as well, and the same payload shape decodes correctly
+through the live bridge. That removes the blocker; it does not establish that the whole
+MOGRT flow works, because confirming that needs a real .mogrt asset in a project and has
+not been done. Treat the remainder of that path as unverified rather than fixed.
+
 ## Operational Limits
 
 These are not hidden bugs; they are boundaries of the current architecture.

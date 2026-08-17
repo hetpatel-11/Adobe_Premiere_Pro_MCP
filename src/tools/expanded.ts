@@ -222,7 +222,8 @@ export async function executeExpandedTool(
       if (!script.trim()) {
         return { success: false, error: 'execute_extendscript requires script or code' };
       }
-      return await bridge.executeScript(script);
+      // Caller-authored: pass the source through verbatim.
+      return await bridge.executeScript(script, undefined, true);
     }
 
     const script = buildExpandedToolScript(name, args);
