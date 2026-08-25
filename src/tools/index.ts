@@ -331,6 +331,23 @@ export class PremiereProTools {
         inputSchema: z.object({})
       },
       {
+        name: 'list_open_projects',
+        description: 'Lists every project currently open in Premiere Pro, with the path, sequence count, and which one is frontmost. Also reports which project the bridge is currently pointed at. Use this to find the path to pass to set_target_project.',
+        inputSchema: z.object({})
+      },
+      {
+        name: 'set_target_project',
+        description: 'Points the bridge at one open project so every later tool call acts on it, regardless of which project you have in focus in Premiere. This lets you keep working in another project while the bridge works on this one. Pass the full path (preferred, since two open projects can share a name) or the project name. Two operations cannot be retargeted and will report a clear error if the target is not frontmost: anything using the QE DOM, and anything relying on activeSequence, which Premiere reports globally rather than per project. Call clear_target_project to go back to following whatever is frontmost.',
+        inputSchema: z.object({
+          project: z.string().min(1).describe('Full path to the .prproj, or its name as shown by list_open_projects. Path is preferred and is matched first.')
+        })
+      },
+      {
+        name: 'clear_target_project',
+        description: 'Stops targeting a specific project. The bridge goes back to acting on whichever project is frontmost in Premiere, which is the default behaviour.',
+        inputSchema: z.object({})
+      },
+      {
         name: 'verify_premiere_connection',
         description: 'Read-only readiness check for the live CEP bridge and Premiere Pro host. Run this before an editing workflow to confirm the bridge responds and report the Premiere version, project, and active sequence without changing the project.',
         inputSchema: z.object({})
@@ -1482,6 +1499,12 @@ export class PremiereProTools {
           return await this.listSequenceTracks(args.sequenceId);
         case 'get_project_info':
           return await this.getProjectInfo();
+        case 'list_open_projects':
+          return await this.listOpenProjects();
+        case 'set_target_project':
+          return await this.setTargetProject(args.project);
+        case 'clear_target_project':
+          return await this.clearTargetProject();
         case 'verify_premiere_connection':
           return await this.verifyPremiereConnection();
         case 'get_capabilities':
@@ -1967,6 +1990,122 @@ ${this.buildSequenceResolver(sequenceId)}
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  /**
+   * Enumerate every open project.
+   *
+   * Deliberately reads app.projects rather than app.project: the whole point is to see
+   * past the frontmost one. Written so it still answers on a host too old to expose the
+   * collection, where it degrades to reporting just the frontmost project.
+   */
+  private async listOpenProjects(): Promise<any> {
+    const script = `
+      var result = { projects: [], frontmost: null };
+      try { result.frontmost = String(app.project.path); } catch (frontError) { result.frontmost = null; }
+      if (typeof app.projects === 'undefined') {
+        result.collectionAvailable = false;
+        result.projects.push({
+          name: app.project.name,
+          path: result.frontmost,
+          isFrontmost: true
+        });
+      } else {
+        result.collectionAvailable = true;
+        for (var i = 0; i < app.projects.numProjects; i++) {
+          var proj = app.projects[i];
+          var entry = { index: i, name: null, path: null, sequenceCount: null, isFrontmost: false };
+          try { entry.name = String(proj.name); } catch (nameError) {}
+          try { entry.path = String(proj.path); } catch (pathError) {}
+          try { entry.sequenceCount = proj.sequences.numSequences; } catch (seqError) {}
+          entry.isFrontmost = (entry.path !== null && entry.path === result.frontmost);
+          result.projects.push(entry);
+        }
+      }
+      return JSON.stringify(result);
+    `;
+    const result = await this.bridge.executeScript(script);
+    const target = this.bridge.getTargetProject();
+    return {
+      success: true,
+      ...result,
+      targetProject: target ? target.path : null,
+      targeting: target
+        ? 'Bridge is pointed at ' + (target.name || target.path) + '. Calls act on it wherever your focus is.'
+        : 'Bridge is following whichever project is frontmost.'
+    };
+  }
+
+  /**
+   * Pin the bridge to a project, refusing anything that is not actually open — a typo'd
+   * path would otherwise fail later, once per call, from inside unrelated tools.
+   */
+  private async setTargetProject(project: string): Promise<any> {
+    const wanted = String(project);
+    const script = `
+      var wanted = ${JSON.stringify(wanted)};
+      var out = { matched: null, open: [] };
+      if (typeof app.projects === 'undefined') {
+        out.collectionAvailable = false;
+        return JSON.stringify(out);
+      }
+      out.collectionAvailable = true;
+      var i, proj, entry;
+      for (i = 0; i < app.projects.numProjects; i++) {
+        proj = app.projects[i];
+        entry = { name: null, path: null };
+        try { entry.name = String(proj.name); } catch (nameError) {}
+        try { entry.path = String(proj.path); } catch (pathError) {}
+        out.open.push(entry);
+        if (out.matched === null && entry.path === wanted) { out.matched = entry; }
+      }
+      if (out.matched === null) {
+        for (i = 0; i < out.open.length; i++) {
+          if (out.open[i].name === wanted) { out.matched = out.open[i]; break; }
+        }
+      }
+      return JSON.stringify(out);
+    `;
+    const probe = await this.bridge.executeScript(script);
+
+    if (probe && probe.collectionAvailable === false) {
+      throw new Error(
+        'This Premiere build does not expose app.projects, so the bridge cannot target a project other than the frontmost one.'
+      );
+    }
+    if (!probe || !probe.matched) {
+      const open = (probe && probe.open ? probe.open : [])
+        .map((entry: any) => entry.path || entry.name)
+        .filter(Boolean);
+      throw new Error(
+        'No open project matches "' + wanted + '". Open projects: ' +
+        (open.length ? open.join(', ') : 'none') +
+        '. Pass a full path from list_open_projects.'
+      );
+    }
+
+    this.bridge.setTargetProject(probe.matched.path || wanted, probe.matched.name || null);
+    return {
+      success: true,
+      targetProject: probe.matched,
+      message:
+        'Bridge is now pointed at ' + (probe.matched.name || probe.matched.path) +
+        '. Every tool call acts on it until you call clear_target_project, so you can work in another project meanwhile.',
+      limitations: [
+        'Tools that use the QE DOM still follow the frontmost project and will report an error rather than act on the wrong one.',
+        'Tools that rely on activeSequence do the same, because Premiere reports the active sequence globally rather than per project. Pass an explicit sequenceId where a tool accepts one.'
+      ]
+    };
+  }
+
+  private async clearTargetProject(): Promise<any> {
+    const previous = this.bridge.getTargetProject();
+    this.bridge.setTargetProject(null, null);
+    return {
+      success: true,
+      cleared: previous ? previous.path : null,
+      message: 'Bridge is following whichever project is frontmost again.'
+    };
   }
 
   private async getProjectInfo(): Promise<any> {
