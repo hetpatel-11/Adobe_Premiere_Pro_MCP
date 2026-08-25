@@ -6,7 +6,7 @@ This file tracks current, confirmed limits. It is no longer a backlog of already
 
 The current built tool catalog exposes:
 
-- `283` tools (`112` declared in `src/tools/index.ts`, `171` in `src/tools/expanded.ts`)
+- `286` tools (`115` declared in `src/tools/index.ts`, `171` in `src/tools/expanded.ts`)
 
 Counted from the built catalog with `getAvailableTools().length`, not from this file.
 The previous figure of `104` was stale by a wide margin; check it against the build
@@ -39,6 +39,24 @@ Reason:
 - This is a detection-only tool -- it never cuts anything itself. Use the returned
   intervals with `split_clip`/`ripple_delete`/`razor_timeline_at_time` to actually remove
   silence from a sequence.
+
+### `activeSequence` is global, not a property of the project you ask
+
+Status: confirmed, and the reason `set_target_project` guards rather than retargets
+
+`app.project` is always the frontmost project, so `set_target_project` rewrites generated
+scripts to resolve the pinned project out of `app.projects` instead. Project-scoped work
+retargets cleanly that way. Two things do not:
+
+- `activeSequence` is reported globally. Verified live against 26.3.2 with two projects
+  open: resolving the non-frontmost project returned its own `name`, `path`, `rootItem`, and
+  `sequences.numSequences` of `0`, yet its `activeSequence` was the *other* project's open
+  sequence. A tool that trusted it would read the wrong timeline and report success.
+- The QE DOM is bound to the frontmost project with no documented way to redirect it.
+
+Scripts touching either are therefore checked in the host: if the target is not frontmost,
+they throw with the reason rather than acting on the wrong project. Pass an explicit
+`sequenceId` where a tool accepts one and it retargets normally.
 
 ### QE reaches sequences Premiere has open, not only the active one
 

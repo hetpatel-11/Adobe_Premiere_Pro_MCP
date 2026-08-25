@@ -7,6 +7,13 @@ import type {
 
 export interface PremiereProTransport {
   executeScript(script: string, timeoutMs?: number, callerAuthored?: boolean): Promise<any>;
+  /**
+   * Point the transport at one open project, or pass null to follow whichever project
+   * is frontmost in Premiere. Lets the operator work in a different project without
+   * the bridge following their focus.
+   */
+  setTargetProject(projectPath: string | null, projectName?: string | null): void;
+  getTargetProject(): { path: string; name: string | null } | null;
   createProject(name: string, location: string): Promise<PremiereProProject>;
   openProject(path: string): Promise<PremiereProProject>;
   saveProject(): Promise<void>;

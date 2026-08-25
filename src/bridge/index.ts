@@ -465,6 +465,18 @@ export interface PremiereProEffect {
 }
 
 export class PremiereProBridge implements PremiereProTransport {
+  /**
+   * Which open project the generated scripts should act on.
+   *
+   * Premiere's `app.project` is always the frontmost project, so every tool used to
+   * follow whatever the user had in focus. Pinning a target here lets the operator
+   * keep working in another project while the bridge stays on the one it was pointed
+   * at. Null means "whatever is frontmost", which is the original behaviour.
+   *
+   * Stored as the project's path because two open projects can share a name.
+   */
+  private targetProjectPath: string | null = null;
+  private targetProjectName: string | null = null;
   private logger: Logger;
   private communicationMethod: 'uxp' | 'extendscript' | 'file';
   private tempDir: string;
@@ -591,6 +603,96 @@ export class PremiereProBridge implements PremiereProTransport {
     );
   }
 
+  /**
+   * Pin the bridge to one open project. Pass null to go back to following the
+   * frontmost project. The caller is responsible for having checked that the
+   * project is actually open; set_target_project does that before calling here.
+   */
+  setTargetProject(projectPath: string | null, projectName: string | null = null): void {
+    this.targetProjectPath = projectPath;
+    this.targetProjectName = projectName;
+  }
+
+  getTargetProject(): { path: string; name: string | null } | null {
+    if (!this.targetProjectPath) return null;
+    return { path: this.targetProjectPath, name: this.targetProjectName };
+  }
+
+  /**
+   * ExtendScript preamble that resolves the pinned project and guards the two
+   * APIs that cannot be retargeted.
+   *
+   * `app.projects` is a real collection of every open project, so project-scoped
+   * work (sequences, root item, project items) retargets cleanly. Two things do not:
+   *
+   *   - the QE DOM, which is bound to the frontmost project with no way to redirect it
+   *   - `activeSequence`, which is global rather than per-project. A project that holds
+   *     no sequences at all still reports the frontmost project's active sequence, so a
+   *     tool that trusted it would silently read from the wrong project.
+   *
+   * Both are checked in the host rather than in the server, because only the host
+   * knows which project is frontmost at the moment the script runs.
+   */
+  private buildTargetPreamble(script: string): string {
+    const target = this.targetProjectPath;
+    if (!target) return '';
+
+    const literal = JSON.stringify(target);
+    const lines: string[] = [
+      'var __mcpTargetPath = ' + literal + ';',
+      'function __mcpProject() {',
+      '  if (!__mcpTargetPath) { return app.project; }',
+      '  if (typeof app.projects === "undefined") { return app.project; }',
+      '  var i, candidate, candidatePath, candidateName;',
+      '  for (i = 0; i < app.projects.numProjects; i++) {',
+      '    candidate = app.projects[i];',
+      '    candidatePath = "";',
+      '    try { candidatePath = String(candidate.path); } catch (pathError) { candidatePath = ""; }',
+      '    if (candidatePath && candidatePath === __mcpTargetPath) { return candidate; }',
+      '  }',
+      '  for (i = 0; i < app.projects.numProjects; i++) {',
+      '    candidate = app.projects[i];',
+      '    candidateName = "";',
+      '    try { candidateName = String(candidate.name); } catch (nameError) { candidateName = ""; }',
+      '    if (candidateName && candidateName === __mcpTargetPath) { return candidate; }',
+      '  }',
+      '  throw new Error("The bridge is pointed at a project that is not open: " + __mcpTargetPath + ". Reopen it, or call clear_target_project.");',
+      '}',
+      'function __mcpRequireFrontmostTarget(feature) {',
+      '  if (!__mcpTargetPath) { return; }',
+      '  var frontmost = "";',
+      '  try { frontmost = String(app.project.path); } catch (frontError) { frontmost = ""; }',
+      '  if (frontmost !== __mcpTargetPath) {',
+      '    throw new Error("This operation uses " + feature + ", which always follows the frontmost project and cannot be pointed elsewhere. The bridge is targeting " + __mcpTargetPath + " but " + frontmost + " is frontmost. Bring the target forward in Premiere, or call clear_target_project.");',
+      '  }',
+      '}'
+    ];
+
+    // Only assert when the script actually touches an untargetable API, so that
+    // everything else keeps working while the operator is in another project.
+    if (/\bqe\b/.test(script)) {
+      lines.push('__mcpRequireFrontmostTarget("Premiere\'s QE DOM");');
+    }
+    if (/\bactiveSequence\b/.test(script)) {
+      lines.push('__mcpRequireFrontmostTarget("activeSequence, which is global rather than per project");');
+    }
+
+    return lines.join('\n') + '\n';
+  }
+
+  /**
+   * Point every `app.project` in a generated script at the pinned project.
+   *
+   * `\bapp\.project\b` cannot match `app.projects`, because the word boundary fails
+   * against the following "s" — so the collection lookup inside the preamble survives
+   * the rewrite. Caller-authored scripts are never rewritten: execute_extendscript is
+   * a passthrough and rewriting it would change code the caller wrote by hand.
+   */
+  private retargetGeneratedScript(script: string): string {
+    if (!this.targetProjectPath) return script;
+    return script.replace(/\bapp\.project\b/g, '__mcpProject()');
+  }
+
   private buildExecutableScript(script: string, callerAuthored = false): string {
     PremiereProBridge.assertNoNulByte(script);
 
@@ -604,12 +706,18 @@ export class PremiereProBridge implements PremiereProTransport {
       ? script
       : PremiereProBridge.repairScriptLineTerminators(script);
 
-    if (this.isSelfInvokingScript(safeScript)) {
-      return EXTENDSCRIPT_HELPERS + safeScript.trim();
+    // Retargeting runs on generated scripts only. A caller-authored script still gets
+    // the preamble, so it can call __mcpProject() deliberately, but its own app.project
+    // references are left exactly as written.
+    const targetedScript = callerAuthored ? safeScript : this.retargetGeneratedScript(safeScript);
+    const preamble = this.buildTargetPreamble(safeScript);
+
+    if (this.isSelfInvokingScript(targetedScript)) {
+      return EXTENDSCRIPT_HELPERS + preamble + targetedScript.trim();
     }
 
     // Wrap script bodies so top-level "return ..." remains valid in ExtendScript.
-    return EXTENDSCRIPT_HELPERS + '(function(){\n' + safeScript + '\n})();';
+    return EXTENDSCRIPT_HELPERS + preamble + '(function(){\n' + targetedScript + '\n})();';
   }
 
   async executeScript(script: string, timeoutMs?: number, callerAuthored = false): Promise<any> {

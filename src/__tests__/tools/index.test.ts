@@ -82,7 +82,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('add_tracks');
       expect(toolNames).toContain('get_encoder_presets');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(283);
+      expect(availableTools).toHaveLength(286);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -557,7 +557,7 @@ describe('PremiereProTools', () => {
       const result = await tools.executeTool('get_capabilities', {});
 
       expect(result.success).toBe(true);
-      expect(result.catalog).toEqual({ tools: 283, resources: 13, prompts: 10 });
+      expect(result.catalog).toEqual({ tools: 286, resources: 13, prompts: 10 });
       expect(result.liveConnection.checked).toBe(false);
       expect(mockBridge.executeScript).not.toHaveBeenCalled();
     });
