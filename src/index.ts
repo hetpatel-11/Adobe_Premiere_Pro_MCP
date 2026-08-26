@@ -8,6 +8,13 @@ import { PremiereProResources } from './resources/index.js';
 import { PremiereProPrompts } from './prompts/index.js';
 import { PremiereProBridge } from './bridge/index.js';
 import { Logger } from './utils/logger.js';
+import { PACKAGE_VERSION } from './version.js';
+import {
+  classifyToolError,
+  getTelemetry,
+  type Telemetry,
+  type TrackToolCallInput,
+} from './utils/telemetry.js';
 
 type ObjectJsonSchema = Record<string, unknown> & { type: 'object' };
 
@@ -18,9 +25,11 @@ class MCPPremiereProServer {
   private prompts: PremiereProPrompts;
   private bridge: PremiereProBridge;
   private logger: Logger;
+  private telemetry: Telemetry;
 
   constructor() {
     this.logger = new Logger('MCPPremiereProServer');
+    this.telemetry = getTelemetry();
 
     this.bridge = new PremiereProBridge();
     this.tools = new PremiereProTools(this.bridge);
@@ -32,7 +41,7 @@ class MCPPremiereProServer {
     const server = new Server(
       {
         name: 'adobe-premiere-pro-mcp',
-        version: '1.2.1',
+        version: PACKAGE_VERSION,
         description: 'Model Context Protocol tools for Adobe Premiere Pro - AI-powered video editing'
       },
       {
@@ -70,9 +79,11 @@ class MCPPremiereProServer {
     // Execute tool calls
     server.setRequestHandler('tools/call', async (request) => {
       const { name, arguments: args } = request.params;
-      
+      const startedAt = Date.now();
+
       try {
         const result = await this.tools.executeTool(name, args || {});
+        this.recordToolCall(name, result, Date.now() - startedAt);
         const toolResult: CallToolResult = {
           content: [
             {
@@ -86,6 +97,7 @@ class MCPPremiereProServer {
         return server.projectCallToolResult(toolResult, undefined);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        this.recordToolCall(name, { success: false, error: errorMessage }, Date.now() - startedAt);
         this.logger.error(`Tool execution failed: ${errorMessage}`);
         
         throw new ProtocolError(
@@ -167,6 +179,26 @@ class MCPPremiereProServer {
     };
   }
 
+  private recordToolCall(name: string, result: unknown, durationMs: number): void {
+    const success =
+      !result ||
+      typeof result !== 'object' ||
+      (result as { success?: unknown }).success !== false;
+    const input: TrackToolCallInput = {
+      tool: name,
+      success,
+      durationMs
+    };
+    if (!success) {
+      const error =
+        result && typeof result === 'object'
+          ? (result as { error?: unknown }).error
+          : undefined;
+      input.errorKind = classifyToolError(typeof error === 'string' ? error : undefined);
+    }
+    this.telemetry.trackToolCall(input);
+  }
+
   async start(): Promise<void> {
     try {
       await this.bridge.initialize();
@@ -179,6 +211,7 @@ class MCPPremiereProServer {
       });
       
       this.logger.info('MCP Adobe Premiere Pro Server started successfully');
+      this.telemetry.trackServerStarted();
     } catch (error) {
       this.logger.error('Failed to start server:', error);
       throw error;
@@ -193,6 +226,8 @@ class MCPPremiereProServer {
     } catch (error) {
       this.logger.error('Error stopping server:', error);
       throw error;
+    } finally {
+      await this.telemetry.flush();
     }
   }
 }

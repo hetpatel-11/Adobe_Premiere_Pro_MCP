@@ -16,6 +16,8 @@ Usage:
   premiere-pro-mcp --doctor        Check the local server, CEP bridge, and client configuration
   premiere-pro-mcp --version       Print the installed package version
   premiere-pro-mcp --help          Show this help
+
+Telemetry is on by default. Set PREMIERE_MCP_TELEMETRY=0 to opt out.
 `);
 }
 

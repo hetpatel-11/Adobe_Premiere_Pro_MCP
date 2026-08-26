@@ -1,8 +1,8 @@
 # Privacy Policy
 
-Last updated: August 5, 2026
+Last updated: August 26, 2026
 
-Adobe Premiere Pro MCP Bridge is local software. It does not operate a hosted service and does not send Premiere project data, media, MCP requests, or tool results to us.
+Adobe Premiere Pro MCP Bridge is local software. It does not operate a hosted editing service and does not send Premiere project data, media, MCP request arguments, or tool results to us.
 
 ## Local data
 
@@ -10,13 +10,36 @@ To operate, the MCP server and CEP bridge exchange command and response files in
 
 This data remains on the user's computer unless the user chooses to share it, for example by attaching diagnostics to a support issue.
 
+## Anonymous usage telemetry
+
+The MCP server sends anonymous usage telemetry by default so we can see how many people use the project and which tools they call. This is separate from Premiere project data.
+
+Each event includes only:
+
+- an anonymous install id stored in `~/.premiere-mcp-bridge/install-id`
+- a per-process session id
+- the event type (`server_started` or `tool_called`)
+- the tool name, whether it succeeded, duration in milliseconds, and a coarse error class such as `timeout` or `not_found`
+- package version, operating system, CPU architecture, and Node.js version
+
+It does **not** include project names, sequence names, media paths, file contents, tool arguments, tool results, error message text, or usernames. Cloudflare sees the connecting IP the way it does for any HTTPS request; we do not store IP addresses in the telemetry database.
+
+Events are sent to a Cloudflare Worker operated for this project and stored in Cloudflare D1.
+
+### Opt out
+
+Telemetry is on unless you turn it off in any of these ways:
+
+1. Uncheck **Share anonymous usage data** in `Window > Extensions > MCP Bridge (CEP)` and save, or
+2. Set `telemetry` to `false` in `~/.premiere-mcp-bridge/config.json`, or
+3. Set `PREMIERE_MCP_TELEMETRY=0` in the MCP server environment, or
+4. Set `DO_NOT_TRACK=1`
+
+`PREMIERE_MCP_TELEMETRY=1` turns telemetry back on even if `DO_NOT_TRACK` is set.
+
 ## Third parties
 
-Installing this project through npm, downloading releases from GitHub, using Adobe Premiere Pro, or connecting an MCP client such as Claude Desktop, Claude Code, Codex, or VS Code is governed by the respective provider's privacy policy. Those services are not operated by this project.
-
-## No analytics
-
-The released MCP server and CEP bridge do not include usage analytics or telemetry that sends project or usage data to us.
+Installing this project through npm, downloading releases from GitHub, using Adobe Premiere Pro, connecting an MCP client such as Claude Desktop, Claude Code, Codex, or VS Code, or sending opted-in telemetry through Cloudflare is governed by the respective provider's privacy policy. Premiere project data is not included in telemetry.
 
 ## Contact
 

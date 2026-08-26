@@ -263,6 +263,49 @@
             box-shadow: 0 0 0 3px rgba(95, 211, 255, 0.1);
         }
 
+        .toggle-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-top: 14px;
+            padding: 11px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(129, 170, 197, 0.14);
+            background: rgba(9, 17, 25, 0.56);
+            cursor: pointer;
+            letter-spacing: 0;
+            text-transform: none;
+            color: var(--text-1);
+        }
+
+        .toggle-row input[type="checkbox"] {
+            margin-top: 2px;
+            width: 15px;
+            height: 15px;
+            flex: 0 0 auto;
+            accent-color: var(--accent-strong);
+        }
+
+        .toggle-copy {
+            min-width: 0;
+        }
+
+        .toggle-title {
+            display: block;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-0);
+            margin-bottom: 4px;
+        }
+
+        .toggle-help {
+            display: block;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--text-2);
+            font-weight: 400;
+        }
+
         .button-row,
         .button-grid {
             display: grid;
@@ -484,6 +527,13 @@
             </div>
             <label for="tempDirectory">Temp Directory</label>
             <input type="text" id="tempDirectory" placeholder="Temp Directory (e.g. /tmp/premiere-mcp-bridge)">
+            <label class="toggle-row" for="telemetryEnabled">
+                <input type="checkbox" id="telemetryEnabled" checked onchange="saveTelemetryPreference()">
+                <span class="toggle-copy">
+                    <span class="toggle-title">Share anonymous usage data</span>
+                    <span class="toggle-help">On by default. Sends tool names, success or failure, duration, OS, and version. Never sends project names, media paths, or arguments. Uncheck to opt out.</span>
+                </span>
+            </label>
             <div class="button-row">
                 <button class="primary" onclick="saveConfig()">Save Configuration</button>
             </div>
@@ -520,7 +570,7 @@
         <section class="panel">
             <div class="panel-title">
                 <h2>Activity Log</h2>
-                <span>Bridge telemetry</span>
+                <span>Recent messages</span>
             </div>
             <div class="log-container" id="logContainer">
                 <div class="log-entry info">MCP Bridge (CEP) loaded. This is the supported release path for Premiere automation.</div>

@@ -224,6 +224,16 @@
         return path.join(configDir, 'config.json');
     }
 
+    function readExistingPanelConfig() {
+        try {
+            var configPath = getPanelConfigPath();
+            if (!fs.existsSync(configPath)) return {};
+            var parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            if (parsed && typeof parsed === 'object') return parsed;
+        } catch (e) {}
+        return {};
+    }
+
     function ensureDirectory(dirPath) {
         if (!dirPath) return null;
         var resolvedPath = path.resolve(dirPath);
@@ -277,6 +287,7 @@
         this.isProcessing = false;
         this.evalScriptBusy = false;
         this.evalScriptQueue = [];
+        this.telemetryEnabled = true;
         this.csInterface = new CSInterface();
         this.init();
     }
@@ -601,6 +612,9 @@
                 if (panelConfig.tempDirectory) {
                     this.tempDirectory = sanitizeTempDirectoryInput(panelConfig.tempDirectory);
                 }
+                if (typeof panelConfig.telemetry === 'boolean') {
+                    this.telemetryEnabled = panelConfig.telemetry;
+                }
             }
 
             var candidatePaths = this.tempDirectory ? [this.tempDirectory, getDefaultTempPath()] : [getDefaultTempPath()];
@@ -631,6 +645,9 @@
                     tempEl.value = getDefaultTempPath();
                 }
             }
+
+            var telemetryEl = document.getElementById('telemetryEnabled');
+            if (telemetryEl) telemetryEl.checked = this.telemetryEnabled !== false;
         } catch (e) {}
     };
 
@@ -645,10 +662,30 @@
             }
             if (tempEl) tempEl.value = this.tempDirectory;
             fs.writeFileSync(path.join(ensuredTempDir, 'config.json'), JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
-            fs.writeFileSync(getPanelConfigPath(), JSON.stringify({ tempDirectory: this.tempDirectory }, null, 2));
+            var panelConfig = readExistingPanelConfig();
+            panelConfig.tempDirectory = this.tempDirectory;
+            panelConfig.telemetry = this.readTelemetryEnabled();
+            fs.writeFileSync(getPanelConfigPath(), JSON.stringify(panelConfig, null, 2));
             this.log('Configuration saved', 'info');
         } catch (e) {
             this.log('Error saving config: ' + e.message, 'error');
+        }
+    };
+
+    MCPPremiereBridge.prototype.readTelemetryEnabled = function() {
+        var telemetryEl = document.getElementById('telemetryEnabled');
+        if (telemetryEl) this.telemetryEnabled = !!telemetryEl.checked;
+        return this.telemetryEnabled !== false;
+    };
+
+    MCPPremiereBridge.prototype.saveTelemetryPreference = function() {
+        try {
+            var panelConfig = readExistingPanelConfig();
+            panelConfig.telemetry = this.readTelemetryEnabled();
+            fs.writeFileSync(getPanelConfigPath(), JSON.stringify(panelConfig, null, 2));
+            this.log(this.telemetryEnabled ? 'Anonymous usage data enabled' : 'Anonymous usage data disabled', 'info');
+        } catch (e) {
+            this.log('Error saving telemetry preference: ' + e.message, 'error');
         }
     };
 
@@ -854,6 +891,7 @@
     window.stopBridge = function() { if (window.bridge) window.bridge.stopBridge(); };
     window.runDiagnostics = function() { if (window.bridge) window.bridge.runDiagnostics(); };
     window.saveConfig = function() { if (window.bridge) window.bridge.saveConfig(); };
+    window.saveTelemetryPreference = function() { if (window.bridge) window.bridge.saveTelemetryPreference(); };
     window.clearLog = function() { if (window.bridge) window.bridge.clearLog(); };
     document.addEventListener('DOMContentLoaded', function() {
         window.bridge = new MCPPremiereBridge();

@@ -120,3 +120,7 @@ That sweep creates disposable `Sweep ...` sequences so the live bridge is actual
 - the Claude Desktop config entry points to the wrong path
 
 For the full release notes and current limits, see `README.md` and `KNOWN_ISSUES.md`.
+
+## Telemetry
+
+Anonymous usage telemetry is on by default. It does not include project names, paths, or tool arguments. Uncheck **Share anonymous usage data** in the CEP panel, or set `PREMIERE_MCP_TELEMETRY=0`. See `PRIVACY.md`.

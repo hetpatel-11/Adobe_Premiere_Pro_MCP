@@ -2,6 +2,14 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [1.2.2] - 2026-08-26
+
+- The MCP server now sends anonymous usage telemetry by default: install id, tool
+  names, success or failure, duration, OS, and version. Project names, media paths,
+  arguments, and results are not sent. Opt out from the CEP panel, with
+  `PREMIERE_MCP_TELEMETRY=0`, `DO_NOT_TRACK=1`, or `"telemetry": false` in
+  `~/.premiere-mcp-bridge/config.json`. See [PRIVACY.md](PRIVACY.md).
+
 ## [1.2.1] - 2026-08-26
 
 - The CEP panel no longer starts a second `evalScript` after a JavaScript timeout while

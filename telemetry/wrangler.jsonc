@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/wrangler@4.46.0/config-schema.json",
+  "name": "adobe-premiere-mcp-telemetry",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "premiere-mcp-telemetry",
+      "database_id": "486687fa-408a-414e-83c4-865f98f9419a",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

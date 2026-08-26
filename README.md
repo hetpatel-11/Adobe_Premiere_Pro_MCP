@@ -19,7 +19,7 @@
 
 **Start here:** install the local bridge, open it in Premiere, then run `verify_premiere_connection` before editing.
 
-[Install](#install) | [Codex plugin](#codex-plugin) | [Claude Code plugin](#claude-code-plugin) | [Verify](#verify-the-install) | [Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
+[Install](#install) | [Codex plugin](#codex-plugin) | [Claude Code plugin](#claude-code-plugin) | [Verify](#verify-the-install) | [Telemetry](#telemetry) | [Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
 
 ## Install
 
@@ -88,6 +88,8 @@ The installer configures Claude Desktop on macOS and Claude Desktop plus GitHub 
   }
 }
 ```
+
+To opt out of anonymous usage telemetry, add `"env": { "PREMIERE_MCP_TELEMETRY": "0" }` to that server entry. See [Telemetry](#telemetry).
 
 ### Install from source
 
@@ -375,6 +377,19 @@ This project is much more usable than the original prototype, but it is not magi
 - Professional title design still depends on real MOGRT assets or external graphics workflows.
 - `get_render_queue_status` is only useful when Adobe Media Encoder integration is available.
 - The best results come from real source footage, real audio, and real brand assets. The automation layer assembles and manipulates them; it does not replace editorial judgment.
+
+## Telemetry
+
+Anonymous usage telemetry is on by default so we can see how many people run the server and which tools they call.
+
+Each event is an install id, a tool name, success or failure, duration, OS, and package version. Project names, media paths, arguments, and results are not sent. Details are in [PRIVACY.md](PRIVACY.md).
+
+Opt out in any of these ways:
+
+- Uncheck **Share anonymous usage data** in `Window > Extensions > MCP Bridge (CEP)`
+- Set `"telemetry": false` in `~/.premiere-mcp-bridge/config.json`
+- Set `PREMIERE_MCP_TELEMETRY=0` in the MCP server environment
+- Set `DO_NOT_TRACK=1`
 
 ## Troubleshooting
 
