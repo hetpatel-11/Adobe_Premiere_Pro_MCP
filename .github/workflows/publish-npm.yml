@@ -29,3 +29,5 @@ jobs:
       - run: npm test -- --runInBand --silent
       - run: npm run pack:check
       - run: npm publish --provenance --tag "${{ inputs.npm_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
