@@ -2,6 +2,15 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [1.2.1] - 2026-08-26
+
+- The CEP panel no longer starts a second `evalScript` after a JavaScript timeout while
+  the first native call is still outstanding. Overlapping `evalScript` calls can wedge
+  the ExtendScript channel until Premiere restarts (GitHub issue
+  [#86](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/issues/86)). A timed-out
+  waiter now fails that one command; the next command waits until the original callback
+  arrives. Result handling is also deferred off the `evalScript` stack.
+
 ## [1.2.0] - 2026-08-17
 
 - Fixed `add_marker`, `update_marker`, `delete_marker`, `list_markers`, `lock_track` and

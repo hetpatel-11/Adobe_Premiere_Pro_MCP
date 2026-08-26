@@ -275,6 +275,8 @@
         this.tempDirectory = '';
         this.commandQueue = [];
         this.isProcessing = false;
+        this.evalScriptBusy = false;
+        this.evalScriptQueue = [];
         this.csInterface = new CSInterface();
         this.init();
     }
@@ -389,7 +391,11 @@
                         } catch (eWrite) {}
                     }
                 }
-                self.isProcessing = false;
+                // isProcessing stays true until the native evalScript callback
+                // (see executeExtendScript). Clearing it here on a JS timeout lets
+                // the poller start a second evalScript while the first is still
+                // in flight, which permanently wedges CEP on hosts where the
+                // callback is asynchronous.
             });
         } catch (e) {
             this.log('Error processing command file: ' + e.message, 'error');
@@ -403,10 +409,10 @@
     };
 
     MCPPremiereBridge.prototype.executeCommand = function(command, done) {
-        var self = this;
         this.updateCommandStatus(command.id, 'executing');
         if (!this.validateScript(command.script)) {
             done({ success: false, error: 'Script validation failed' });
+            this.isProcessing = false;
             return;
         }
         this.executeExtendScript(command.script, function(err, result) {
@@ -418,11 +424,44 @@
         }, command.timeoutMs);
     };
 
+    MCPPremiereBridge.prototype.ensureEvalScriptQueue = function() {
+        if (!this.evalScriptQueue) this.evalScriptQueue = [];
+        if (typeof this.evalScriptBusy !== 'boolean') this.evalScriptBusy = false;
+    };
+
+    MCPPremiereBridge.prototype.releaseEvalScript = function() {
+        this.evalScriptBusy = false;
+        this.isProcessing = false;
+        this.pumpEvalScript();
+    };
+
+    MCPPremiereBridge.prototype.pumpEvalScript = function() {
+        this.ensureEvalScriptQueue();
+        if (this.evalScriptBusy) return;
+        if (this.evalScriptQueue.length === 0) return;
+        this.evalScriptBusy = true;
+        var job = this.evalScriptQueue.shift();
+        this.runEvalScriptJob(job);
+    };
+
     MCPPremiereBridge.prototype.executeExtendScript = function(script, callback, requestedTimeoutMs) {
+        this.ensureEvalScriptQueue();
+        this.evalScriptQueue.push({
+            script: script,
+            callback: callback,
+            requestedTimeoutMs: requestedTimeoutMs
+        });
+        this.pumpEvalScript();
+    };
+
+    MCPPremiereBridge.prototype.runEvalScriptJob = function(job) {
         var self = this;
+        var callback = job.callback;
+        var requestedTimeoutMs = job.requestedTimeoutMs;
         try {
             if (!this.csInterface) {
                 callback(new Error('CSInterface not initialized'));
+                this.releaseEvalScript();
                 return;
             }
 
@@ -430,54 +469,72 @@
             var hostEnv = this.normalizeHostEnvironment(this.csInterface.getHostEnvironment());
             if (!hostEnv) {
                 callback(new Error('Could not get host environment. Is Premiere Pro running?'));
+                this.releaseEvalScript();
                 return;
             }
 
+            var script = job.script;
             var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + script;
-            var settled = false;
+            var waiterSettled = false;
+            var nativeSettled = false;
             // Honor a per-command timeout from the server (batch operations request up to 300s).
             // Fall back to 45s when the server does not specify one, and never go below it.
             var timeoutMs = 45000;
             if (typeof requestedTimeoutMs === 'number' && requestedTimeoutMs > timeoutMs) {
                 timeoutMs = requestedTimeoutMs;
             }
+
+            function notifyWaiter(err, result) {
+                if (waiterSettled) return;
+                waiterSettled = true;
+                callback(err, result);
+            }
+
+            function releaseAfterNative() {
+                if (nativeSettled) return;
+                nativeSettled = true;
+                self.releaseEvalScript();
+            }
+
             var timeoutId = setTimeout(function() {
-                if (settled) return;
-                settled = true;
-                callback(new Error(
+                notifyWaiter(new Error(
                     'ExtendScript execution timed out after ' + timeoutMs + 'ms. ' +
                     'Premiere Pro or the CEP scripting host did not return a result.'
                 ));
+                // Do not release the native slot here. A second evalScript while the
+                // first callback is still outstanding is what wedges CEP until Premiere
+                // restarts (GitHub issue 86).
             }, timeoutMs);
 
             this.csInterface.evalScript(fullScript, function(result) {
-                if (settled) return;
-                settled = true;
                 clearTimeout(timeoutId);
-                self.log('EvalScript result: ' + result, 'info');
+                // Defer result handling and lock release off the evalScript stack so
+                // mixed-context Node I/O cannot block PlugPlug's handshake.
+                setTimeout(function() {
+                    if (!waiterSettled) {
+                        self.log('EvalScript result: ' + result, 'info');
 
-                if (result === 'EvalScript error.' || result === 'EvalScript error') {
-                    callback(new Error(
-                        'ExtendScript execution failed via CEP evalScript(). ' +
-                        'This is usually a host-side scripting failure or CEP compatibility issue, not a JSON parsing problem.'
-                    ));
-                    return;
-                }
-
-                if (typeof result === 'string' && result.indexOf('Error') === 0) {
-                    callback(new Error(result));
-                    return;
-                }
-
-                try {
-                    var parsed = JSON.parse(result);
-                    callback(null, parsed);
-                } catch (e) {
-                    callback(null, result);
-                }
+                        if (result === 'EvalScript error.' || result === 'EvalScript error') {
+                            notifyWaiter(new Error(
+                                'ExtendScript execution failed via CEP evalScript(). ' +
+                                'This is usually a host-side scripting failure or CEP compatibility issue, not a JSON parsing problem.'
+                            ));
+                        } else if (typeof result === 'string' && result.indexOf('Error') === 0) {
+                            notifyWaiter(new Error(result));
+                        } else {
+                            try {
+                                notifyWaiter(null, JSON.parse(result));
+                            } catch (e) {
+                                notifyWaiter(null, result);
+                            }
+                        }
+                    }
+                    releaseAfterNative();
+                }, 0);
             });
         } catch (e) {
             callback(e);
+            this.releaseEvalScript();
         }
     };
 
@@ -501,7 +558,7 @@
     MCPPremiereBridge.prototype.startCommandPolling = function() {
         var self = this;
         setInterval(function() {
-            if (!self.isProcessing && self.isConnected) {
+            if (!self.isProcessing && !self.evalScriptBusy && self.isConnected) {
                 var tempPath = self.getTempDirectory();
                 if (tempPath) self.watchDirectory(tempPath);
             }
