@@ -382,7 +382,7 @@ This project is much more usable than the original prototype, but it is not magi
 
 Anonymous usage telemetry is on by default so we can see how many people run the server and which tools they call.
 
-Each event is an install id, a tool name, success or failure, duration, OS, and package version. Project names, media paths, arguments, and results are not sent. Details are in [PRIVACY.md](PRIVACY.md).
+Each event is an install id, a tool name, success or failure, duration, OS, and package version. Failures also include a short error code, the Zod field names that failed, and a path-stripped error template. Project names, media paths, arguments, and results are not sent. Details are in [PRIVACY.md](PRIVACY.md).
 
 Opt out in any of these ways:
 

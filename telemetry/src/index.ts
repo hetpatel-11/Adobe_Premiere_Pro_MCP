@@ -6,6 +6,7 @@ const ERROR_KINDS = new Set([
   'validation',
   'evalscript',
   'connection',
+  'unsupported',
   'unknown',
 ]);
 const UUID_RE =
@@ -16,6 +17,10 @@ const OS_RE = /^(darwin|win32|linux|android|aix|freebsd|openbsd|sunos|other)$/;
 const ARCH_RE =
   /^(arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64|other)$/;
 const NODE_RE = /^v?\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+const ERROR_CODE_RE = /^[a-z][a-z0-9._]{0,63}$/;
+const ERROR_FIELDS_RE = /^[A-Za-z0-9_.,]{1,120}$/;
+const STATUS_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const PATH_LEAK_RE = /\/Users\/|\/home\/|[A-Za-z]:\\|file:\/\//i;
 
 type StoredEvent = {
   distinct_id: string;
@@ -25,6 +30,11 @@ type StoredEvent = {
   success: number | null;
   duration_ms: number | null;
   error_kind: string | null;
+  error_code: string | null;
+  error_fields: string | null;
+  error_detail: string | null;
+  retry: number | null;
+  status: string | null;
   version: string | null;
   os: string | null;
   arch: string | null;
@@ -102,10 +112,42 @@ function parseEvent(payload: unknown): StoredEvent | null {
 
   let errorKind: string | null = null;
   if (record.error_kind !== undefined && record.error_kind !== null) {
-    if (typeof record.error_kind !== 'string' || !ERROR_KINDS.has(record.error_kind)) {
-      return null;
+    if (typeof record.error_kind === 'string' && ERROR_KINDS.has(record.error_kind)) {
+      errorKind = record.error_kind;
+    } else {
+      errorKind = 'unknown';
     }
-    errorKind = record.error_kind;
+  }
+
+  let errorCode: string | null = null;
+  if (typeof record.error_code === 'string' && ERROR_CODE_RE.test(record.error_code)) {
+    errorCode = record.error_code;
+  }
+
+  let errorFields: string | null = null;
+  if (typeof record.error_fields === 'string' && ERROR_FIELDS_RE.test(record.error_fields)) {
+    errorFields = record.error_fields;
+  }
+
+  let errorDetail: string | null = null;
+  if (
+    typeof record.error_detail === 'string' &&
+    record.error_detail.length > 0 &&
+    record.error_detail.length <= 180 &&
+    /^[\x20-\x7E]+$/.test(record.error_detail) &&
+    !PATH_LEAK_RE.test(record.error_detail)
+  ) {
+    errorDetail = record.error_detail;
+  }
+
+  let retry: number | null = null;
+  if (typeof record.retry === 'boolean') {
+    retry = record.retry ? 1 : 0;
+  }
+
+  let status: string | null = null;
+  if (typeof record.status === 'string' && STATUS_RE.test(record.status)) {
+    status = record.status;
   }
 
   const version = optionalString(record.version, VERSION_RE) ?? null;
@@ -121,6 +163,11 @@ function parseEvent(payload: unknown): StoredEvent | null {
     success,
     duration_ms: durationMs,
     error_kind: errorKind,
+    error_code: errorCode,
+    error_fields: errorFields,
+    error_detail: errorDetail,
+    retry,
+    status,
     version,
     os,
     arch,
@@ -167,8 +214,9 @@ export default {
       await env.DB.prepare(
         `INSERT INTO events (
           distinct_id, session_id, event, tool, success, duration_ms,
-          error_kind, version, os, arch, node
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          error_kind, error_code, error_fields, error_detail, retry, status,
+          version, os, arch, node
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
         .bind(
           event.distinct_id,
@@ -178,6 +226,11 @@ export default {
           event.success,
           event.duration_ms,
           event.error_kind,
+          event.error_code,
+          event.error_fields,
+          event.error_detail,
+          event.retry,
+          event.status,
           event.version,
           event.os,
           event.arch,

@@ -2,6 +2,33 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [Unreleased]
+
+## [1.2.3] - 2026-08-27
+
+- `add_transition_to_clip` now accepts a numeric string for `duration` and a
+  case-insensitive `position` (`End`, `in`/`head`, `out`/`tail`). Agents were
+  sending those shapes and getting a Zod rejection in ~12ms without Premiere
+  ever running; two installs retried the same invalid call ~50 times.
+- Tool arguments now accept snake_case aliases (`sequence_id`, `clip_id`,
+  `project_item_id`, …) and numeric strings for times, durations, and indexes,
+  which is what produced the remaining short validation failures.
+- `speed_change` now converts multipliers (`0.5`, `2`) to QE percents (`50`,
+  `200`). It previously passed the multiplier through, which Premiere rejected.
+- `create_sequence_from_clips` accepts a single `projectItemId` or a timeline
+  clip id, and `add_keyframe` matches Motion/Opacity parameter names without
+  regard to case.
+- Connection checks no longer sit for 60 seconds when Premiere is not
+  listening. The panel writes a heartbeat; if it is missing the server fails in
+  about two seconds with "open the MCP Bridge panel and click Start Bridge" and
+  `retry: false`, so agents stop looping. `ping` and `verify_premiere_connection`
+  also cap at 8s even when the panel is alive.
+- `add_text_overlay` without a `.mogrt` fails immediately instead of round-tripping
+  Premiere. Premiere cannot create titles from text alone.
+- Failed tool calls now send a path-stripped error template, Zod field names, and an
+  error code (`zod.invalid_type`, `bridge.panel_absent`, …) to the telemetry worker
+  so the next failure cluster can be diagnosed without guessing from duration.
+
 ## [1.2.2] - 2026-08-26
 
 - The MCP server now sends anonymous usage telemetry by default: install id, tool

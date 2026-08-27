@@ -13,6 +13,16 @@ import { extname, join } from 'path';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 import type { PremiereProTransport } from './types.js';
 
+export const BRIDGE_HEARTBEAT_FILE = 'bridge-heartbeat.json';
+export const BRIDGE_PANEL_ABSENT_MS = 1500;
+export const BRIDGE_HEARTBEAT_STALE_MS = 2500;
+export const HEALTH_CHECK_TIMEOUT_MS = 8000;
+export const BRIDGE_PANEL_NOT_RUNNING =
+  'MCP Bridge is not running. Open Premiere Pro, choose Window > Extensions > MCP Bridge, then click Start Bridge. Do not retry until the panel says Connected.';
+export const BRIDGE_NOT_STARTED =
+  'MCP Bridge panel is open but Start Bridge has not been clicked. Click Start Bridge, wait until it says Connected, then retry once.';
+
+
 const UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS = new Set([
   '.ass',
   '.ssa'
@@ -670,6 +680,18 @@ export class PremiereProBridge implements PremiereProTransport {
     }
   }
 
+  private async readHeartbeat(): Promise<{ t: number; started: boolean } | null> {
+    try {
+      const raw = await fs.readFile(join(this.tempDir, BRIDGE_HEARTBEAT_FILE), 'utf8');
+      const parsed = JSON.parse(raw) as { t?: unknown; started?: unknown };
+      if (typeof parsed?.t !== 'number' || !Number.isFinite(parsed.t)) return null;
+      if (Date.now() - parsed.t > BRIDGE_HEARTBEAT_STALE_MS) return null;
+      return { t: parsed.t, started: parsed.started === true };
+    } catch {
+      return null;
+    }
+  }
+
   private async waitForResponse(responseFile: string, timeout = 60000): Promise<any> {
     const startTime = Date.now();
     // A response that exists but will not parse is a different failure from one that has
@@ -682,29 +704,41 @@ export class PremiereProBridge implements PremiereProTransport {
     let parseAttempts = 0;
 
     while (Date.now() - startTime < timeout) {
-      let raw: string;
+      let raw: string | undefined;
       try {
         raw = await fs.readFile(responseFile, 'utf8');
       } catch {
-        // Not written yet. This is the ordinary case while the host is still working.
-        await new Promise(resolve => setTimeout(resolve, 150));
-        continue;
+        raw = undefined;
       }
 
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed.result !== undefined) return parsed.result;
-        return parsed;
-      } catch (error) {
-        lastParseError = error instanceof Error ? error : new Error(String(error));
-        lastRawResponse = raw;
-        parseAttempts++;
-        // Keep polling to the full timeout rather than giving up after a few
-        // attempts. A response written non-atomically can be unreadable for many
-        // polls, and failing early would turn a slow write into a hard error. The
-        // parse failure is remembered so the diagnosis below can still name it.
-        await new Promise(resolve => setTimeout(resolve, 150));
+      if (raw !== undefined) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed.result !== undefined) return parsed.result;
+          return parsed;
+        } catch (error) {
+          lastParseError = error instanceof Error ? error : new Error(String(error));
+          lastRawResponse = raw;
+          parseAttempts++;
+        }
       }
+
+      // The panel writes bridge-heartbeat.json on every poll. If that file is
+      // missing or stale after a couple of seconds, Premiere is not listening —
+      // waiting the remaining minute just makes the caller sit on a dead socket.
+      // A fresh heartbeat with started:true means the panel has the command and
+      // we should wait out the real timeout (evalScript can be slow).
+      if (Date.now() - startTime >= BRIDGE_PANEL_ABSENT_MS) {
+        const beat = await this.readHeartbeat();
+        if (!beat) {
+          throw new Error(BRIDGE_PANEL_NOT_RUNNING);
+        }
+        if (!beat.started) {
+          throw new Error(BRIDGE_NOT_STARTED);
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 150));
     }
 
     if (lastParseError) {
@@ -717,7 +751,7 @@ export class PremiereProBridge implements PremiereProTransport {
 
     throw new Error(
       'Bridge response timeout. Ensure Premiere Pro is open, MCP Bridge (CEP or UXP) panel is open, ' +
-      'Temp Directory is set to ' + this.tempDir + ', and Start Bridge is clicked.'
+      'Temp Directory is set to ' + this.tempDir + ', and Start Bridge is clicked. Do not retry until the panel says Connected.'
     );
   }
 

@@ -54,3 +54,18 @@ describe('CEP evalScript single-flight', () => {
     expect(handedToEvalScript().endsWith('return 1;')).toBe(true);
   });
 });
+
+describe('CEP panel heartbeat', () => {
+  it('writes bridge-heartbeat.json so the server can fail fast when Premiere is not listening', () => {
+    const { bridge, fs } = loadPanel();
+    bridge.getTempDirectory = () => '/tmp/premiere-mcp-bridge';
+    bridge.isConnected = true;
+
+    bridge.writeHeartbeat();
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge/bridge-heartbeat.json',
+      expect.stringMatching(/"started":true/),
+    );
+  });
+});

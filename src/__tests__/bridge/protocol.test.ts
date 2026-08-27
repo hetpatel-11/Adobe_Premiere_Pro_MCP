@@ -143,7 +143,6 @@ describe('bridge file-queue protocol', () => {
       expect(mockFs.unlink).toHaveBeenCalledWith(commandPath);
       expect(mockFs.unlink).toHaveBeenCalledWith(responsePath);
     });
-
     it('removes both files on the ordinary path too', async () => {
       mockFs.readFile.mockResolvedValue(JSON.stringify({ result: { ok: true } }));
       const bridge = await readyBridge();
@@ -160,6 +159,50 @@ describe('bridge file-queue protocol', () => {
       const bridge = await readyBridge();
 
       await expect(bridge.executeScript('return 1;')).resolves.toEqual({ ok: true });
+    });
+  });
+
+  describe('panel heartbeat', () => {
+    const heartbeatPath = path.join(dir, 'bridge-heartbeat.json');
+
+    it('fails in a couple of seconds when Premiere is not listening, instead of hanging for a minute', async () => {
+      mockFs.readFile.mockRejectedValue(new Error('ENOENT'));
+      const bridge = await readyBridge();
+      const started = Date.now();
+
+      await expect(bridge.executeScript('return 1;', 20000)).rejects.toThrow(
+        /MCP Bridge is not running/,
+      );
+
+      expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    it('tells the caller to click Start Bridge when the panel is open but idle', async () => {
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) {
+          return JSON.stringify({ t: Date.now(), started: false });
+        }
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+
+      await expect(bridge.executeScript('return 1;', 20000)).rejects.toThrow(
+        /click Start Bridge/i,
+      );
+    });
+
+    it('keeps waiting when the panel is alive and working on the command', async () => {
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) {
+          return JSON.stringify({ t: Date.now(), started: true });
+        }
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+      const started = Date.now();
+
+      await expect(bridge.executeScript('return 1;', 700)).rejects.toThrow(/timeout/i);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(700);
     });
   });
 });

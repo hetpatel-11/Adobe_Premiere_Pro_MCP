@@ -30,17 +30,13 @@ export interface LoadedPanel {
   bridge: Record<string, any>;
   /** Whatever the panel last handed to evalScript. */
   handedToEvalScript: () => string;
+  /** The fs stub the panel closed over at load. */
+  fs: { writeFileSync: jest.Mock };
 }
 
 /** Minimal stand-ins for what the panel pulls in at load time. */
-function nodeStub(name: string): unknown {
-  if (name === 'fs') {
-    return {
-      existsSync: () => false, mkdirSync: () => {}, readdirSync: () => [],
-      readFileSync: () => '', writeFileSync: () => {}, unlinkSync: () => {},
-      renameSync: () => {}, statSync: () => ({ isDirectory: () => false }),
-    };
-  }
+function nodeStub(name: string, fsStub: Record<string, unknown>): unknown {
+  if (name === 'fs') return fsStub;
   if (name === 'path') {
     return {
       join: (...parts: string[]) => parts.join('/'),
@@ -55,6 +51,11 @@ function nodeStub(name: string): unknown {
 export function loadPanel(): LoadedPanel {
   const source = realFs.readFileSync(PANEL_PATH, 'utf8');
   let handed = '';
+  const fsStub = {
+    existsSync: () => false, mkdirSync: () => {}, readdirSync: () => [],
+    readFileSync: () => '', writeFileSync: jest.fn(), unlinkSync: () => {},
+    renameSync: () => {}, statSync: () => ({ isDirectory: () => false }),
+  };
 
   const sandbox: Record<string, unknown> = {
     window: {} as Record<string, unknown>,
@@ -65,7 +66,7 @@ export function loadPanel(): LoadedPanel {
     setInterval: () => 0,
     clearInterval: () => {},
     console: { log() {}, warn() {}, error() {} },
-    require: nodeStub,
+    require: (name: string) => nodeStub(name, fsStub),
     CSInterface: function () {
       return {
         getHostEnvironment: () => ({ appName: 'PPRO', appVersion: '26.0.0' }),
@@ -86,5 +87,5 @@ export function loadPanel(): LoadedPanel {
   bridge.normalizeHostEnvironment = (value: unknown) => value;
   bridge.log = () => {};
 
-  return { bridge, handedToEvalScript: () => handed };
+  return { bridge, handedToEvalScript: () => handed, fs: fsStub as LoadedPanel['fs'] };
 }

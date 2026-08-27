@@ -214,6 +214,17 @@ class MCPPremiereBridge {
         return true;
     }
 
+    async writeHeartbeat() {
+        if (!this.tempFolderToken) return;
+        try {
+            const heartbeat = await this.tempFolderToken.createFile('bridge-heartbeat.json', { overwrite: true });
+            await heartbeat.write(JSON.stringify({
+                t: Date.now(),
+                started: !!this.isConnected
+            }));
+        } catch (error) {}
+    }
+
     startCommandPolling() {
         // Poll for new commands every 500ms
         if (this.pollingInterval) {
@@ -221,7 +232,8 @@ class MCPPremiereBridge {
         }
 
         this.pollingInterval = setInterval(async () => {
-            if (!this.isProcessing && this.tempFolderToken) {
+            await this.writeHeartbeat();
+            if (!this.isProcessing && this.isConnected && this.tempFolderToken) {
                 await this.checkForCommands();
             }
         }, 500);
@@ -328,6 +340,9 @@ class MCPPremiereBridge {
 
             this.saveConfig();
             this.log(`Temp folder selected: ${this.tempDirectory}`, 'info');
+            // Heartbeat before Start Bridge so the server can say "click Start"
+            // instead of hanging a minute, then guessing the panel is missing.
+            this.startCommandPolling();
         } catch (error) {
             this.log(`Error selecting folder: ${error.message}`, 'error');
         }

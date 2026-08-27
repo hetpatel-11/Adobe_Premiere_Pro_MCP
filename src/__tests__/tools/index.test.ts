@@ -161,6 +161,9 @@ describe('PremiereProTools', () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toContain('Invalid arguments');
+        expect(result.errorCode).toMatch(/^zod\./);
+        expect(result.errorFields).toMatch(/color/);
+        expect(result.status).toBe('validation');
         expect(mockBridge.executeScript).not.toHaveBeenCalled();
       });
 
@@ -357,8 +360,29 @@ describe('PremiereProTools', () => {
 
         expect(mockBridge.executeScript.mock.calls[0][0]).toContain('survives');
       });
-    });
 
+      it('accepts snake_case keys and numeric strings that agents actually send', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true, tracks: [] });
+
+        const result = await tools.executeTool('list_sequence_tracks', { sequence_id: 'seq-1' });
+
+        expect(result.success).not.toBe(false);
+        expect(mockBridge.executeScript).toHaveBeenCalled();
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('seq-1');
+      });
+
+      it('coerces a string time so razor_timeline_at_time reaches Premiere', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+
+        const result = await tools.executeTool('razor_timeline_at_time', {
+          sequenceId: 'seq-1',
+          time: '12.5',
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockBridge.executeScript).toHaveBeenCalled();
+      });
+    });
     describe('expanded tools reject an unresolvable sequence id', () => {
       // These declare inputSchema: z.record(z.any()), so schema-layer rejection
       // is unavailable — the guard has to live in the generated script.
@@ -596,6 +620,18 @@ describe('PremiereProTools', () => {
       expect(result.error).toContain('Tool execution failed');
     });
 
+    it('tells the caller not to sit and retry when the bridge is down', async () => {
+      mockBridge.executeScript.mockRejectedValue(
+        new Error('MCP Bridge is not running. Open Premiere Pro, choose Window > Extensions > MCP Bridge, then click Start Bridge.'),
+      );
+
+      const result = await tools.executeTool('list_project_items', {});
+
+      expect(result.success).toBe(false);
+      expect(result.retry).toBe(false);
+      expect(result.nextStep).toMatch(/Start Bridge/);
+    });
+
     it('executes expanded tools through our bridge dispatcher', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
@@ -606,6 +642,7 @@ describe('PremiereProTools', () => {
       const result = await tools.executeTool('ping', {});
 
       expect(mockBridge.executeScript).toHaveBeenCalled();
+      expect(mockBridge.executeScript.mock.calls[0][1]).toBe(8000);
       expect(result.success).toBe(true);
       expect(result.data.connected).toBe(true);
     });
@@ -622,6 +659,7 @@ describe('PremiereProTools', () => {
       const result = await tools.executeTool('verify_premiere_connection', {});
 
       expect(result.success).toBe(true);
+      expect(mockBridge.executeScript.mock.calls[0][1]).toBe(8000);
       const script = mockBridge.executeScript.mock.calls[0][0] as string;
       expect(script).toContain("status: 'connected'");
       expect(script).toContain('readOnly: true');
@@ -658,6 +696,16 @@ describe('PremiereProTools', () => {
       const placeholderReadScript = mockBridge.executeScript.mock.calls[1][0];
       expect(placeholderReadScript).toContain('not implemented with a verifiable Premiere DOM readback yet');
       expect(placeholderReadScript).not.toContain('Read operation completed');
+    });
+
+    it('creates a sequence from a single projectItemId or a timeline clip id', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await executeExpandedTool(mockBridge, 'create_sequence_from_clips', { projectItemId: 'item-1', name: 'Cut' });
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('if (!clipItemIds.length && args.projectItemId) clipItemIds = [args.projectItemId]');
+      expect(script).toContain('asTimelineClip.clip.projectItem');
+      expect(script).toContain('findParentItem(clipItems[0])');
     });
   });
 
@@ -937,6 +985,22 @@ describe('PremiereProTools', () => {
   });
 
   describe('script-backed tools', () => {
+    it('does not send add_text_overlay to Premiere when no mogrt was given', async () => {
+      const result = await tools.executeTool('add_text_overlay', {
+        text: 'Hello',
+        sequenceId: 'seq-1',
+        trackIndex: 0,
+        startTime: 0,
+        duration: 3,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.retry).toBe(false);
+      expect(result.error).toMatch(/mogrt/i);
+      expect(result.nextStep).toMatch(/mogrtPath|\.mogrt/i);
+      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
     it('fails add_text_overlay when every requested text write fails', async () => {
       mockBridge.executeScript.mockResolvedValue({
         success: true,
@@ -1583,6 +1647,99 @@ describe('PremiereProTools', () => {
 
       const tool = tools.getAvailableTools().find((candidate) => candidate.name === 'add_transition_to_clip');
       expect(tool?.description).toContain('do not retry automatically');
+    });
+
+    describe('add_transition_to_clip argument normalisation', () => {
+      // Telemetry on this tool was almost entirely schema validation (~12ms),
+      // not Premiere. Agents send a string duration and a capitalised or
+      // synonymous position; the enum and number schemas rejected those
+      // before the bridge was touched, and the same caller then retried.
+      const BASE = {
+        clipId: 'clip-1',
+        transitionName: 'Cross Dissolve',
+      };
+
+      it('reaches Premiere when duration is a numeric string', async () => {
+        mockBridge.executeScript.mockResolvedValue({ success: true, status: 'applied_verified', verified: true });
+
+        const result = await tools.executeTool('add_transition_to_clip', {
+          ...BASE,
+          position: 'start',
+          duration: '0.5',
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockBridge.executeScript).toHaveBeenCalled();
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain('Math.round(0.5 * fps)');
+      });
+
+      it.each([
+        ['End', true],
+        ['START', false],
+        [' in ', false],
+        ['out', true],
+        ['head', false],
+        ['tail', true],
+      ])('maps position %j to atEnd=%s', async (position, atEnd) => {
+        mockBridge.executeScript.mockResolvedValue({ success: true, status: 'applied_verified', verified: true });
+
+        const result = await tools.executeTool('add_transition_to_clip', {
+          ...BASE,
+          position,
+          duration: 0.5,
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockBridge.executeScript.mock.calls[0][0]).toContain(
+          `qeClip.addTransition(transition, ${atEnd}, String(frames)`,
+        );
+      });
+
+      it('still rejects a position that is not start or end', async () => {
+        const result = await tools.executeTool('add_transition_to_clip', {
+          ...BASE,
+          position: 'middle',
+          duration: 0.5,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Invalid arguments');
+        expect(mockBridge.executeScript).not.toHaveBeenCalled();
+      });
+    });
+
+    it('passes speed_change multipliers to QE as percents', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('speed_change', { clipId: 'clip-1', speed: 0.5, maintainAudio: true });
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setSpeed(50, true)');
+
+      jest.clearAllMocks();
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('speed_change', { clipId: 'clip-1', speed: 2 });
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setSpeed(200,');
+
+      jest.clearAllMocks();
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('speed_change', { clipId: 'clip-1', speed: 150 });
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setSpeed(150,');
+    });
+
+    it('matches add_keyframe component and parameter names without regard to case', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('add_keyframe', {
+        clipId: 'clip-1',
+        componentName: 'motion',
+        paramName: 'scale',
+        time: 1,
+        value: 120,
+      });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('replace(/[\\s_-]+/g, "")');
+      expect(script).toContain('"motion"');
+      expect(script).toContain('"scale"');
     });
 
     it('fails batch_add_transitions when no transition is verifiably added', async () => {

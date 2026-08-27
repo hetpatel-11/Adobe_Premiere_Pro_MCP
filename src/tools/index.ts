@@ -14,6 +14,18 @@ import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
 import { executeExpandedTool, getExpandedTools, isExpandedTool } from './expanded.js';
+import { canonicalizeMcpArgs } from '../utils/mcp-args.js';
+
+const HEALTH_CHECK_TIMEOUT_MS = 8000;
+
+function isBridgeUnavailable(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('mcp bridge is not running') ||
+    normalized.includes('start bridge') ||
+    normalized.includes('bridge response timeout')
+  );
+}
 
 export interface MCPTool {
   name: string;
@@ -293,6 +305,41 @@ const MarkerColorSchema = z.union([
 const MARKER_COLOR_DESCRIPTION =
   `Marker colour — a name (${MARKER_COLOR_NAMES.join(', ')}) or an index 0-7. Defaults to green.`;
 
+/**
+ * MCP clients and models often stringify numbers. Accept a finite numeric
+ * string here so the call reaches Premiere instead of dying as validation.
+ * Non-numeric strings stay as-is and still fail the number schema.
+ */
+const ClipTransitionDurationSchema = z.preprocess(
+  (value) => {
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value.trim());
+      return Number.isFinite(parsed) ? parsed : value;
+    }
+    return value;
+  },
+  z.number(),
+);
+
+const CLIP_TRANSITION_POSITIONS = ['start', 'end'] as const;
+
+function canonicalizeClipTransitionPosition(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim().toLowerCase();
+  if (['start', 'in', 'head', 'begin', 'beginning', 'incoming'].includes(normalized)) {
+    return 'start';
+  }
+  if (['end', 'out', 'tail', 'outgoing'].includes(normalized)) {
+    return 'end';
+  }
+  return normalized;
+}
+
+const ClipTransitionPositionSchema = z.preprocess(
+  canonicalizeClipTransitionPosition,
+  z.enum(CLIP_TRANSITION_POSITIONS),
+);
+
 export class PremiereProTools {
   private bridge: PremiereProTransport;
   private logger: Logger;
@@ -332,7 +379,7 @@ export class PremiereProTools {
       },
       {
         name: 'verify_premiere_connection',
-        description: 'Read-only readiness check for the live CEP bridge and Premiere Pro host. Run this before an editing workflow to confirm the bridge responds and report the Premiere version, project, and active sequence without changing the project.',
+        description: 'Read-only readiness check for the live CEP bridge and Premiere Pro host. Fails in a couple of seconds if the MCP Bridge panel is not running (does not hang for a minute). Run this before an editing workflow. If it fails, start the panel rather than retrying.',
         inputSchema: z.object({})
       },
       {
@@ -618,8 +665,8 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip'),
           transitionName: z.string().describe('The name of the transition'),
-          position: z.enum(['start', 'end']).describe('Whether to add the transition at the start or end of the clip'),
-          duration: z.number().describe('The duration of the transition in seconds')
+          position: ClipTransitionPositionSchema.describe('Whether to add the transition at the start or end of the clip. Case-insensitive; in/head/beginning and out/tail are accepted.'),
+          duration: ClipTransitionDurationSchema.describe('The duration of the transition in seconds. A numeric string is accepted.')
         })
       },
 
@@ -702,7 +749,7 @@ export class PremiereProTools {
       // Text and Graphics
       {
         name: 'add_text_overlay',
-        description: 'Adds a text layer (title) over the video timeline. Requires a MOGRT (.mogrt) template file path. Supports up to 4 text fields (text, text2, text3, text4) — each populates the Nth "AE.ADBE Text" component in the MOGRT (e.g., for Basic Lower Third: text=main title, text2=subtitle).',
+        description: 'Adds a text overlay from a Motion Graphics Template. Premiere cannot create titles from text alone — mogrtPath is required (a .mogrt file). Without it this tool fails immediately and must not be retried. Supports up to 4 text fields (text, text2, text3, text4) on the Nth AE.ADBE Text component.',
         inputSchema: z.object({
           text: z.string().describe('Text for the first AE text component in the MOGRT (typically the main title)'),
           text2: z.string().optional().describe('Text for the second AE text component (e.g., subtitle of a lower third)'),
@@ -1426,6 +1473,9 @@ export class PremiereProTools {
     if (nulPath) {
       return {
         success: false,
+        status: 'validation',
+        retry: false,
+        errorCode: 'nul_argument',
         error: `Argument '${nulPath}' contains a NUL character. Premiere silently truncates strings at the first NUL rather than rejecting them, so this would have stored a shortened value and reported success. Remove the NUL and retry.`,
       };
     }
@@ -1438,6 +1488,10 @@ export class PremiereProTools {
         availableTools: this.getAvailableTools().map(t => t.name)
       };
     }
+
+    // Agents send snake_case keys and stringify numbers. Canonicalize those
+    // before Zod so the call reaches Premiere instead of dying as validation.
+    args = canonicalizeMcpArgs(args);
 
     // Validate input arguments, and use what validation produced.
     //
@@ -1457,8 +1511,26 @@ export class PremiereProTools {
         args = { ...args, ...(validated as Record<string, unknown>) };
       }
     } catch (error) {
+      const issues =
+        error && typeof error === 'object' && Array.isArray((error as { issues?: unknown }).issues)
+          ? (error as { issues: Array<{ path?: unknown; code?: unknown }> }).issues
+          : [];
+      const errorFields = issues
+        .map((issue) =>
+          Array.isArray(issue.path)
+            ? issue.path.filter((part) => typeof part === 'string' || typeof part === 'number').join('.')
+            : '',
+        )
+        .filter((field) => /^[A-Za-z0-9_.]+$/.test(field))
+        .slice(0, 8)
+        .join(',');
+      const firstCode = typeof issues[0]?.code === 'string' ? issues[0].code : undefined;
       return {
         success: false,
+        status: 'validation',
+        retry: false,
+        errorCode: firstCode && /^[a-z_]+$/.test(firstCode) ? `zod.${firstCode}` : 'zod.invalid',
+        errorFields: errorFields || undefined,
         error: `Invalid arguments for tool '${name}': ${error}`,
         expectedSchema: tool.inputSchema.description
       };
@@ -1809,9 +1881,21 @@ export class PremiereProTools {
       }
     } catch (error) {
       this.logger.error(`Error executing tool ${name}:`, error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (isBridgeUnavailable(message)) {
+        return {
+          success: false,
+          error: message,
+          tool: name,
+          retry: false,
+          status: 'bridge_unavailable',
+          nextStep:
+            'Open Premiere Pro → Window > Extensions > MCP Bridge → click Start Bridge. Do not retry until the panel says Connected.',
+        };
+      }
       return {
         success: false,
-        error: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`,
+        error: `Tool execution failed: ${message}`,
         tool: name,
         args: args
       };
@@ -2031,7 +2115,7 @@ ${this.buildSequenceResolver(sequenceId)}
       }
     `;
 
-    return await this.bridge.executeScript(script);
+    return await this.bridge.executeScript(script, HEALTH_CHECK_TIMEOUT_MS);
   }
 
   private async getCapabilities(checkConnection = false): Promise<any> {
@@ -5033,6 +5117,18 @@ ${this.buildSequenceResolver(sequenceId)}
 
   // Text and Graphics Implementation
   private async addTextOverlay(args: any): Promise<any> {
+    if (!args.mogrtPath) {
+      return {
+        success: false,
+        retry: false,
+        status: 'unsupported',
+        errorCode: 'unsupported.mogrt',
+        error:
+          'add_text_overlay cannot create titles from text alone. Premiere has no title API; it needs a Motion Graphics Template (.mogrt).',
+        nextStep:
+          'Pass mogrtPath as an absolute path to a .mogrt file (Essential Graphics > Browse, or import_mogrt). Do not retry this call without a template.',
+      };
+    }
     if (args.mogrtPath) {
       // FIX vs upstream: upstream silently ignored args.text; the MOGRT was imported but
       // its text properties stayed at default placeholders ("Su nombre aquí", etc.)
@@ -5410,21 +5506,16 @@ ${this.buildSequenceResolver(sequenceId)}
       return evaluatedResult;
     }
 
-    // Fallback: try legacy title approach
-    const script = `
-      try {
-        var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
-        return JSON.stringify({
-          success: false,
-          error: "Text overlay requires a MOGRT file path. Use the mogrtPath parameter with a .mogrt template file, or use import_mogrt tool.",
-          note: "Legacy titles (app.project.createNewTitle) are not supported in current Premiere Pro ExtendScript API."
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-    return await this.bridge.executeScript(script);
+    return {
+      success: false,
+      retry: false,
+      status: 'unsupported',
+      errorCode: 'unsupported.mogrt',
+      error:
+        'add_text_overlay cannot create titles from text alone. Premiere has no title API; it needs a Motion Graphics Template (.mogrt).',
+      nextStep:
+        'Pass mogrtPath as an absolute path to a .mogrt file (Essential Graphics > Browse, or import_mogrt). Do not retry this call without a template.',
+    };
   }
 
   // Color Correction Implementation
@@ -6014,6 +6105,9 @@ ${this.buildSequenceResolver(sequenceId)}
   }
 
   private async speedChange(clipId: string, speed: number, maintainAudio = true): Promise<any> {
+    // QE setSpeed takes a percent (100 = 1x). The schema documents a multiplier
+    // (0.5 = half speed); values already > 10 are treated as percents.
+    const speedPercent = speed <= 10 ? speed * 100 : speed;
     const script = `
       try {
         app.enableQE();
@@ -6028,15 +6122,15 @@ ${this.buildSequenceResolver(sequenceId)}
         if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
-        try { qeClip.setSpeed(${speed}, ${maintainAudio}); } catch(e2) {
+        try { qeClip.setSpeed(${speedPercent}, ${maintainAudio}); } catch(e2) {
           var currentPercent = Number(oldSpeed);
           if (currentPercent <= 10) currentPercent = currentPercent * 100;
-          if (Math.abs(currentPercent - Number(${speed})) < 0.01) {
-            return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speed}, changed: false, method: "already at requested speed" });
+          if (Math.abs(currentPercent - ${speedPercent}) < 0.01) {
+            return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speedPercent}, changed: false, method: "already at requested speed" });
           }
           return JSON.stringify({ success: false, error: "Speed change via QE DOM not available: " + e2.toString() });
         }
-        return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speed} });
+        return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speedPercent} });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
@@ -7309,18 +7403,20 @@ ${this.buildSequenceResolver(sequenceId)}
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
+        function namesMatch(a, b) {
+          return String(a || "").toLowerCase().replace(/[\\s_-]+/g, "") === String(b || "").toLowerCase().replace(/[\\s_-]+/g, "");
+        }
         var param = null;
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
-          if (comp.displayName === ${JSON.stringify(componentName)}) {
-            for (var j = 0; j < comp.properties.numItems; j++) {
-              if (comp.properties[j].displayName === ${JSON.stringify(paramName)}) {
-                param = comp.properties[j];
-                break;
-              }
+          if (!namesMatch(comp.displayName, ${JSON.stringify(componentName)})) continue;
+          for (var j = 0; j < comp.properties.numItems; j++) {
+            if (namesMatch(comp.properties[j].displayName, ${JSON.stringify(paramName)})) {
+              param = comp.properties[j];
+              break;
             }
-            if (param) break;
           }
+          if (param) break;
         }
         if (!param) return JSON.stringify({ success: false, error: "Parameter " + ${JSON.stringify(paramName)} + " not found in component " + ${JSON.stringify(componentName)} });
         param.setTimeVarying(true);
@@ -7347,18 +7443,20 @@ ${this.buildSequenceResolver(sequenceId)}
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
+        function namesMatch(a, b) {
+          return String(a || "").toLowerCase().replace(/[\\s_-]+/g, "") === String(b || "").toLowerCase().replace(/[\\s_-]+/g, "");
+        }
         var param = null;
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
-          if (comp.displayName === ${JSON.stringify(componentName)}) {
-            for (var j = 0; j < comp.properties.numItems; j++) {
-              if (comp.properties[j].displayName === ${JSON.stringify(paramName)}) {
-                param = comp.properties[j];
-                break;
-              }
+          if (!namesMatch(comp.displayName, ${JSON.stringify(componentName)})) continue;
+          for (var j = 0; j < comp.properties.numItems; j++) {
+            if (namesMatch(comp.properties[j].displayName, ${JSON.stringify(paramName)})) {
+              param = comp.properties[j];
+              break;
             }
-            if (param) break;
           }
+          if (param) break;
         }
         if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
         param.removeKey(${time});
@@ -7380,18 +7478,20 @@ ${this.buildSequenceResolver(sequenceId)}
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
+        function namesMatch(a, b) {
+          return String(a || "").toLowerCase().replace(/[\\s_-]+/g, "") === String(b || "").toLowerCase().replace(/[\\s_-]+/g, "");
+        }
         var param = null;
         for (var i = 0; i < clip.components.numItems; i++) {
           var comp = clip.components[i];
-          if (comp.displayName === ${JSON.stringify(componentName)}) {
-            for (var j = 0; j < comp.properties.numItems; j++) {
-              if (comp.properties[j].displayName === ${JSON.stringify(paramName)}) {
-                param = comp.properties[j];
-                break;
-              }
+          if (!namesMatch(comp.displayName, ${JSON.stringify(componentName)})) continue;
+          for (var j = 0; j < comp.properties.numItems; j++) {
+            if (namesMatch(comp.properties[j].displayName, ${JSON.stringify(paramName)})) {
+              param = comp.properties[j];
+              break;
             }
-            if (param) break;
           }
+          if (param) break;
         }
         if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
         var isTimeVarying = param.isTimeVarying();

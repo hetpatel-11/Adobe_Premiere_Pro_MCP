@@ -9,6 +9,8 @@ import {
   Telemetry,
   classifyToolError,
   isTelemetryEnabled,
+  sanitizeErrorDetail,
+  summarizeToolFailure,
 } from '../../utils/telemetry.js';
 
 const ALLOWED_PAYLOAD_KEYS = new Set([
@@ -23,6 +25,11 @@ const ALLOWED_PAYLOAD_KEYS = new Set([
   'success',
   'duration_ms',
   'error_kind',
+  'error_code',
+  'error_fields',
+  'error_detail',
+  'retry',
+  'status',
 ]);
 
 function tempHome(): string {
@@ -72,9 +79,69 @@ describe('classifyToolError', () => {
     expect(classifyToolError('ExtendScript execution timed out after 45000ms')).toBe('timeout');
     expect(classifyToolError("Invalid arguments for tool 'add_marker'")).toBe('validation');
     expect(classifyToolError('Bridge is not connected')).toBe('connection');
+    expect(classifyToolError('MCP Bridge is not running. Click Start Bridge.')).toBe('connection');
     expect(classifyToolError("Tool 'nope' not found")).toBe('not_found');
     expect(classifyToolError('evalScript failed')).toBe('evalscript');
+    expect(classifyToolError('add_text_overlay cannot create titles from text alone. needs a .mogrt')).toBe(
+      'unsupported',
+    );
     expect(classifyToolError('/Users/het/secret.prproj could not be opened')).toBe('unknown');
+  });
+});
+
+describe('sanitizeErrorDetail', () => {
+  it('strips filesystem paths and keeps the diagnostic shape', () => {
+    expect(
+      sanitizeErrorDetail(
+        'Bridge response timeout. Temp Directory is set to /Users/het/secret, and Start Bridge is clicked.',
+      ),
+    ).toBe(
+      'Bridge response timeout. Temp Directory is set to <path>, and Start Bridge is clicked.',
+    );
+    expect(sanitizeErrorDetail('Could not open C:\\Users\\het\\cut.prproj')).toBe(
+      'Could not open <path>',
+    );
+    expect(sanitizeErrorDetail('import failed for "/tmp/nudge.mp4"')).toMatch(/<file>|<path>/);
+    expect(JSON.stringify(sanitizeErrorDetail('/Users/het/secret.prproj missing'))).not.toContain(
+      '/Users',
+    );
+  });
+});
+
+describe('summarizeToolFailure', () => {
+  it('keeps zod field names and a path-stripped template, not the raw path', () => {
+    const summary = summarizeToolFailure({
+      success: false,
+      status: 'validation',
+      retry: false,
+      errorCode: 'zod.invalid_type',
+      errorFields: 'duration,position',
+      error:
+        'Invalid arguments for tool \'add_transition_to_clip\': [{"code":"invalid_type","path":["duration"],"expected":"number","received":"string"}]',
+    });
+    expect(summary.errorKind).toBe('validation');
+    expect(summary.errorCode).toBe('zod.invalid_type');
+    expect(summary.errorFields).toBe('duration,position');
+    expect(summary.retry).toBe(false);
+    expect(summary.errorDetail).toContain('duration');
+    expect(summary.errorDetail).toContain('invalid_type');
+  });
+
+  it('codes a missing panel separately from a host not-found', () => {
+    expect(
+      summarizeToolFailure({
+        success: false,
+        status: 'bridge_unavailable',
+        retry: false,
+        error: 'MCP Bridge is not running. Open Premiere Pro, then click Start Bridge.',
+      }).errorCode,
+    ).toBe('bridge.panel_absent');
+    expect(
+      summarizeToolFailure({
+        success: false,
+        error: 'Clip not found',
+      }).errorCode,
+    ).toBe('host.not_found');
   });
 });
 
@@ -131,7 +198,7 @@ describe('Telemetry', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('sends only allowlisted fields and never includes args, paths, or error text', async () => {
+  it('sends only allowlisted fields and never includes args, paths, or unsanitized error text', async () => {
     const telemetry = makeTelemetry();
     telemetry.trackServerStarted();
     telemetry.trackToolCall({
@@ -139,6 +206,12 @@ describe('Telemetry', () => {
       success: false,
       durationMs: 41,
       errorKind: 'timeout',
+      errorCode: 'bridge.timeout',
+      errorFields: 'mediaPath',
+      errorDetail:
+        'Bridge response timeout. Temp Directory is set to /Users/het/secret, and Start Bridge is clicked.',
+      retry: false,
+      status: 'bridge_unavailable',
     });
     await telemetry.flush();
 
@@ -152,6 +225,7 @@ describe('Telemetry', () => {
       expect(payload).not.toHaveProperty('path');
       expect(JSON.stringify(payload)).not.toContain('/Users');
       expect(JSON.stringify(payload)).not.toContain('.prproj');
+      expect(JSON.stringify(payload)).not.toContain('secret');
     }
 
     expect(captured[0]).toMatchObject({
@@ -168,6 +242,12 @@ describe('Telemetry', () => {
       success: false,
       duration_ms: 41,
       error_kind: 'timeout',
+      error_code: 'bridge.timeout',
+      error_fields: 'mediaPath',
+      error_detail:
+        'Bridge response timeout. Temp Directory is set to <path>, and Start Bridge is clicked.',
+      retry: false,
+      status: 'bridge_unavailable',
     });
   });
 

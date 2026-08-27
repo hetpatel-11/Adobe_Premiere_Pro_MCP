@@ -4,7 +4,9 @@ Cloudflare Worker + D1 store for anonymous MCP usage events. The published MCP s
 
 `https://adobe-premiere-mcp-telemetry.hetkp8044.workers.dev/v1/event`
 
-Payloads are allowlisted. Tool arguments, results, paths, and error text are dropped.
+Payloads are allowlisted. Tool arguments, results, and filesystem paths are dropped.
+Failed tool calls include a short `error_code`, Zod `error_fields`, `retry`, `status`,
+and a path-stripped `error_detail` template.
 
 ## Deploy
 
@@ -23,4 +25,6 @@ npx wrangler d1 execute premiere-mcp-telemetry --remote --command="SELECT COUNT(
 npx wrangler d1 execute premiere-mcp-telemetry --remote --command="SELECT date(received_at) AS day, COUNT(DISTINCT distinct_id) AS installs, COUNT(*) AS events FROM events GROUP BY 1 ORDER BY 1 DESC LIMIT 30"
 
 npx wrangler d1 execute premiere-mcp-telemetry --remote --command="SELECT tool, COUNT(*) AS calls, SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failures, ROUND(AVG(duration_ms), 1) AS avg_ms FROM events WHERE event = 'tool_called' GROUP BY tool ORDER BY calls DESC"
+
+npx wrangler d1 execute premiere-mcp-telemetry --remote --command="SELECT tool, error_kind, error_code, error_fields, error_detail, COUNT(*) AS n, COUNT(DISTINCT distinct_id) AS installs FROM events WHERE event = 'tool_called' AND success = 0 GROUP BY 1, 2, 3, 4, 5 ORDER BY n DESC LIMIT 40"
 ```

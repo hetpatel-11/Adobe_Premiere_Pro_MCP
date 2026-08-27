@@ -10,8 +10,8 @@ import { PremiereProBridge } from './bridge/index.js';
 import { Logger } from './utils/logger.js';
 import { PACKAGE_VERSION } from './version.js';
 import {
-  classifyToolError,
   getTelemetry,
+  summarizeToolFailure,
   type Telemetry,
   type TrackToolCallInput,
 } from './utils/telemetry.js';
@@ -190,11 +190,13 @@ class MCPPremiereProServer {
       durationMs
     };
     if (!success) {
-      const error =
-        result && typeof result === 'object'
-          ? (result as { error?: unknown }).error
-          : undefined;
-      input.errorKind = classifyToolError(typeof error === 'string' ? error : undefined);
+      const summary = summarizeToolFailure(result);
+      input.errorKind = summary.errorKind;
+      if (summary.errorCode) input.errorCode = summary.errorCode;
+      if (summary.errorFields) input.errorFields = summary.errorFields;
+      if (summary.errorDetail) input.errorDetail = summary.errorDetail;
+      if (summary.retry !== undefined) input.retry = summary.retry;
+      if (summary.status) input.status = summary.status;
     }
     this.telemetry.trackToolCall(input);
   }

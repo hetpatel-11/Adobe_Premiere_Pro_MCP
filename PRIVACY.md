@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: August 26, 2026
+Last updated: August 27, 2026
 
 Adobe Premiere Pro MCP Bridge is local software. It does not operate a hosted editing service and does not send Premiere project data, media, MCP request arguments, or tool results to us.
 
@@ -20,9 +20,10 @@ Each event includes only:
 - a per-process session id
 - the event type (`server_started` or `tool_called`)
 - the tool name, whether it succeeded, duration in milliseconds, and a coarse error class such as `timeout` or `not_found`
+- on failures: a short error code (`zod.invalid_type`, `bridge.panel_absent`), the Zod field names that failed (`duration,position`), whether the tool said not to retry, a status token, and a path-stripped copy of the error template (`/Users/...` becomes `<path>`)
 - package version, operating system, CPU architecture, and Node.js version
 
-It does **not** include project names, sequence names, media paths, file contents, tool arguments, tool results, error message text, or usernames. Cloudflare sees the connecting IP the way it does for any HTTPS request; we do not store IP addresses in the telemetry database.
+It does **not** include project names, sequence names, media paths, file contents, tool arguments, tool results, or usernames. Error text is stored only after filesystem paths and filenames are stripped; if a path still remains, that field is dropped. Cloudflare sees the connecting IP the way it does for any HTTPS request; we do not store IP addresses in the telemetry database.
 
 Events are sent to a Cloudflare Worker operated for this project and stored in Cloudflare D1.
 

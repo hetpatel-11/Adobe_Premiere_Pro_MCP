@@ -13,6 +13,7 @@ export type TelemetryErrorKind =
   | 'validation'
   | 'evalscript'
   | 'connection'
+  | 'unsupported'
   | 'unknown';
 
 export type TelemetryEnv = NodeJS.Dict<string | undefined>;
@@ -22,6 +23,20 @@ export type TrackToolCallInput = {
   success: boolean;
   durationMs: number;
   errorKind?: TelemetryErrorKind;
+  errorCode?: string;
+  errorFields?: string;
+  errorDetail?: string;
+  retry?: boolean;
+  status?: string;
+};
+
+export type ToolFailureSummary = {
+  errorKind: TelemetryErrorKind;
+  errorCode?: string;
+  errorFields?: string;
+  errorDetail?: string;
+  retry?: boolean;
+  status?: string;
 };
 
 type TelemetryPayload = {
@@ -36,6 +51,11 @@ type TelemetryPayload = {
   success?: boolean;
   duration_ms?: number;
   error_kind?: TelemetryErrorKind;
+  error_code?: string;
+  error_fields?: string;
+  error_detail?: string;
+  retry?: boolean;
+  status?: string;
 };
 
 export type TelemetryDependencies = {
@@ -91,7 +111,18 @@ const PAYLOAD_KEYS = new Set([
   'success',
   'duration_ms',
   'error_kind',
+  'error_code',
+  'error_fields',
+  'error_detail',
+  'retry',
+  'status',
 ]);
+
+const ERROR_DETAIL_MAX = 180;
+const ERROR_CODE_RE = /^[a-z][a-z0-9._]{0,63}$/;
+const STATUS_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const FIELD_RE = /^[A-Za-z0-9_.]{1,40}$/;
+const PATH_LEAK_RE = /\/Users\/|\/home\/|[A-Za-z]:\\|file:\/\//i;
 
 function envFlag(env: TelemetryEnv, name: string): boolean | undefined {
   const raw = env[name];
@@ -124,6 +155,148 @@ function sanitizeDurationMs(value: number): number {
   return Math.min(Math.round(value), 600000);
 }
 
+export function sanitizeErrorCode(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase().replace(/[^a-z0-9._]+/g, '.').replace(/^\.+|\.+$/g, '');
+  return ERROR_CODE_RE.test(normalized) ? normalized : undefined;
+}
+
+export function sanitizeErrorFields(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const fields = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => FIELD_RE.test(part));
+  if (fields.length === 0) return undefined;
+  return [...new Set(fields)].slice(0, 8).join(',');
+}
+
+export function sanitizeStatus(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return STATUS_RE.test(value) ? value : undefined;
+}
+
+/** Path-stripped error template. Dropped entirely if a filesystem path still remains. */
+export function sanitizeErrorDetail(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  let text = message.replace(/\s+/g, ' ').trim();
+  text = text.replace(/file:\/\/[^\s"']+/gi, '<path>');
+  text = text.replace(/[A-Za-z]:\\[^\s"']+/g, '<path>');
+  text = text.replace(/~\/[^\s"']+/g, '<path>');
+  text = text.replace(/(^|[\s"'=(])((?:\/[\w.+-]+)+)/g, '$1<path>');
+  text = text.replace(
+    /["']([^"']+\.(?:prproj|mp4|mov|avi|mkv|wav|mp3|aep|mogrt|xml|csv|png|jpe?g))["']/gi,
+    '"<file>"',
+  );
+  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '<email>');
+  text = text.replace(/[^\x20-\x7E]/g, '?');
+  if (text.length > ERROR_DETAIL_MAX) text = text.slice(0, ERROR_DETAIL_MAX);
+  if (!text || PATH_LEAK_RE.test(text)) return undefined;
+  return text;
+}
+
+function extractZodFieldsFromMessage(message: string): string | undefined {
+  const fields: string[] = [];
+  const pathBlock = /"path"\s*:\s*\[([^\]]*)\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = pathBlock.exec(message)) !== null) {
+    const names = (match[1] ?? '').match(/"([A-Za-z0-9_]+)"/g) ?? [];
+    const joined = names.map((name) => name.slice(1, -1)).join('.');
+    if (FIELD_RE.test(joined)) fields.push(joined);
+  }
+  return sanitizeErrorFields(fields.join(','));
+}
+
+function inferErrorCode(
+  kind: TelemetryErrorKind,
+  message: string | undefined,
+  status: string | undefined,
+): string | undefined {
+  const normalized = (message ?? '').toLowerCase();
+  if (normalized.includes('nul character')) return 'nul_argument';
+  if (normalized.includes("tool '") && normalized.includes('not found')) return 'unknown_tool';
+  if (normalized.includes('never became valid json')) return 'bridge.parse';
+  if (
+    normalized.includes('timed out') ||
+    normalized.includes('response timeout') ||
+    kind === 'timeout'
+  ) {
+    return 'bridge.timeout';
+  }
+  if (status === 'bridge_unavailable' || normalized.includes('mcp bridge is not running')) {
+    if (normalized.includes('has not been clicked')) return 'bridge.not_started';
+    return 'bridge.panel_absent';
+  }
+  if (normalized.includes('has not been clicked') || normalized.includes('click start bridge')) {
+    return 'bridge.not_started';
+  }
+  if (normalized.includes('mogrt') || normalized.includes('title api')) return 'unsupported.mogrt';
+  if (kind === 'validation') {
+    const zodCode = message?.match(/"code"\s*:\s*"([a-z_]+)"/i)?.[1];
+    return sanitizeErrorCode(zodCode ? `zod.${zodCode}` : 'zod.invalid');
+  }
+  if (kind === 'not_found') return 'host.not_found';
+  if (kind === 'evalscript') return 'premiere.evalscript';
+  if (kind === 'connection') return 'bridge.connection';
+  if (kind === 'unsupported') return 'unsupported';
+  return 'unknown';
+}
+
+export function classifyToolError(message: string | undefined): TelemetryErrorKind {
+  if (!message) return 'unknown';
+  const normalized = message.toLowerCase();
+  if (normalized.includes('timed out') || normalized.includes('timeout')) return 'timeout';
+  if (normalized.includes('invalid argument') || normalized.includes('nul character')) {
+    return 'validation';
+  }
+  if (normalized.includes('evalscript') || normalized.includes('extendscript')) return 'evalscript';
+  if (
+    normalized.includes('not connected') ||
+    normalized.includes('bridge is not') ||
+    normalized.includes('start bridge') ||
+    (normalized.includes('bridge') && normalized.includes('connect'))
+  ) {
+    return 'connection';
+  }
+  if (
+    normalized.includes('mogrt') ||
+    normalized.includes('no title api') ||
+    normalized.includes('not implemented with a verifiable')
+  ) {
+    return 'unsupported';
+  }
+  if (normalized.includes('not found') || normalized.includes('no such')) return 'not_found';
+  return 'unknown';
+}
+
+export function summarizeToolFailure(result: unknown): ToolFailureSummary {
+  const record = result && typeof result === 'object' ? (result as Record<string, unknown>) : {};
+  const error = typeof record.error === 'string' ? record.error : undefined;
+  const status = sanitizeStatus(typeof record.status === 'string' ? record.status : undefined);
+  const retry = typeof record.retry === 'boolean' ? record.retry : undefined;
+  let errorKind = classifyToolError(error);
+  if (status === 'bridge_unavailable' || status === 'bridge_timeout') errorKind = 'connection';
+  if (status === 'validation') errorKind = 'validation';
+  if (status === 'unsupported') errorKind = 'unsupported';
+
+  const errorCode =
+    sanitizeErrorCode(typeof record.errorCode === 'string' ? record.errorCode : undefined) ??
+    inferErrorCode(errorKind, error, status);
+  const errorFields =
+    sanitizeErrorFields(typeof record.errorFields === 'string' ? record.errorFields : undefined) ??
+    (error ? extractZodFieldsFromMessage(error) : undefined);
+  const errorDetail = sanitizeErrorDetail(error);
+
+  return {
+    errorKind,
+    ...(errorCode ? { errorCode } : {}),
+    ...(errorFields ? { errorFields } : {}),
+    ...(errorDetail ? { errorDetail } : {}),
+    ...(retry !== undefined ? { retry } : {}),
+    ...(status ? { status } : {}),
+  };
+}
+
 function readJsonObject(path: string): Record<string, unknown> | null {
   try {
     if (!existsSync(path)) return null;
@@ -138,23 +311,6 @@ function readJsonObject(path: string): Record<string, unknown> | null {
 function configTelemetryEnabled(homedirPath: string): boolean {
   const config = readJsonObject(join(homedirPath, '.premiere-mcp-bridge', 'config.json'));
   return config?.telemetry !== false;
-}
-
-export function classifyToolError(message: string | undefined): TelemetryErrorKind {
-  if (!message) return 'unknown';
-  const normalized = message.toLowerCase();
-  if (normalized.includes('timed out') || normalized.includes('timeout')) return 'timeout';
-  if (normalized.includes('invalid argument')) return 'validation';
-  if (normalized.includes('evalscript') || normalized.includes('extendscript')) return 'evalscript';
-  if (
-    normalized.includes('not connected') ||
-    normalized.includes('bridge is not') ||
-    (normalized.includes('bridge') && normalized.includes('connect'))
-  ) {
-    return 'connection';
-  }
-  if (normalized.includes('not found') || normalized.includes('no such')) return 'not_found';
-  return 'unknown';
 }
 
 export function isTelemetryEnabled(
@@ -242,9 +398,16 @@ export class Telemetry {
       success: input.success,
       duration_ms: sanitizeDurationMs(input.durationMs),
     };
-    if (input.errorKind) {
-      payload.error_kind = input.errorKind;
-    }
+    if (input.errorKind) payload.error_kind = input.errorKind;
+    const errorCode = sanitizeErrorCode(input.errorCode);
+    if (errorCode) payload.error_code = errorCode;
+    const errorFields = sanitizeErrorFields(input.errorFields);
+    if (errorFields) payload.error_fields = errorFields;
+    const errorDetail = sanitizeErrorDetail(input.errorDetail);
+    if (errorDetail) payload.error_detail = errorDetail;
+    if (typeof input.retry === 'boolean') payload.retry = input.retry;
+    const status = sanitizeStatus(input.status);
+    if (status) payload.status = status;
     this.enqueue(payload);
   }
 

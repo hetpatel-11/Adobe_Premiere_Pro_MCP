@@ -227,12 +227,26 @@ export async function executeExpandedTool(
     }
 
     const script = buildExpandedToolScript(name, args);
-    return await bridge.executeScript(script);
+    const timeoutMs = name === 'ping' ? 8000 : undefined;
+    return await bridge.executeScript(script, timeoutMs);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bridgeDown =
+      message.toLowerCase().includes('mcp bridge is not running') ||
+      message.toLowerCase().includes('start bridge') ||
+      message.toLowerCase().includes('bridge response timeout');
     return {
       success: false,
       tool: name,
-      error: error instanceof Error ? error.message : String(error)
+      error: message,
+      ...(bridgeDown
+        ? {
+            retry: false,
+            status: 'bridge_unavailable',
+            nextStep:
+              'Open Premiere Pro → Window > Extensions > MCP Bridge → click Start Bridge. Do not retry until the panel says Connected.',
+          }
+        : {}),
     };
   }
 }
@@ -707,8 +721,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
     function findItem(idOrName) {
       if (!app.project || !app.project.rootItem) return null;
       var found = null;
+      var wanted = String(idOrName);
       walkItems(app.project.rootItem, function(item) {
-        if (!found && (item.nodeId === idOrName || item.name === idOrName || item.treePath === idOrName)) found = item;
+        if (!found && (String(item.nodeId) === wanted || item.name === idOrName || item.treePath === idOrName)) found = item;
       });
       return found;
     }
@@ -757,7 +772,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var track = collection[t];
           for (var c = 0; c < track.clips.numItems; c++) {
             var clip = track.clips[c];
-            if (!nodeId || clip.nodeId === nodeId || clip.name === nodeId) {
+            if (!nodeId || String(clip.nodeId) === String(nodeId) || clip.name === nodeId) {
               return { clip: clip, track: track, trackIndex: t, clipIndex: c, trackType: type, sequence: seq };
             }
           }
@@ -1519,6 +1534,10 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "set_scale_to_frame_size":
           var scaleItem = findItem(args.projectItemId || args.itemId || args.item_id);
+          if (!scaleItem && (args.clipId || args.node_id || args.nodeId)) {
+            var scaleClip = findClip(args.clipId || args.node_id || args.nodeId);
+            scaleItem = scaleClip && scaleClip.clip ? scaleClip.clip.projectItem : null;
+          }
           if (!scaleItem) return fail("Project item not found");
           var scaleResult = tryCall(scaleItem, ["setScaleToFrameSize"], [Boolean(args.enabled !== false)]);
           if (!scaleResult.called) return fail(scaleResult.error, { available: false });
@@ -1659,6 +1678,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var speedQeClip = __findQeClipByDomClip(speedQeTrack, speedClip.clip);
           if (!speedQeClip || !speedQeClip.setSpeed) return fail("QE clip setSpeed API unavailable");
           var requestedSpeed = Number(args.speed || args.percent || 100);
+          if (requestedSpeed <= 10) requestedSpeed = requestedSpeed * 100;
           try {
             speedQeClip.setSpeed(requestedSpeed, Boolean(args.maintainAudio !== false));
           } catch (speedSetError) {
@@ -1695,15 +1715,29 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "create_sequence_from_clips":
           if (!app.project || !app.project.createNewSequenceFromClips) return fail("app.project.createNewSequenceFromClips is unavailable");
-          var clipItemIds = args.projectItemIds || args.itemIds || args.ids || [];
+          var clipItemIds = args.projectItemIds || args.itemIds || args.ids || args.clipIds || args.clips || [];
+          if (typeof clipItemIds === "string") clipItemIds = [clipItemIds];
+          if (!clipItemIds.length && args.projectItemId) clipItemIds = [args.projectItemId];
+          if (args.itemId && clipItemIds.indexOf(args.itemId) === -1) clipItemIds = clipItemIds.concat([args.itemId]);
+          if (args.clipId && clipItemIds.indexOf(args.clipId) === -1) clipItemIds = clipItemIds.concat([args.clipId]);
           var clipItems = [];
+          var unresolvedIds = [];
           for (var csi = 0; csi < clipItemIds.length; csi++) {
             var seqClipItem = findItem(clipItemIds[csi]);
+            if (!seqClipItem) {
+              var asTimelineClip = findClip(clipItemIds[csi]);
+              seqClipItem = asTimelineClip && asTimelineClip.clip ? asTimelineClip.clip.projectItem : null;
+            }
             if (seqClipItem) clipItems.push(seqClipItem);
+            else unresolvedIds.push(String(clipItemIds[csi]));
           }
-          if (!clipItems.length) return fail("No project items found for sequence creation");
-          var sequenceFromClips = app.project.createNewSequenceFromClips(String(args.name || "Sequence from Clips"), clipItems, app.project.rootItem);
-          if (!sequenceFromClips) return fail("Premiere did not return a created sequence");
+          if (!clipItems.length) return fail("No project items found for sequence creation" + (unresolvedIds.length ? ": " + unresolvedIds.join(", ") : "") + ". Pass projectItemIds from list_project_items.");
+          var destBin = findParentItem(clipItems[0]) || app.project.rootItem;
+          var sequenceFromClips = app.project.createNewSequenceFromClips(String(args.name || "Sequence from Clips"), clipItems, destBin);
+          if (!sequenceFromClips && destBin !== app.project.rootItem) {
+            sequenceFromClips = app.project.createNewSequenceFromClips(String(args.name || "Sequence from Clips"), clipItems, app.project.rootItem);
+          }
+          if (!sequenceFromClips) return fail("Premiere did not return a created sequence from " + clipItems.length + " item(s). createNewSequenceFromClips can return null for bins or sequences; pass footage project items.");
           return ok({ created: true, name: sequenceFromClips.name, sequenceId: sequenceFromClips.sequenceID, itemCount: clipItems.length });
 
         case "close_sequence":

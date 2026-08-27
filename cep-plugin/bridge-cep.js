@@ -566,9 +566,21 @@
         return script.length <= 500000;
     };
 
+    MCPPremiereBridge.prototype.writeHeartbeat = function() {
+        try {
+            var tempPath = this.getTempDirectory();
+            if (!tempPath) return;
+            fs.writeFileSync(path.join(tempPath, 'bridge-heartbeat.json'), JSON.stringify({
+                t: Date.now(),
+                started: !!this.isConnected
+            }));
+        } catch (e) {}
+    };
+
     MCPPremiereBridge.prototype.startCommandPolling = function() {
         var self = this;
         setInterval(function() {
+            self.writeHeartbeat();
             if (!self.isProcessing && !self.evalScriptBusy && self.isConnected) {
                 var tempPath = self.getTempDirectory();
                 if (tempPath) self.watchDirectory(tempPath);
