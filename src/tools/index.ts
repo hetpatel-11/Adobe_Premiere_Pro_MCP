@@ -5617,14 +5617,18 @@ export class PremiereProTools {
   // ============================================
 
   // Markers Implementation
-  private async addMarker(_sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
+  private async addMarker(sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = null;
+        for (var __si = 0; __si < app.project.sequences.numSequences; __si++) {
+          var __s = app.project.sequences[__si];
+          if (__s.sequenceID === ${JSON.stringify(sequenceId)}) { sequence = __s; break; }
+        }
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found: " + ${JSON.stringify(sequenceId)}
           });
         } else {
           var marker = sequence.markers.createMarker(${time});
@@ -5649,14 +5653,18 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async deleteMarker(_sequenceId: string, markerId: string): Promise<any> {
+  private async deleteMarker(sequenceId: string, markerId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = null;
+        for (var __si = 0; __si < app.project.sequences.numSequences; __si++) {
+          var __s = app.project.sequences[__si];
+          if (__s.sequenceID === ${JSON.stringify(sequenceId)}) { sequence = __s; break; }
+        }
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found: " + ${JSON.stringify(sequenceId)}
           });
         } else {
           var deleted = false;
@@ -5691,14 +5699,18 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async updateMarker(_sequenceId: string, markerId: string, updates: any): Promise<any> {
+  private async updateMarker(sequenceId: string, markerId: string, updates: any): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = null;
+        for (var __si = 0; __si < app.project.sequences.numSequences; __si++) {
+          var __s = app.project.sequences[__si];
+          if (__s.sequenceID === ${JSON.stringify(sequenceId)}) { sequence = __s; break; }
+        }
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found: " + ${JSON.stringify(sequenceId)}
           });
         } else {
           var found = false;
@@ -5728,14 +5740,18 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async listMarkers(_sequenceId: string): Promise<any> {
+  private async listMarkers(sequenceId: string): Promise<any> {
     const script = `
       try {
-        var sequence = app.project.activeSequence;
+        var sequence = null;
+        for (var __si = 0; __si < app.project.sequences.numSequences; __si++) {
+          var __s = app.project.sequences[__si];
+          if (__s.sequenceID === ${JSON.stringify(sequenceId)}) { sequence = __s; break; }
+        }
         if (!sequence) {
           return JSON.stringify({
             success: false,
-            error: "No active sequence"
+            error: "Sequence not found: " + ${JSON.stringify(sequenceId)}
           });
         } else {
           var markers = [];
