@@ -4,6 +4,8 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-08-28
+
 - `speed_change` and `set_clip_speed_qe` now call QE `setSpeed` with its real
   five-argument form (multiplier, duration ticks as a string, reverse, pitch,
   ripple). The previous two-argument percent call is what Premiere rejected as
