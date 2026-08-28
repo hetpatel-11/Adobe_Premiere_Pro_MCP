@@ -723,7 +723,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       var found = null;
       var wanted = String(idOrName);
       walkItems(app.project.rootItem, function(item) {
-        if (!found && (String(item.nodeId) === wanted || item.name === idOrName || item.treePath === idOrName)) found = item;
+        if (!found && (__idsMatch(item.nodeId, wanted) || item.name === idOrName || item.treePath === idOrName)) found = item;
       });
       return found;
     }
@@ -772,7 +772,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var track = collection[t];
           for (var c = 0; c < track.clips.numItems; c++) {
             var clip = track.clips[c];
-            if (!nodeId || String(clip.nodeId) === String(nodeId) || clip.name === nodeId) {
+            if (!nodeId || __idsMatch(clip.nodeId, nodeId) || clip.name === nodeId) {
               return { clip: clip, track: track, trackIndex: t, clipIndex: c, trackType: type, sequence: seq };
             }
           }
@@ -780,6 +780,38 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         return null;
       }
       return scan(seq.videoTracks, "video") || scan(seq.audioTracks, "audio");
+    }
+    function findClipAnywhere(nodeId) {
+      if (!nodeId || !app.project) return null;
+      function scanSeq(seq) {
+        if (!seq) return null;
+        function scan(collection, type) {
+          for (var t = 0; t < collection.numTracks; t++) {
+            var track = collection[t];
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var clip = track.clips[c];
+              if (__idsMatch(clip.nodeId, nodeId) || clip.name === nodeId) {
+                return { clip: clip, track: track, trackIndex: t, clipIndex: c, trackType: type, sequence: seq };
+              }
+            }
+          }
+          return null;
+        }
+        return scan(seq.videoTracks, "video") || scan(seq.audioTracks, "audio");
+      }
+      var foundAnywhere = scanSeq(app.project.activeSequence);
+      if (!app.project.sequences) return foundAnywhere;
+      for (var si = 0; !foundAnywhere && si < app.project.sequences.numSequences; si++) {
+        foundAnywhere = scanSeq(app.project.sequences[si]);
+      }
+      return foundAnywhere;
+    }
+    function coerceProjectItemId(value) {
+      if (value == null) return "";
+      if (typeof value === "object") {
+        return String(value.projectItemId || value.nodeId || value.id || value.clipId || value.itemId || "");
+      }
+      return String(value);
     }
     function clipInfo(clip, trackType, trackIndex, clipIndex) {
       var item = {
@@ -1677,14 +1709,15 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!speedQeTrack) return fail("QE track not found at index " + speedClip.trackIndex);
           var speedQeClip = __findQeClipByDomClip(speedQeTrack, speedClip.clip);
           if (!speedQeClip || !speedQeClip.setSpeed) return fail("QE clip setSpeed API unavailable");
-          var requestedSpeed = Number(args.speed || args.percent || 100);
-          if (requestedSpeed <= 10) requestedSpeed = requestedSpeed * 100;
+          var rawSpeed = args.speed != null ? args.speed : (args.percent != null ? args.percent : 1);
+          var requestedSpeed = __normalizeSpeedRatio(rawSpeed);
+          if (requestedSpeed == null) return fail("Invalid speed");
           try {
-            speedQeClip.setSpeed(requestedSpeed, Boolean(args.maintainAudio !== false));
+            __setClipSpeed(speedQeClip, speedClip.clip, requestedSpeed, Boolean(args.reverse), Boolean(args.maintainAudio !== false), Boolean(args.ripple));
           } catch (speedSetError) {
             var currentSpeed = Number(speedQeClip.speed);
-            var currentPercent = currentSpeed <= 10 ? currentSpeed * 100 : currentSpeed;
-            if (Math.abs(currentPercent - requestedSpeed) < 0.01) return ok({ speed: requestedSpeed, maintainAudio: Boolean(args.maintainAudio !== false), changed: false, method: "already at requested speed" });
+            var currentRatio = __normalizeSpeedRatio(currentSpeed);
+            if (currentRatio != null && Math.abs(currentRatio - requestedSpeed) < 0.01) return ok({ speed: requestedSpeed, maintainAudio: Boolean(args.maintainAudio !== false), changed: false, method: "already at requested speed" });
             return fail("Speed change via QE DOM not available: " + speedSetError.toString(), { currentSpeed: currentSpeed, requestedSpeed: requestedSpeed });
           }
           return ok({ speed: requestedSpeed, maintainAudio: Boolean(args.maintainAudio !== false), changed: true });
@@ -1723,13 +1756,14 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var clipItems = [];
           var unresolvedIds = [];
           for (var csi = 0; csi < clipItemIds.length; csi++) {
-            var seqClipItem = findItem(clipItemIds[csi]);
-            if (!seqClipItem) {
-              var asTimelineClip = findClip(clipItemIds[csi]);
+            var wantedId = coerceProjectItemId(clipItemIds[csi]);
+            var seqClipItem = wantedId ? findItem(wantedId) : null;
+            if (!seqClipItem && wantedId) {
+              var asTimelineClip = findClip(wantedId) || findClipAnywhere(wantedId);
               seqClipItem = asTimelineClip && asTimelineClip.clip ? asTimelineClip.clip.projectItem : null;
             }
             if (seqClipItem) clipItems.push(seqClipItem);
-            else unresolvedIds.push(String(clipItemIds[csi]));
+            else unresolvedIds.push(wantedId || String(clipItemIds[csi]));
           }
           if (!clipItems.length) return fail("No project items found for sequence creation" + (unresolvedIds.length ? ": " + unresolvedIds.join(", ") : "") + ". Pass projectItemIds from list_project_items.");
           var destBin = findParentItem(clipItems[0]) || app.project.rootItem;

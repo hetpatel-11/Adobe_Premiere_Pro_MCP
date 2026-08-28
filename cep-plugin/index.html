@@ -360,8 +360,22 @@
                 var(--button-dark);
         }
 
-        .utility {
+        button.utility {
             background: rgba(8, 17, 26, 0.92);
+        }
+
+        .update-banner {
+            border-color: rgba(255, 215, 107, 0.35);
+            background:
+                linear-gradient(135deg, rgba(255, 215, 107, 0.14), rgba(17, 174, 240, 0.06) 48%, var(--panel));
+        }
+
+        .update-banner[hidden] {
+            display: none;
+        }
+
+        .update-actions {
+            margin-top: 12px;
         }
 
         .command-queue,
@@ -492,6 +506,21 @@
                     <span class="meta-value">Live Queue</span>
                 </div>
             </div>
+        </section>
+
+        <section class="panel update-banner" id="updateBanner" hidden>
+            <div class="panel-title">
+                <h2>Update recommended</h2>
+                <span id="updateBannerVersion"></span>
+            </div>
+            <div class="micro-copy" id="updateBannerCopy" style="margin-bottom: 0;">
+                A newer MCP Bridge is available. Update now, or later.
+            </div>
+            <div class="button-grid update-actions">
+                <button class="primary" type="button" id="updateNowButton" onclick="updateNow()">Update now</button>
+                <button class="utility" type="button" id="updateLaterButton" onclick="updateLater()">Later</button>
+            </div>
+            <div class="micro-copy" id="updateBannerStatus" style="margin-top: 10px; margin-bottom: 0;"></div>
         </section>
 
         <section class="panel">

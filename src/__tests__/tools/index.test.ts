@@ -583,6 +583,8 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
       expect(result.catalog).toEqual({ tools: 283, resources: 13, prompts: 10 });
       expect(result.liveConnection.checked).toBe(false);
+      expect(result.update.current).toBeTruthy();
+      expect(result.update.available).toBe(false);
       expect(mockBridge.executeScript).not.toHaveBeenCalled();
     });
 
@@ -705,6 +707,7 @@ describe('PremiereProTools', () => {
       const script = mockBridge.executeScript.mock.calls[0][0] as string;
       expect(script).toContain('if (!clipItemIds.length && args.projectItemId) clipItemIds = [args.projectItemId]');
       expect(script).toContain('asTimelineClip.clip.projectItem');
+      expect(script).toContain('findClipAnywhere(wantedId)');
       expect(script).toContain('findParentItem(clipItems[0])');
     });
   });
@@ -999,6 +1002,25 @@ describe('PremiereProTools', () => {
       expect(result.error).toMatch(/mogrt/i);
       expect(result.nextStep).toMatch(/mogrtPath|\.mogrt/i);
       expect(mockBridge.executeScript).not.toHaveBeenCalled();
+    });
+
+    it('probes MOGRT text fields by name and by JSON, including a scanned brace header', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true, textRequestedCount: 0 });
+
+      await tools.executeTool('add_text_overlay', {
+        sequenceId: 'seq-123',
+        trackIndex: 1,
+        startTime: 1,
+        duration: 7,
+        mogrtPath: '/templates/Basic Title.mogrt',
+        text: 'HELLO',
+      });
+
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('function looksLikeTextProperty');
+      expect(script).toContain('scan_brace+json');
+      expect(script).toContain('mTextString');
+      expect(script).not.toContain('mpVal.length > 50');
     });
 
     it('fails add_text_overlay when every requested text write fails', async () => {
@@ -1708,21 +1730,25 @@ describe('PremiereProTools', () => {
       });
     });
 
-    it('passes speed_change multipliers to QE as percents', async () => {
+    it('passes speed_change multipliers to QE as ratios with the 5-arg signature', async () => {
       mockBridge.executeScript.mockResolvedValue({ success: true });
 
       await tools.executeTool('speed_change', { clipId: 'clip-1', speed: 0.5, maintainAudio: true });
-      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setSpeed(50, true)');
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain(
+        '__setClipSpeed(qeClip, info.clip, ratio, false, true, false)',
+      );
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('__normalizeSpeedRatio(0.5)');
+      expect(mockBridge.executeScript.mock.calls[0][0]).not.toContain('setSpeed(50, true)');
 
       jest.clearAllMocks();
       mockBridge.executeScript.mockResolvedValue({ success: true });
       await tools.executeTool('speed_change', { clipId: 'clip-1', speed: 2 });
-      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setSpeed(200,');
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('__normalizeSpeedRatio(2)');
 
       jest.clearAllMocks();
       mockBridge.executeScript.mockResolvedValue({ success: true });
       await tools.executeTool('speed_change', { clipId: 'clip-1', speed: 150 });
-      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('setSpeed(150,');
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('__normalizeSpeedRatio(150)');
     });
 
     it('matches add_keyframe component and parameter names without regard to case', async () => {

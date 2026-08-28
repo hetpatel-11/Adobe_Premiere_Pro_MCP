@@ -38,6 +38,12 @@ Telemetry is on unless you turn it off in any of these ways:
 
 `PREMIERE_MCP_TELEMETRY=1` turns telemetry back on even if `DO_NOT_TRACK` is set.
 
+## Update checks
+
+The MCP server and CEP panel may request the latest published version from the public npm registry (`registry.npmjs.org/adobe-premiere-pro-mcp/latest`) so they can show an **Update now** / **Later** prompt. That request includes a package User-Agent and does not include the install id, project data, or tool arguments.
+
+Turn this off with `PREMIERE_MCP_UPDATE_CHECK=0`, or set `"updateCheck": false` in `~/.premiere-mcp-bridge/config.json`. **Later** snoozes the prompt for 7 days.
+
 ## Third parties
 
 Installing this project through npm, downloading releases from GitHub, using Adobe Premiere Pro, connecting an MCP client such as Claude Desktop, Claude Code, Codex, or VS Code, or sending opted-in telemetry through Cloudflare is governed by the respective provider's privacy policy. Premiere project data is not included in telemetry.

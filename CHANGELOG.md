@@ -4,6 +4,19 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+- `speed_change` and `set_clip_speed_qe` now call QE `setSpeed` with its real
+  five-argument form (multiplier, duration ticks as a string, reverse, pitch,
+  ripple). The previous two-argument percent call is what Premiere rejected as
+  "Not Enough Parameters" / "Illegal Parameter type".
+- `create_sequence_from_clips` resolves timeline clip ids on any sequence, and
+  treats padded-hex Premiere `nodeId`s (`000f4242`) as the same as their decimal
+  form.
+- `add_text_overlay` no longer requires a 50-character JSON blob to recognize a
+  text parameter; it also scans past a binary prefix to the first `{` and writes
+  `mTextString` when that is the field Premiere exposes.
+- Telemetry `error_detail` now replaces quoted sequence names with `<name>`.
+- The CEP panel and MCP server check npm for a newer package and show **Update now** / **Later**. Later snoozes the prompt for 7 days. Opt out with `PREMIERE_MCP_UPDATE_CHECK=0`.
+
 ## [1.2.3] - 2026-08-27
 
 - `add_transition_to_clip` now accepts a numeric string for `duration` and a

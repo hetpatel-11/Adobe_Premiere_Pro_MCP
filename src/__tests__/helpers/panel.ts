@@ -44,7 +44,7 @@ function nodeStub(name: string, fsStub: Record<string, unknown>): unknown {
       dirname: (value: string) => value,
     };
   }
-  if (name === 'os') return { tmpdir: () => '/tmp', homedir: () => '/tmp' };
+  if (name === 'os') return { tmpdir: () => '/tmp', homedir: () => '/tmp', platform: () => 'darwin' };
   return {};
 }
 
@@ -67,6 +67,7 @@ export function loadPanel(): LoadedPanel {
     clearInterval: () => {},
     console: { log() {}, warn() {}, error() {} },
     require: (name: string) => nodeStub(name, fsStub),
+    __dirname: '/fake-cep',
     CSInterface: function () {
       return {
         getHostEnvironment: () => ({ appName: 'PPRO', appVersion: '26.0.0' }),

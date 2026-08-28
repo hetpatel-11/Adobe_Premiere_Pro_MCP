@@ -106,6 +106,15 @@ describe('sanitizeErrorDetail', () => {
       '/Users',
     );
   });
+
+  it('strips sequence names rather than leaking them', () => {
+    expect(
+      sanitizeErrorDetail("Could not address sequence 'Final Cut 中文' through the QE API."),
+    ).toBe('Could not address sequence <name> through the QE API.');
+    expect(
+      sanitizeErrorDetail('Could not address sequence "Episode 12" through the QE API.'),
+    ).toBe('Could not address sequence <name> through the QE API.');
+  });
 });
 
 describe('summarizeToolFailure', () => {

@@ -234,6 +234,166 @@
         return {};
     }
 
+    function readInstalledPackageVersion() {
+        var dirs = [];
+        try {
+            if (typeof SystemPath !== 'undefined') {
+                var cs = new CSInterface();
+                if (cs.getSystemPath) dirs.push(cs.getSystemPath(SystemPath.EXTENSION));
+            }
+        } catch (eCs) {}
+        if (typeof __dirname !== 'undefined') dirs.push(__dirname);
+        for (var i = 0; i < dirs.length; i++) {
+            try {
+                var versionPath = path.join(dirs[i], 'mcp-version.json');
+                if (fs.existsSync(versionPath)) {
+                    var parsed = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+                    if (parsed && parsed.version) return String(parsed.version);
+                }
+            } catch (eRead) {}
+        }
+        return '1.2.3';
+    }
+
+    MCPPremiereBridge.prototype.comparePackageVersions = function(a, b) {
+        var left = String(a).split('.');
+        var right = String(b).split('.');
+        for (var i = 0; i < 3; i++) {
+            var l = parseInt(left[i], 10) || 0;
+            var r = parseInt(right[i], 10) || 0;
+            if (l > r) return 1;
+            if (l < r) return -1;
+        }
+        return 0;
+    };
+
+    MCPPremiereBridge.prototype.shouldOfferUpdate = function(current, latest, snoozedUntil, now) {
+        if (!latest || this.comparePackageVersions(latest, current) <= 0) return false;
+        if (snoozedUntil && now < snoozedUntil) return false;
+        return true;
+    };
+
+    MCPPremiereBridge.prototype.setUpdateBannerVisible = function(visible, latest, current) {
+        var banner = document.getElementById('updateBanner');
+        if (!banner) return;
+        if (visible) banner.removeAttribute('hidden');
+        else banner.setAttribute('hidden', '');
+        var versionEl = document.getElementById('updateBannerVersion');
+        if (versionEl && latest && current) versionEl.textContent = latest + ' available';
+        var copyEl = document.getElementById('updateBannerCopy');
+        if (copyEl && latest && current) {
+            copyEl.textContent = latest + ' is recommended. You have ' + current + '. Update now, or later.';
+        }
+    };
+
+    MCPPremiereBridge.prototype.setUpdateBannerStatus = function(message) {
+        var statusEl = document.getElementById('updateBannerStatus');
+        if (statusEl) statusEl.textContent = message || '';
+    };
+
+    MCPPremiereBridge.prototype.setUpdateButtonsDisabled = function(disabled) {
+        var nowBtn = document.getElementById('updateNowButton');
+        var laterBtn = document.getElementById('updateLaterButton');
+        if (nowBtn) nowBtn.disabled = !!disabled;
+        if (laterBtn) laterBtn.disabled = !!disabled;
+    };
+
+    MCPPremiereBridge.prototype.checkForPackageUpdate = function() {
+        var self = this;
+        var current = readInstalledPackageVersion();
+        var config = readExistingPanelConfig();
+        if (config.updateCheck === false) return;
+        var snoozedUntil = typeof config.updateSnoozedUntil === 'number' ? config.updateSnoozedUntil : 0;
+        if (snoozedUntil > Date.now()) return;
+        var https;
+        try { https = require('https'); } catch (eHttps) { return; }
+        if (!https || typeof https.get !== 'function') return;
+        var request = https.get({
+            hostname: 'registry.npmjs.org',
+            path: '/adobe-premiere-pro-mcp/latest',
+            headers: { Accept: 'application/json', 'User-Agent': 'adobe-premiere-pro-mcp-cep/' + current }
+        }, function(response) {
+            var body = '';
+            response.on('data', function(chunk) { body += chunk; });
+            response.on('end', function() {
+                try {
+                    var parsed = JSON.parse(body);
+                    var latest = parsed && parsed.version ? String(parsed.version) : '';
+                    if (self.shouldOfferUpdate(current, latest, snoozedUntil, Date.now())) {
+                        self.pendingUpdateVersion = latest;
+                        self.setUpdateBannerVisible(true, latest, current);
+                        self.log('Update recommended: ' + latest + ' is available (you have ' + current + ')', 'warning');
+                    }
+                } catch (eParse) {}
+            });
+        });
+        request.on('error', function() {});
+        request.setTimeout(2500, function() { request.abort(); });
+    };
+
+    MCPPremiereBridge.prototype.updateLater = function() {
+        try {
+            var panelConfig = readExistingPanelConfig();
+            panelConfig.updateSnoozedUntil = Date.now() + (7 * 24 * 60 * 60 * 1000);
+            fs.writeFileSync(getPanelConfigPath(), JSON.stringify(panelConfig, null, 2));
+            this.setUpdateBannerVisible(false);
+            this.log('Update reminder snoozed for 7 days', 'info');
+        } catch (e) {
+            this.log('Could not snooze the update reminder: ' + e.message, 'error');
+        }
+    };
+
+    MCPPremiereBridge.prototype.updateNow = function() {
+        var self = this;
+        var childProcess;
+        try { childProcess = require('child_process'); } catch (eCp) {
+            this.setUpdateBannerStatus('Could not start npm from this panel. Run: npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep');
+            return;
+        }
+        this.setUpdateButtonsDisabled(true);
+        this.setUpdateBannerStatus('Installing adobe-premiere-pro-mcp@latest…');
+        var env = {};
+        for (var key in process.env) {
+            if (Object.prototype.hasOwnProperty.call(process.env, key)) env[key] = process.env[key];
+        }
+        var extra = os.platform() === 'win32'
+            ? ''
+            : ['/usr/local/bin', '/opt/homebrew/bin'].join(path.delimiter || ':');
+        if (extra) env.PATH = extra + (path.delimiter || ':') + (env.PATH || '');
+        var npmCmd = os.platform() === 'win32' ? 'npm.cmd' : 'npm';
+        var npm = childProcess.spawn(npmCmd, ['install', '-g', 'adobe-premiere-pro-mcp@latest'], { env: env });
+        var npmErr = '';
+        npm.stderr.on('data', function(chunk) { npmErr += chunk; });
+        npm.on('error', function(err) {
+            self.setUpdateButtonsDisabled(false);
+            self.setUpdateBannerStatus('Could not run npm. Run: npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep');
+            self.log('Update now failed: ' + err.message, 'error');
+        });
+        npm.on('close', function(code) {
+            if (code !== 0) {
+                self.setUpdateButtonsDisabled(false);
+                self.setUpdateBannerStatus('npm install failed. Run: npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep');
+                self.log('Update now failed: ' + (npmErr || ('exit ' + code)), 'error');
+                return;
+            }
+            var installer = os.platform() === 'win32' ? 'premiere-pro-mcp.cmd' : 'premiere-pro-mcp';
+            var cep = childProcess.spawn(installer, ['--install-cep'], { env: env });
+            cep.on('close', function(cepCode) {
+                self.setUpdateButtonsDisabled(false);
+                if (cepCode === 0) {
+                    self.setUpdateBannerStatus('Updated. Reload this panel, then restart your MCP client.');
+                    self.log('Updated MCP Bridge. Reload the panel and restart the MCP client.', 'info');
+                } else {
+                    self.setUpdateBannerStatus('Package installed. Reload this panel, restart the MCP client, and run premiere-pro-mcp --install-cep if the panel is still old.');
+                }
+            });
+            cep.on('error', function() {
+                self.setUpdateButtonsDisabled(false);
+                self.setUpdateBannerStatus('Package installed. Run premiere-pro-mcp --install-cep, reload this panel, then restart your MCP client.');
+            });
+        });
+    };
+
     function ensureDirectory(dirPath) {
         if (!dirPath) return null;
         var resolvedPath = path.resolve(dirPath);
@@ -316,6 +476,7 @@
         this.loadConfig();
         this.updateUI();
         this.startCommandPolling();
+        this.checkForPackageUpdate();
     };
 
     MCPPremiereBridge.prototype.getTempDirectory = function() {
@@ -905,6 +1066,8 @@
     window.saveConfig = function() { if (window.bridge) window.bridge.saveConfig(); };
     window.saveTelemetryPreference = function() { if (window.bridge) window.bridge.saveTelemetryPreference(); };
     window.clearLog = function() { if (window.bridge) window.bridge.clearLog(); };
+    window.updateNow = function() { if (window.bridge) window.bridge.updateNow(); };
+    window.updateLater = function() { if (window.bridge) window.bridge.updateLater(); };
     document.addEventListener('DOMContentLoaded', function() {
         window.bridge = new MCPPremiereBridge();
     });

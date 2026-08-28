@@ -34,6 +34,7 @@ const HOST_GLOBALS = new Set([
   '__findSequence', '__findClip', '__findClipInSequence', '__findProjectItem',
   '__samePath', '__ticksToSeconds', '__secondsToTicks', '__mcpStringify',
   '__mcpEscapeString', '__qeSequenceFor', '__findQeClipByDomClip',
+  '__idsMatch', '__normalizeSpeedRatio', '__setClipSpeed',
 ]);
 
 type Node = Record<string, any>;

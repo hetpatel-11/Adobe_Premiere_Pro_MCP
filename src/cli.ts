@@ -18,6 +18,7 @@ Usage:
   premiere-pro-mcp --help          Show this help
 
 Telemetry is on by default. Set PREMIERE_MCP_TELEMETRY=0 to opt out.
+Update checks are on by default. Set PREMIERE_MCP_UPDATE_CHECK=0 to opt out.
 `);
 }
 

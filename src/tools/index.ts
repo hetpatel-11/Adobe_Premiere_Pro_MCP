@@ -15,6 +15,7 @@ import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
 import { executeExpandedTool, getExpandedTools, isExpandedTool } from './expanded.js';
 import { canonicalizeMcpArgs } from '../utils/mcp-args.js';
+import { checkForUpdate } from '../utils/update-check.js';
 
 const HEALTH_CHECK_TIMEOUT_MS = 8000;
 
@@ -384,7 +385,7 @@ export class PremiereProTools {
       },
       {
         name: 'get_capabilities',
-        description: 'Reports the local MCP runtime, installed bridge status, tool/resource/prompt catalog sizes, and supported versus experimental integration surfaces. Set checkConnection to true to run the read-only live Premiere connection check; otherwise no Premiere request is made.',
+        description: 'Reports the local MCP runtime, installed bridge status, tool/resource/prompt catalog sizes, and supported versus experimental integration surfaces. Includes an npm update check: if update.available is true and not snoozed, ask the user Update now or Later before editing. Set checkConnection to true to run the read-only live Premiere connection check; otherwise no Premiere request is made.',
         inputSchema: z.object({
           checkConnection: z.boolean().optional().describe('When true, run verify_premiere_connection and include its live result. Defaults to false so capability discovery is fast and non-invasive.')
         })
@@ -2163,6 +2164,7 @@ ${this.buildSequenceResolver(sequenceId)}
         transport: 'stdio',
         bridgeDirectory: process.env.PREMIERE_TEMP_DIR || null
       },
+      update: await checkForUpdate(),
       bridge: {
         cep: {
           status: cepInstalled ? 'installed' : 'not_detected',
@@ -5222,8 +5224,7 @@ ${this.buildSequenceResolver(sequenceId)}
               try { val = prop.getValue(); } catch (eV) { val = "<getValue threw>"; }
               var truncatedVal = (typeof val === "string" ? val.substring(0, 250) : val);
               compProps.push({ index: i, displayName: dn, value: truncatedVal });
-              // Heuristic: text properties contain "mTextString" in their JSON value
-              if (typeof val === "string" && val.indexOf("mTextString") >= 0) {
+              if (typeof val === "string" && (val.indexOf("mTextString") >= 0 || val.indexOf("textEditValue") >= 0 || val.indexOf("mTextParam") >= 0)) {
                 textPropsFound.push({ compIndex: ci, propIndex: i, compDisplayName: compName, propDisplayName: dn, currentValue: val });
               }
             }
@@ -5247,6 +5248,17 @@ ${this.buildSequenceResolver(sequenceId)}
           ${args.text3 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text3)});` : ''}
           ${args.text4 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text4)});` : ''}
           var setResults = [];
+          function looksLikeTextProperty(displayName, mpVal) {
+            var dn = String(displayName || "").toLowerCase();
+            if (dn.indexOf("source text") >= 0 || dn.indexOf("texto de origen") >= 0 || dn.indexOf("texte source") >= 0) return true;
+            if (dn === "text" || dn === "title" || dn === "subtitle" || dn === "headline") return true;
+            if (typeof mpVal === "string" && (
+                mpVal.indexOf("mTextString") >= 0 ||
+                mpVal.indexOf("textEditValue") >= 0 ||
+                mpVal.indexOf("mTextParam") >= 0 ||
+                mpVal.indexOf("capPropTextRunCount") >= 0)) return true;
+            return false;
+          }
           if (textsByIndex.length > 0) {
             // PREFERRED PATH: getMGTComponent() for AE-exported MOGRTs (Adobe-CEP canonical).
             // Properties exposed there are the Essential Graphics parameters and contain
@@ -5307,9 +5319,7 @@ ${this.buildSequenceResolver(sequenceId)}
                     var mp = mgtComp.properties[mi];
                     var mpVal = null;
                     try { mpVal = mp.getValue(); } catch (eMPv) {}
-                    // A "text" param has a JSON string value containing textEditValue or mTextString
-                    if (typeof mpVal === "string" && mpVal.length > 50 &&
-                        (mpVal.indexOf("textEditValue") >= 0 || mpVal.indexOf("mTextString") >= 0 || mpVal.indexOf("capPropTextRunCount") >= 0)) {
+                    if (looksLikeTextProperty(mp.displayName, mpVal)) {
                       textComps.push({ comp: mgtComp, compIndex: -1, prop: mp, propIndex: mi, displayName: String(mp.displayName) });
                     }
                   }
@@ -5323,6 +5333,30 @@ ${this.buildSequenceResolver(sequenceId)}
                   var mn = (c3.matchName !== undefined) ? String(c3.matchName) : "";
                   if (mn === "AE.ADBE Text") {
                     textComps.push({ comp: c3, compIndex: ci3, prop: c3.properties[0], propIndex: 0, displayName: "Source Text (legacy)" });
+                  } else if (c3.properties) {
+                    for (var pi3 = 0; pi3 < c3.properties.numItems; pi3++) {
+                      var p3 = c3.properties[pi3];
+                      var p3val = null;
+                      try { p3val = p3.getValue(); } catch (eP3) {}
+                      if (looksLikeTextProperty(p3.displayName, p3val)) {
+                        textComps.push({ comp: c3, compIndex: ci3, prop: p3, propIndex: pi3, displayName: String(p3.displayName) });
+                      }
+                    }
+                  }
+                }
+              }
+              if (textComps.length === 0 && textPropsFound.length > 0) {
+                for (var tpf = 0; tpf < textPropsFound.length; tpf++) {
+                  var hit = textPropsFound[tpf];
+                  var hitComp = trackItem.components[hit.compIndex];
+                  if (hitComp && hitComp.properties) {
+                    textComps.push({
+                      comp: hitComp,
+                      compIndex: hit.compIndex,
+                      prop: hitComp.properties[hit.propIndex],
+                      propIndex: hit.propIndex,
+                      displayName: hit.propDisplayName
+                    });
                   }
                 }
               }
@@ -5348,6 +5382,8 @@ ${this.buildSequenceResolver(sequenceId)}
                 var jsonStr = "";
                 var textObj = null;
                 var parseStrategy = "";
+                var parseError1 = "";
+                var parseError2 = "";
                 // Strategy 1: 4-byte header + JSON
                 try {
                   headerBytes = rawValStr.substring(0, 4);
@@ -5355,23 +5391,63 @@ ${this.buildSequenceResolver(sequenceId)}
                   textObj = JSON.parse(jsonStr);
                   parseStrategy = "header4+json";
                 } catch (eP1) {
+                  parseError1 = eP1.toString();
                   // Strategy 2: pure JSON (AE 14.3+ no header)
                   try {
                     textObj = JSON.parse(rawValStr);
                     headerBytes = "";
                     parseStrategy = "pure_json";
                   } catch (eP2) {
+                    parseError2 = eP2.toString();
+                    // Strategy 3: scan for the first '{' — some 26.x payloads use a longer binary prefix
+                    var brace = rawValStr.indexOf("{");
+                    if (brace >= 0) {
+                      try {
+                        headerBytes = rawValStr.substring(0, brace);
+                        textObj = JSON.parse(rawValStr.substring(brace));
+                        parseStrategy = "scan_brace+json";
+                      } catch (eP3) {
+                        textObj = null;
+                      }
+                    }
+                  }
+                }
+                function textFromObj(obj) {
+                  if (!obj) return "";
+                  if (obj.mTextParam && obj.mTextParam.mStyleSheet && obj.mTextParam.mStyleSheet.mText !== undefined) return String(obj.mTextParam.mStyleSheet.mText);
+                  if (obj.textEditValue !== undefined) return String(obj.textEditValue);
+                  if (obj.mTextString !== undefined) return String(obj.mTextString);
+                  return "";
+                }
+                if (!textObj) {
+                  var rawOk = false;
+                  try {
+                    sourceTextProp.setValue(newText, true);
+                    var afterRawWrite = "";
+                    try { afterRawWrite = String(sourceTextProp.getValue()); } catch (eRW) {}
+                    rawOk = afterRawWrite.indexOf(newText) >= 0;
+                    setResults.push({
+                      textIndex: ti2, compIndex: tc.compIndex, propIndex: tc.propIndex, requestedText: newText,
+                      parseStrategy: "raw_string",
+                      ok: rawOk,
+                      error: rawOk ? undefined : "JSON parse failed and raw setValue did not read back",
+                      rawValLength: rawValLen,
+                      rawValPreview: rawValStr.substring(0, 50),
+                      parseError1: parseError1,
+                      parseError2: parseError2
+                    });
+                  } catch (eRaw) {
                     setResults.push({
                       textIndex: ti2, compIndex: tc.compIndex, propIndex: tc.propIndex, requestedText: newText,
                       ok: false,
-                      error: "Both JSON parse strategies failed",
+                      error: "JSON parse failed: " + eRaw.toString(),
                       rawValLength: rawValLen,
                       rawValPreview: rawValStr.substring(0, 50),
-                      parseError1: eP1.toString(),
-                      parseError2: eP2.toString()
+                      parseError1: parseError1,
+                      parseError2: parseError2
                     });
-                    continue;
                   }
+                  continue;
                 }
                 // Mutate the text in the proper nested path(s)
                 var mutated = [];
@@ -5384,6 +5460,10 @@ ${this.buildSequenceResolver(sequenceId)}
                   textObj.textEditValue = newText;
                   textObj.fontTextRunLength = [newText.length];
                   mutated.push("textEditValue+fontTextRunLength");
+                }
+                if (textObj.mTextString !== undefined) {
+                  textObj.mTextString = newText;
+                  mutated.push("mTextString");
                 }
                 if (mutated.length === 0) {
                   setResults.push({
@@ -5404,15 +5484,15 @@ ${this.buildSequenceResolver(sequenceId)}
                 var afterParseOk = false;
                 var afterText = "";
                 try {
-                  var afterObj = JSON.parse(afterRaw.substring(headerBytes.length));
-                  if (afterObj.mTextParam && afterObj.mTextParam.mStyleSheet) {
-                    afterText = afterObj.mTextParam.mStyleSheet.mText;
-                    afterParseOk = true;
-                  } else if (afterObj.textEditValue) {
-                    afterText = afterObj.textEditValue;
-                    afterParseOk = true;
-                  }
-                } catch (eAP) {}
+                  var afterPayload = headerBytes ? afterRaw.substring(headerBytes.length) : afterRaw;
+                  var braceAfter = afterPayload.indexOf("{");
+                  if (braceAfter > 0) afterPayload = afterPayload.substring(braceAfter);
+                  var afterObj = JSON.parse(afterPayload);
+                  afterText = textFromObj(afterObj);
+                  afterParseOk = afterText.length > 0;
+                } catch (eAP) {
+                  if (afterRaw.indexOf(newText) >= 0) afterText = newText;
+                }
                 setResults.push({
                   textIndex: ti2,
                   compIndex: tc.compIndex,
@@ -6105,15 +6185,16 @@ ${this.buildSequenceResolver(sequenceId)}
   }
 
   private async speedChange(clipId: string, speed: number, maintainAudio = true): Promise<any> {
-    // QE setSpeed takes a percent (100 = 1x). The schema documents a multiplier
-    // (0.5 = half speed); values already > 10 are treated as percents.
-    const speedPercent = speed <= 10 ? speed * 100 : speed;
+    // QE setSpeed takes a multiplier (1 = 1x), not a percent. Values already > 10
+    // are treated as percents (150 → 1.5) because agents send both shapes.
     const script = `
       try {
         app.enableQE();
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var oldSpeed = info.clip.getSpeed();
+        var ratio = __normalizeSpeedRatio(${speed});
+        if (ratio == null) return JSON.stringify({ success: false, error: "Invalid speed" });
         // Addressed by id, not by whatever is on screen. __findClip() searches every
         // sequence in the project, so a clip can be resolved out of one sequence and
         // then, through getActiveSequence(), have the effect applied to whichever
@@ -6122,15 +6203,14 @@ ${this.buildSequenceResolver(sequenceId)}
         if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
         var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
         var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
-        try { qeClip.setSpeed(${speedPercent}, ${maintainAudio}); } catch(e2) {
-          var currentPercent = Number(oldSpeed);
-          if (currentPercent <= 10) currentPercent = currentPercent * 100;
-          if (Math.abs(currentPercent - ${speedPercent}) < 0.01) {
-            return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speedPercent}, changed: false, method: "already at requested speed" });
+        try { __setClipSpeed(qeClip, info.clip, ratio, false, ${maintainAudio}, false); } catch(e2) {
+          var currentRatio = __normalizeSpeedRatio(oldSpeed);
+          if (currentRatio != null && Math.abs(currentRatio - ratio) < 0.01) {
+            return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ratio, changed: false, method: "already at requested speed" });
           }
           return JSON.stringify({ success: false, error: "Speed change via QE DOM not available: " + e2.toString() });
         }
-        return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ${speedPercent} });
+        return JSON.stringify({ success: true, oldSpeed: oldSpeed, newSpeed: ratio });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }

@@ -391,6 +391,10 @@ Opt out in any of these ways:
 - Set `PREMIERE_MCP_TELEMETRY=0` in the MCP server environment
 - Set `DO_NOT_TRACK=1`
 
+## Updates
+
+When a newer package is on npm, the MCP Bridge panel shows **Update now** and **Later**. Later snoozes the prompt for 7 days. Agents also see this on `get_capabilities`. Opt out with `PREMIERE_MCP_UPDATE_CHECK=0` or `"updateCheck": false` in `~/.premiere-mcp-bridge/config.json`.
+
 ## Troubleshooting
 
 If the tools are visible but calls fail:

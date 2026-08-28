@@ -9,6 +9,7 @@ import { PremiereProPrompts } from './prompts/index.js';
 import { PremiereProBridge } from './bridge/index.js';
 import { Logger } from './utils/logger.js';
 import { PACKAGE_VERSION } from './version.js';
+import { checkForUpdate } from './utils/update-check.js';
 import {
   getTelemetry,
   summarizeToolFailure,
@@ -214,6 +215,11 @@ class MCPPremiereProServer {
       
       this.logger.info('MCP Adobe Premiere Pro Server started successfully');
       this.telemetry.trackServerStarted();
+      void checkForUpdate().then((status) => {
+        if (status.available && !status.snoozed && status.nextStep) {
+          this.logger.warn(status.nextStep);
+        }
+      });
     } catch (error) {
       this.logger.error('Failed to start server:', error);
       throw error;

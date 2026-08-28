@@ -184,6 +184,7 @@ export function sanitizeErrorDetail(message: string | undefined): string | undef
   text = text.replace(/[A-Za-z]:\\[^\s"']+/g, '<path>');
   text = text.replace(/~\/[^\s"']+/g, '<path>');
   text = text.replace(/(^|[\s"'=(])((?:\/[\w.+-]+)+)/g, '$1<path>');
+  text = text.replace(/\bsequence ['"][^'"]{1,200}['"]/gi, 'sequence <name>');
   text = text.replace(
     /["']([^"']+\.(?:prproj|mp4|mov|avi|mkv|wav|mp3|aep|mogrt|xml|csv|png|jpe?g))["']/gi,
     '"<file>"',

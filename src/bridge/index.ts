@@ -364,19 +364,63 @@ function __findQeClipByDomClip(qeTrack, domClip) {
   }
   return best;
 }
+function __idsMatch(a, b) {
+  if (a == null || b == null) return false;
+  var sa = String(a);
+  var sb = String(b);
+  if (sa === sb) return true;
+  if (sa.toLowerCase() === sb.toLowerCase()) return true;
+  function numericId(s) {
+    if (/^[0-9]+$/.test(s)) return parseInt(s, 10);
+    if (/^[0-9a-fA-F]+$/.test(s) && (/[a-fA-F]/.test(s) || s.charAt(0) === "0")) return parseInt(s, 16);
+    return NaN;
+  }
+  var na = numericId(sa);
+  var nb = numericId(sb);
+  return !isNaN(na) && !isNaN(nb) && na === nb;
+}
+function __normalizeSpeedRatio(speed) {
+  var n = Number(speed);
+  if (!isFinite(n) || n <= 0) return null;
+  if (n > 10) n = n / 100;
+  return n;
+}
+function __setClipSpeed(qeClip, domClip, ratio, reverse, maintainPitch, ripple) {
+  // QE setSpeed is five arguments: (multiplier, durationTicksString, reverse, pitch, ripple).
+  // Two-arg (percent, boolean) throws "Not Enough Parameters" or "Illegal Parameter type".
+  // Read ticks from the regular DOM — qeClip.duration is a timecode string, Number() of it is NaN.
+  if (!qeClip || typeof qeClip.setSpeed !== "function") {
+    throw new Error("QE clip setSpeed API unavailable");
+  }
+  var origTicks = 0;
+  try { origTicks = Number(domClip.duration.ticks); } catch (eTicks) {}
+  var targetTicks = (origTicks > 0 && ratio > 0) ? String(Math.round(origTicks / ratio)) : "";
+  var rev = Boolean(reverse);
+  var pitch = Boolean(maintainPitch);
+  var rip = Boolean(ripple);
+  try {
+    return qeClip.setSpeed(ratio, targetTicks, rev, pitch, rip);
+  } catch (ePrimary) {
+    try {
+      return qeClip.setSpeed(ratio, "", rev, pitch, rip);
+    } catch (eEmpty) {
+      throw ePrimary;
+    }
+  }
+}
 function __findClipInSequence(seq, nodeId) {
   if (!seq) return null;
   for (var t = 0; t < seq.videoTracks.numTracks; t++) {
     var track = seq.videoTracks[t];
     for (var c = 0; c < track.clips.numItems; c++) {
-      if (track.clips[c].nodeId === nodeId)
+      if (__idsMatch(track.clips[c].nodeId, nodeId))
         return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'video', sequence: seq, sequenceId: seq.sequenceID, sequenceName: seq.name };
     }
   }
   for (var t = 0; t < seq.audioTracks.numTracks; t++) {
     var track = seq.audioTracks[t];
     for (var c = 0; c < track.clips.numItems; c++) {
-      if (track.clips[c].nodeId === nodeId)
+      if (__idsMatch(track.clips[c].nodeId, nodeId))
         return { clip: track.clips[c], track: track, trackIndex: t, clipIndex: c, trackType: 'audio', sequence: seq, sequenceId: seq.sequenceID, sequenceName: seq.name };
     }
   }
@@ -405,7 +449,7 @@ function __samePath(a, b) {
 function __findProjectItem(nodeId) {
   if (!app.project || !app.project.rootItem) return null;
   function walk(item) {
-    if (item.nodeId === nodeId) return item;
+    if (__idsMatch(item.nodeId, nodeId)) return item;
     if (item.children) {
       for (var i = 0; i < item.children.numItems; i++) {
         var found = walk(item.children[i]);

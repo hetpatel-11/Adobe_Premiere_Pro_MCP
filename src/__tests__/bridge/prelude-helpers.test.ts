@@ -167,4 +167,85 @@ describe('prelude QE helpers', () => {
       expect((sandbox.__result as { start: { ticks: string } }).start.ticks).toBe('100');
     });
   });
+
+  describe('__idsMatch', () => {
+    it('treats Premiere hex nodeIds and decimal nodeIds as the same clip', async () => {
+      const sandbox = await runWithPrelude(`
+        __same = __idsMatch('000f4242', 1000002);
+        __padded = __idsMatch('000f4242', '000F4242');
+        __different = __idsMatch('000f4242', '000f4243');
+      `);
+
+      expect(sandbox.__same).toBe(true);
+      expect(sandbox.__padded).toBe(true);
+      expect(sandbox.__different).toBe(false);
+    });
+  });
+
+  describe('__normalizeSpeedRatio / __setClipSpeed', () => {
+    it('keeps multipliers and converts percents above 10', async () => {
+      const sandbox = await runWithPrelude(`
+        __half = __normalizeSpeedRatio(0.5);
+        __two = __normalizeSpeedRatio(2);
+        __percent = __normalizeSpeedRatio(150);
+        __invalid = __normalizeSpeedRatio(0);
+      `);
+
+      expect(sandbox.__half).toBe(0.5);
+      expect(sandbox.__two).toBe(2);
+      expect(sandbox.__percent).toBe(1.5);
+      expect(sandbox.__invalid).toBeNull();
+    });
+
+    it('calls QE setSpeed with multiplier, ticks string, reverse, pitch, ripple', async () => {
+      const sandbox = await runWithPrelude(`
+        var calls = [];
+        var qeClip = { setSpeed: function () { calls.push([].slice.call(arguments)); return true; } };
+        var domClip = { duration: { ticks: '254016000000' } };
+        __ok = __setClipSpeed(qeClip, domClip, 2, false, true, false);
+        __calls = calls;
+      `);
+
+      expect(sandbox.__ok).toBe(true);
+      expect(sandbox.__calls).toEqual([[2, '127008000000', false, true, false]]);
+    });
+
+    it('retries with an empty ticks string when the duration form is rejected', async () => {
+      const sandbox = await runWithPrelude(`
+        var calls = [];
+        var qeClip = { setSpeed: function (ratio, ticks) {
+          calls.push([].slice.call(arguments));
+          if (ticks !== '') throw new Error('Illegal Parameter type');
+          return true;
+        } };
+        var domClip = { duration: { ticks: '254016000000' } };
+        __ok = __setClipSpeed(qeClip, domClip, 0.5, false, false, false);
+        __calls = calls;
+      `);
+
+      expect(sandbox.__ok).toBe(true);
+      expect(sandbox.__calls).toHaveLength(2);
+      expect((sandbox.__calls as unknown[])[0]).toEqual([0.5, '508032000000', false, false, false]);
+      expect((sandbox.__calls as unknown[])[1]).toEqual([0.5, '', false, false, false]);
+    });
+  });
+
+  describe('__findClip hex/decimal', () => {
+    it('finds a clip whose nodeId is a number when the caller passed padded hex', async () => {
+      const sandbox = await runWithPrelude(`
+        app.project = {
+          activeSequence: {
+            sequenceID: 's1',
+            name: 'Seq',
+            videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: { nodeId: 1000002, name: 'A' } } } },
+            audioTracks: { numTracks: 0 }
+          },
+          sequences: { numSequences: 0 }
+        };
+        __result = __findClip('000f4242');
+      `);
+
+      expect((sandbox.__result as { clip: { name: string } }).clip.name).toBe('A');
+    });
+  });
 });
