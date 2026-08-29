@@ -1125,7 +1125,7 @@ export class PremiereProTools {
           componentName: z.string().describe('The display name of the component (e.g., "Motion", "Opacity")'),
           paramName: z.string().describe('The display name of the parameter (e.g., "Position", "Scale")'),
           time: z.number().describe('The time in seconds for the keyframe'),
-          value: z.number().describe('The value to set at this keyframe')
+          value: z.union([z.number(), z.array(z.number())]).describe('The value to set at this keyframe. A number for Scale/Opacity/Rotation; [x,y] for Position.')
         })
       },
       {
@@ -4131,10 +4131,10 @@ ${this.buildSequenceResolver(sequenceId)}
         var qeTrack, effect;
         if (info.trackType === 'video') {
           qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-          effect = qe.project.getVideoEffectByName(${effectNameJson});
+          effect = __findQeNamed("videoEffect", ${effectNameJson});
         } else {
           qeTrack = qeSeq.getAudioTrackAt(info.trackIndex);
-          effect = qe.project.getAudioEffectByName(${effectNameJson});
+          effect = __findQeNamed("audioEffect", ${effectNameJson});
         }
         if (!effect) return JSON.stringify({ success: false, error: "Effect not found: " + ${effectNameJson} + ". Use list_available_effects to see available effects." });
         function findQeClipByTime() {
@@ -4165,18 +4165,28 @@ ${this.buildSequenceResolver(sequenceId)}
         clip = afterInfo.clip;
         var afterComponents = snapshotComponents(clip);
         var afterCount = afterComponents.length;
-        if (afterCount <= beforeCount) {
-          return JSON.stringify({
-            success: false,
-            error: "Effect add did not create a new component on the target clip",
-            clipId: ${clipIdJson},
-            effectName: ${effectNameJson},
-            beforeComponentCount: beforeCount,
-            afterComponentCount: afterCount
-          });
-        }
         var candidateIndices = [];
-        if (afterCount === beforeCount + 1) {
+        if (afterCount <= beforeCount) {
+          var existingIdx = -1;
+          for (var ei = 0; ei < afterComponents.length; ei++) {
+            if (__namesMatch(afterComponents[ei].displayName, ${effectNameJson}) ||
+                __namesMatch(afterComponents[ei].matchName, ${effectNameJson})) {
+              existingIdx = ei;
+              break;
+            }
+          }
+          if (existingIdx < 0) {
+            return JSON.stringify({
+              success: false,
+              error: "Effect add did not create a new component on the target clip",
+              clipId: ${clipIdJson},
+              effectName: ${effectNameJson},
+              beforeComponentCount: beforeCount,
+              afterComponentCount: afterCount
+            });
+          }
+          candidateIndices = [existingIdx];
+        } else if (afterCount === beforeCount + 1) {
           for (var candidateIndex = 0; candidateIndex < afterCount; candidateIndex++) {
             var withoutCandidate = [];
             for (var afterIndex = 0; afterIndex < afterCount; afterIndex++) {
@@ -4361,7 +4371,9 @@ ${this.buildSequenceResolver(sequenceId)}
         var cropCompIdx = -1;
 
         function isCropComponent(component) {
-          return String(component.displayName) === "Crop" || String(component.matchName) === "AE.ADBE AECrop";
+          var matchName = "";
+          try { matchName = String(component.matchName || ""); } catch (eCrop) {}
+          return __namesMatch(component.displayName, "Crop") || matchName === "AE.ADBE AECrop";
         }
 
         function findCropComponent() {
@@ -4386,7 +4398,7 @@ ${this.buildSequenceResolver(sequenceId)}
           if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence not available" });
           var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
           if (!qeTrack) return JSON.stringify({ success: false, error: "QE video track not found for clip" });
-          var effect = qe.project.getVideoEffectByName("Crop");
+          var effect = __findQeNamed("videoEffect", "Crop");
           if (!effect) return JSON.stringify({ success: false, error: "Crop effect not found. Use list_available_effects to inspect installed effects." });
 
           function findQeClipByTime() {
@@ -4411,7 +4423,7 @@ ${this.buildSequenceResolver(sequenceId)}
           var qeClip = findQeClipByTime();
           if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for Crop effect" });
           qeClip.addVideoEffect(effect);
-          if (clip.components.numItems <= beforeCount) {
+          if (clip.components.numItems <= beforeCount && !findCropComponent()) {
             return JSON.stringify({
               success: false,
               error: "Crop effect add did not create a new component on the target clip",
@@ -4419,7 +4431,7 @@ ${this.buildSequenceResolver(sequenceId)}
               afterComponentCount: clip.components.numItems
             });
           }
-          effectAdded = true;
+          effectAdded = clip.components.numItems > beforeCount;
           if (!findCropComponent()) {
             var addedNames = [];
             for (var ai = beforeCount; ai < clip.components.numItems; ai++) {
@@ -4561,7 +4573,7 @@ ${this.buildSequenceResolver(sequenceId)}
         var qeTrack = qeSeq.getVideoTrackAt(targetInfo.trackIndex);
         var qeClip = __findQeClipByDomClip(qeTrack, targetInfo.clip);
         if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for transition" });
-        var transition = qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)});
+        var transition = __findQeNamed("videoTransition", ${JSON.stringify(transitionName)});
         if (!transition) return JSON.stringify({ success: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} + ". Use list_available_transitions." });
         // The clip may live outside the active sequence, and a duration in frames
         // computed from the wrong timebase gives the transition the wrong length.
@@ -4572,6 +4584,7 @@ ${this.buildSequenceResolver(sequenceId)}
         var before = __readQeTransitionState(qeClip);
         var beforeXml = __transitionXmlCount(seq);
         qeClip.addTransition(transition, info2 ? false : true, String(frames), "0", 0.5, false, true);
+        try { if (typeof $ !== "undefined" && $.sleep) $.sleep(150); } catch (eWait) {}
         var afterClip = __findQeClipByDomClip(qeTrack, targetInfo.clip);
         var after = __readQeTransitionState(afterClip);
         var afterXml = __transitionXmlCount(seq);
@@ -4614,8 +4627,8 @@ ${this.buildSequenceResolver(sequenceId)}
         var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
         if (!qeClip) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Could not locate matching QE clip for transition" });
         var transition = info.trackType === 'video'
-          ? qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)})
-          : qe.project.getAudioTransitionByName(${JSON.stringify(transitionName)});
+          ? __findQeNamed("videoTransition", ${JSON.stringify(transitionName)})
+          : __findQeNamed("audioTransition", ${JSON.stringify(transitionName)});
         if (!transition) return JSON.stringify({ success: false, status: "failed", verified: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} });
         // The clip may live outside the active sequence, and a duration in frames
         // computed from the wrong timebase gives the transition the wrong length.
@@ -4626,6 +4639,7 @@ ${this.buildSequenceResolver(sequenceId)}
         var before = __readQeTransitionState(qeClip);
         var beforeXml = __transitionXmlCount(seq);
         qeClip.addTransition(transition, ${atEnd}, String(frames), "0", 0.5, true, true);
+        try { if (typeof $ !== "undefined" && $.sleep) $.sleep(150); } catch (eWait) {}
         var afterClip = __findQeClipByDomClip(qeTrack, info.clip);
         var after = __readQeTransitionState(afterClip);
         var afterXml = __transitionXmlCount(seq);
@@ -4907,55 +4921,18 @@ ${this.buildSequenceResolver(sequenceId)}
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
 
-        // Localized display names for the Volume component
-        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
-        // Localized display names for the Level property inside Volume
-        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
-
-        function isOneOf(name, list) {
-          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
-          return false;
-        }
-
-        // Build dump for debug fallback
-        var dump = [];
-        var volumeComp = null;
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          var compName = String(comp.displayName);
-          var propsList = [];
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            propsList.push(String(comp.properties[j].displayName));
-          }
-          dump.push({ idx: i, component: compName, properties: propsList });
-          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
-            volumeComp = comp;
-          }
-        }
-        if (!volumeComp) {
+        var resolvedLevel = __resolveClipProperty(clip, "Volume", "Level");
+        if (!resolvedLevel.ok) {
           return JSON.stringify({
             success: false,
-            error: "Volume component not found on clip",
-            components_dump: dump
+            error: resolvedLevel.error.indexOf("Volume") >= 0
+              ? "Volume component not found on clip"
+              : "Level property not found inside Volume component",
+            available: resolvedLevel.available
           });
         }
-
-        var levelProp = null;
-        for (var j = 0; j < volumeComp.properties.numItems; j++) {
-          var pName = String(volumeComp.properties[j].displayName);
-          if (isOneOf(pName, LEVEL_NAMES)) {
-            levelProp = volumeComp.properties[j];
-            break;
-          }
-        }
-        if (!levelProp) {
-          return JSON.stringify({
-            success: false,
-            error: "Level property not found inside Volume component",
-            volume_component: String(volumeComp.displayName),
-            properties_in_volume: dump.length > 0 ? dump : []
-          });
-        }
+        var volumeComp = resolvedLevel.component;
+        var levelProp = resolvedLevel.property;
 
         // CALIBRATION (empirical, Premiere Pro 2026 macOS, locale es_ES):
         //   Premiere's clip Volume Level property uses a linear amplitude scale where the
@@ -5023,53 +5000,16 @@ ${this.buildSequenceResolver(sequenceId)}
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
 
-        // Locale-aware Volume component / Level property detection (matches adjustAudioLevels patch).
-        // Without this, the function fails with "Volume property not found" on non-English Premiere
-        // installs (e.g., Spanish "Volumen"/"Nivel", German "Lautstärke"/"Pegel", etc.).
-        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
-        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
-        function isOneOf(name, list) {
-          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
-          return false;
-        }
-
-        var volumeComp = null;
-        var dump = [];
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          var compName = String(comp.displayName);
-          var propsList = [];
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            propsList.push(String(comp.properties[j].displayName));
-          }
-          dump.push({ idx: i, component: compName, properties: propsList });
-          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
-            volumeComp = comp;
-          }
-        }
-        if (!volumeComp) {
-          return JSON.stringify({
-            success: false,
-            error: "Volume component not found on clip (locale-aware lookup failed)",
-            components_dump: dump
-          });
-        }
-
-        var levelProp = null;
-        for (var k = 0; k < volumeComp.properties.numItems; k++) {
-          var pName = String(volumeComp.properties[k].displayName);
-          if (isOneOf(pName, LEVEL_NAMES)) {
-            levelProp = volumeComp.properties[k];
-            break;
-          }
-        }
-        if (!levelProp) {
+        var resolvedLevel = __resolveClipProperty(clip, "Volume", "Level");
+        if (!resolvedLevel.ok) {
           return JSON.stringify({
             success: false,
             error: "Level property not found inside Volume component",
-            volume_component: String(volumeComp.displayName)
+            available: resolvedLevel.available
           });
         }
+        var volumeComp = resolvedLevel.component;
+        var levelProp = resolvedLevel.property;
 
         levelProp.setTimeVarying(true);
         var addedKeyframes = [];
@@ -6016,7 +5956,7 @@ ${this.buildSequenceResolver(sequenceId)}
         // open in the timeline instead: asking for a non-active sequence
         // returned success, echoed back the requested sequenceId, and wrote a
         // frame of the active sequence's content.
-        var qeSequence = __qeSequenceFor(sequence);
+        var qeSequence = __qeSequenceForRetry(sequence);
         if (!qeSequence) {
           return JSON.stringify({
             success: false,
@@ -6040,6 +5980,11 @@ ${this.buildSequenceResolver(sequenceId)}
           exportTime.seconds = timeNumber;
           timeTicks = exportTime.ticks;
         } catch (e1) {}
+        var fps = 30;
+        try {
+          fps = sequence.timebase ? (254016000000 / parseInt(sequence.timebase, 10)) : 30;
+        } catch (eFps) {}
+        var timeCode = __secondsToTimecode(timeNumber, fps);
 
         // Premiere's exportFrame* methods always append "." + format to the
         // path they are handed, so passing the caller's "shot.png" wrote
@@ -6117,6 +6062,8 @@ ${this.buildSequenceResolver(sequenceId)}
         }
 
         var exported =
+          tryExport(timeCode, exportStem) ||
+          tryExport(exportStem, timeCode) ||
           tryExport(timeNumber, exportStem) ||
           tryExport(exportStem, timeNumber) ||
           tryExport(timeString, exportStem) ||
@@ -7137,10 +7084,10 @@ ${this.buildSequenceResolver(sequenceId)}
             for (var pj = 0; pj < comp.properties.numItems; pj++) {
               var pp = comp.properties[pj];
               try {
-                if (pp.displayName === "Opacity") m.opacity = pp.getValue();
-                else if (pp.displayName === "Scale") m.scale = pp.getValue();
-                else if (pp.displayName === "Rotation") m.rotation = pp.getValue();
-                else if (pp.displayName === "Position") {
+                if (__namesMatch(pp.displayName, "Opacity")) m.opacity = pp.getValue();
+                else if (__namesMatch(pp.displayName, "Scale")) m.scale = pp.getValue();
+                else if (__namesMatch(pp.displayName, "Rotation")) m.rotation = pp.getValue();
+                else if (__namesMatch(pp.displayName, "Position")) {
                   var pv = pp.getValue();
                   if (pv && pv.length >= 2) {
                     m.positionNormalized = { x: pv[0], y: pv[1] };
@@ -7212,23 +7159,28 @@ ${this.buildSequenceResolver(sequenceId)}
         } catch (e0) {}
         var want = { opacity: it.opacity !== null, scale: it.scale !== null, rotation: it.rotation !== null, position: (it.posX !== null || it.posY !== null) };
         var done = { opacity: false, scale: false, rotation: false, position: false };
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            var p = comp.properties[j];
+        function applyNamed(kind, componentName, paramName, value) {
+          var resolved = __resolveClipProperty(clip, componentName, paramName);
+          if (!resolved.ok) return false;
+          try {
+            resolved.property.setValue(__coercePropertyValue(resolved.property, value, resolved.axis), true);
+            return true;
+          } catch (eSet) { return false; }
+        }
+        if (want.opacity) done.opacity = applyNamed("opacity", "Opacity", "Opacity", it.opacity);
+        if (want.scale) done.scale = applyNamed("scale", "Motion", "Scale", it.scale);
+        if (want.rotation) done.rotation = applyNamed("rotation", "Motion", "Rotation", it.rotation);
+        if (want.position) {
+          var resolvedPos = __resolveClipProperty(clip, "Motion", "Position");
+          if (resolvedPos.ok) {
             try {
-              if (want.opacity && p.displayName === "Opacity") { p.setValue(it.opacity, true); done.opacity = true; }
-              if (want.scale && p.displayName === "Scale") { p.setValue(it.scale, true); done.scale = true; }
-              if (want.rotation && p.displayName === "Rotation") { p.setValue(it.rotation, true); done.rotation = true; }
-              if (want.position && p.displayName === "Position") {
-                var __cur = [0.5, 0.5];
-                try { __cur = p.getValue(); } catch (ep) {}
-                var __nx = it.posX !== null ? (it.posX / __seqW) : __cur[0];
-                var __ny = it.posY !== null ? (it.posY / __seqH) : __cur[1];
-                p.setValue([__nx, __ny], true);
-                done.position = true;
-              }
-            } catch (e2) {}
+              var __cur = [0.5, 0.5];
+              try { __cur = resolvedPos.property.getValue(); } catch (ep) {}
+              var __nx = it.posX !== null ? (it.posX / __seqW) : __cur[0];
+              var __ny = it.posY !== null ? (it.posY / __seqH) : __cur[1];
+              resolvedPos.property.setValue([__nx, __ny], true);
+              done.position = true;
+            } catch (ePos) {}
           }
         }
         var missing = [];
@@ -7283,23 +7235,28 @@ ${this.buildSequenceResolver(sequenceId)}
             // setValue (or a Motion property that isn't present) surfaces instead of a false success.
             var want = { opacity: it.opacity !== null, scale: it.scale !== null, rotation: it.rotation !== null, position: (it.posX !== null || it.posY !== null) };
             var done = { opacity: false, scale: false, rotation: false, position: false };
-            for (var i = 0; i < clip.components.numItems; i++) {
-              var comp = clip.components[i];
-              for (var j = 0; j < comp.properties.numItems; j++) {
-                var p = comp.properties[j];
+            function applyNamed(componentName, paramName, value) {
+              var resolved = __resolveClipProperty(clip, componentName, paramName);
+              if (!resolved.ok) return false;
+              try {
+                resolved.property.setValue(__coercePropertyValue(resolved.property, value, resolved.axis), true);
+                return true;
+              } catch (eSet) { return false; }
+            }
+            if (want.opacity) done.opacity = applyNamed("Opacity", "Opacity", it.opacity);
+            if (want.scale) done.scale = applyNamed("Motion", "Scale", it.scale);
+            if (want.rotation) done.rotation = applyNamed("Motion", "Rotation", it.rotation);
+            if (want.position) {
+              var resolvedPos = __resolveClipProperty(clip, "Motion", "Position");
+              if (resolvedPos.ok) {
                 try {
-                  if (want.opacity && p.displayName === "Opacity") { p.setValue(it.opacity, true); done.opacity = true; }
-                  if (want.scale && p.displayName === "Scale") { p.setValue(it.scale, true); done.scale = true; }
-                  if (want.rotation && p.displayName === "Rotation") { p.setValue(it.rotation, true); done.rotation = true; }
-                  if (want.position && p.displayName === "Position") {
-                    var __cur = [0.5, 0.5];
-                    try { __cur = p.getValue(); } catch (ep) {}
-                    var __nx = it.posX !== null ? (it.posX / __seqW) : __cur[0];
-                    var __ny = it.posY !== null ? (it.posY / __seqH) : __cur[1];
-                    p.setValue([__nx, __ny], true);
-                    done.position = true;
-                  }
-                } catch (e2) {}
+                  var __cur = [0.5, 0.5];
+                  try { __cur = resolvedPos.property.getValue(); } catch (ep) {}
+                  var __nx = it.posX !== null ? (it.posX / __seqW) : __cur[0];
+                  var __ny = it.posY !== null ? (it.posY / __seqH) : __cur[1];
+                  resolvedPos.property.setValue([__nx, __ny], true);
+                  done.position = true;
+                } catch (ePos) {}
               }
             }
             var missing = [];
@@ -7317,7 +7274,13 @@ ${this.buildSequenceResolver(sequenceId)}
         }
         var applied = 0;
         for (var k = 0; k < results.length; k++) { if (results[k].success) applied++; }
-        return JSON.stringify({ success: (applied === specs.length), applied: applied, total: specs.length, results: results });
+        return JSON.stringify({
+          success: (applied === specs.length && specs.length > 0),
+          applied: applied,
+          total: specs.length,
+          results: results,
+          error: applied === specs.length ? undefined : "properties not applied on " + (specs.length - applied) + " clip(s)"
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
@@ -7477,38 +7440,27 @@ ${this.buildSequenceResolver(sequenceId)}
   }
 
   // Keyframe Implementation
-  private async addKeyframe(clipId: string, componentName: string, paramName: string, time: number, value: number): Promise<any> {
+  private async addKeyframe(clipId: string, componentName: string, paramName: string, time: number, value: number | number[]): Promise<any> {
     const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-        function namesMatch(a, b) {
-          return String(a || "").toLowerCase().replace(/[\\s_-]+/g, "") === String(b || "").toLowerCase().replace(/[\\s_-]+/g, "");
-        }
-        var param = null;
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          if (!namesMatch(comp.displayName, ${JSON.stringify(componentName)})) continue;
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            if (namesMatch(comp.properties[j].displayName, ${JSON.stringify(paramName)})) {
-              param = comp.properties[j];
-              break;
-            }
-          }
-          if (param) break;
-        }
-        if (!param) return JSON.stringify({ success: false, error: "Parameter " + ${JSON.stringify(paramName)} + " not found in component " + ${JSON.stringify(componentName)} });
+        var resolved = __resolveClipProperty(info.clip, ${JSON.stringify(componentName)}, ${JSON.stringify(paramName)});
+        if (!resolved.ok) return JSON.stringify({ success: false, error: resolved.error, available: resolved.available });
+        var param = resolved.property;
+        var coerced = __coercePropertyValue(param, ${JSON.stringify(value)}, resolved.axis);
         param.setTimeVarying(true);
         param.addKey(${time});
-        param.setValueAtKey(${time}, ${value}, true);
+        param.setValueAtKey(${time}, coerced, true);
         return JSON.stringify({
           success: true,
           message: "Keyframe added",
           componentName: ${JSON.stringify(componentName)},
           paramName: ${JSON.stringify(paramName)},
+          resolvedComponent: String(resolved.component.displayName),
+          resolvedParam: String(param.displayName),
           time: ${time},
-          value: ${value}
+          value: ${JSON.stringify(value)}
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -7522,23 +7474,9 @@ ${this.buildSequenceResolver(sequenceId)}
       try {
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-        function namesMatch(a, b) {
-          return String(a || "").toLowerCase().replace(/[\\s_-]+/g, "") === String(b || "").toLowerCase().replace(/[\\s_-]+/g, "");
-        }
-        var param = null;
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          if (!namesMatch(comp.displayName, ${JSON.stringify(componentName)})) continue;
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            if (namesMatch(comp.properties[j].displayName, ${JSON.stringify(paramName)})) {
-              param = comp.properties[j];
-              break;
-            }
-          }
-          if (param) break;
-        }
-        if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
+        var resolved = __resolveClipProperty(info.clip, ${JSON.stringify(componentName)}, ${JSON.stringify(paramName)});
+        if (!resolved.ok) return JSON.stringify({ success: false, error: resolved.error, available: resolved.available });
+        var param = resolved.property;
         param.removeKey(${time});
         return JSON.stringify({
           success: true,
@@ -7557,23 +7495,9 @@ ${this.buildSequenceResolver(sequenceId)}
       try {
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-        function namesMatch(a, b) {
-          return String(a || "").toLowerCase().replace(/[\\s_-]+/g, "") === String(b || "").toLowerCase().replace(/[\\s_-]+/g, "");
-        }
-        var param = null;
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          if (!namesMatch(comp.displayName, ${JSON.stringify(componentName)})) continue;
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            if (namesMatch(comp.properties[j].displayName, ${JSON.stringify(paramName)})) {
-              param = comp.properties[j];
-              break;
-            }
-          }
-          if (param) break;
-        }
-        if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
+        var resolved = __resolveClipProperty(info.clip, ${JSON.stringify(componentName)}, ${JSON.stringify(paramName)});
+        if (!resolved.ok) return JSON.stringify({ success: false, error: resolved.error, available: resolved.available });
+        var param = resolved.property;
         var isTimeVarying = param.isTimeVarying();
         if (!isTimeVarying) {
           return JSON.stringify({
@@ -7658,7 +7582,7 @@ ${this.buildSequenceResolver(sequenceId)}
         var qeSeq = __qeSequenceFor(sequence);
         if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + sequence.name + "' through the QE API." });
         var qeTrack = qeSeq.getVideoTrackAt(${trackIndex});
-        var transition = qe.project.getVideoTransitionByName(${JSON.stringify(transitionName)});
+        var transition = __findQeNamed("videoTransition", ${JSON.stringify(transitionName)});
         if (!transition) return JSON.stringify({ success: false, error: "Transition not found: " + ${JSON.stringify(transitionName)} });
         var added = 0;
         var errors = [];

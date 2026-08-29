@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { PremiereProTransport } from '../bridge/types.js';
@@ -226,6 +227,9 @@ export async function executeExpandedTool(
       return await bridge.executeScript(script, undefined, true);
     }
 
+    if (name === 'capture_frame' && !args.outputPath && !args.path) {
+      args = { ...args, outputPath: join(tmpdir(), `premiere-mcp-frame-${Date.now()}.png`) };
+    }
     const script = buildExpandedToolScript(name, args);
     const timeoutMs = name === 'ping' ? 8000 : undefined;
     return await bridge.executeScript(script, timeoutMs);
@@ -622,12 +626,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       return app.project && app.project.activeSequence ? app.project.activeSequence : null;
     }
     function findSequence(idOrName) {
-      if (!app.project || !app.project.sequences) return null;
-      for (var i = 0; i < app.project.sequences.numSequences; i++) {
-        var seq = app.project.sequences[i];
-        if (seq.sequenceID === idOrName || seq.name === idOrName) return seq;
-      }
-      return null;
+      return __findSequence(idOrName);
     }
     // Returns an error message when the caller named a sequence that does not
     // resolve, and null otherwise. targetSequence() already distinguishes "no id
@@ -719,13 +718,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       }
     }
     function findItem(idOrName) {
-      if (!app.project || !app.project.rootItem) return null;
-      var found = null;
-      var wanted = String(idOrName);
-      walkItems(app.project.rootItem, function(item) {
-        if (!found && (__idsMatch(item.nodeId, wanted) || item.name === idOrName || item.treePath === idOrName)) found = item;
-      });
-      return found;
+      return __resolveProjectItem(idOrName);
     }
     function allProjectItems() {
       var items = [];
@@ -975,10 +968,13 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
     }
     function findComponent(clip, componentName) {
       if (!clip || !clip.components) return null;
-      var wanted = normalizeName(componentName);
       for (var i = 0; i < clip.components.numItems; i++) {
         var component = clip.components[i];
-        if (normalizeName(component.displayName) === wanted || normalizeName(component.matchName) === wanted) return { component: component, index: i };
+        var matchName = "";
+        try { matchName = String(component.matchName || ""); } catch (eMatch) {}
+        if (__namesMatch(component.displayName, componentName) || __namesMatch(matchName, componentName)) {
+          return { component: component, index: i };
+        }
       }
       return null;
     }
@@ -995,15 +991,15 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
     }
     function setComponentProperty(component, propertyName, value) {
       if (!component || !component.properties) return { ok: false, error: "Component has no properties" };
-      var wanted = normalizeName(propertyName);
       for (var i = 0; i < component.properties.numItems; i++) {
         var prop = component.properties[i];
-        if (normalizeName(prop.displayName) !== wanted) continue;
+        if (!__namesMatch(prop.displayName, propertyName)) continue;
         var before = null;
         var after = null;
         try { before = prop.getValue(); } catch (eBefore) {}
         try {
-          prop.setValue(value, true);
+          var coerced = __coercePropertyValue(prop, value, null);
+          prop.setValue(coerced, true);
           try { after = prop.getValue(); } catch (eAfter) {}
           return { ok: true, property: String(prop.displayName), before: before, after: after };
         } catch (eSet) {
@@ -1014,10 +1010,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
     }
     function getComponentProperty(component, propertyName) {
       if (!component || !component.properties) return { ok: false, error: "Component has no properties" };
-      var wanted = normalizeName(propertyName);
       for (var i = 0; i < component.properties.numItems; i++) {
         var prop = component.properties[i];
-        if (normalizeName(prop.displayName) !== wanted) continue;
+        if (!__namesMatch(prop.displayName, propertyName)) continue;
         try {
           return { ok: true, property: String(prop.displayName), value: prop.getValue() };
         } catch (eGet) {
@@ -1028,10 +1023,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
     }
     function findProperty(component, propertyName) {
       if (!component || !component.properties) return null;
-      var wanted = normalizeName(propertyName);
       for (var i = 0; i < component.properties.numItems; i++) {
         var prop = component.properties[i];
-        if (normalizeName(prop.displayName) === wanted) return prop;
+        if (__namesMatch(prop.displayName, propertyName)) return prop;
       }
       return null;
     }
@@ -2299,7 +2293,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             try { frameSeq.openInTimeline(); } catch (frameOpenError) {}
           }
           app.enableQE();
-          var qeFrameSeq = qeSequenceFor(frameSeq);
+          var qeFrameSeq = __qeSequenceForRetry(frameSeq);
           if (!qeFrameSeq) return fail("Could not address sequence '" + frameSeq.name + "' through the QE API.");
           var frameFormat = String(args.format || "png").toLowerCase();
           var frameMethod = frameFormat === "jpg" || frameFormat === "jpeg" ? "exportFrameJPEG" : (frameFormat === "tiff" || frameFormat === "tif" ? "exportFrameTiff" : "exportFramePNG");
@@ -2312,6 +2306,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             frameTime.seconds = frameSeconds;
             frameTicks = frameTime.ticks;
           } catch (frameTimeError) {}
+          var frameFps = 30;
+          try { frameFps = frameSeq.timebase ? (254016000000 / parseInt(frameSeq.timebase, 10)) : 30; } catch (eFps) {}
+          var frameTimecode = __secondsToTimecode(frameSeconds, frameFps);
           var frameExportError = null;
           function tryFrameExport(arg1, arg2) {
             try {
@@ -2323,6 +2320,8 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             }
           }
           var frameExported =
+            tryFrameExport(frameTimecode, framePath) ||
+            tryFrameExport(framePath, frameTimecode) ||
             tryFrameExport(frameSeconds, framePath) ||
             tryFrameExport(framePath, frameSeconds) ||
             tryFrameExport(frameTimeString, framePath) ||
@@ -2571,7 +2570,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (app.sourceMonitor && app.sourceMonitor.openProjectItem) app.sourceMonitor.openProjectItem(matchClip.clip.projectItem);
           return ok({ matched: true, clipId: matchClip.clip.nodeId, item: matchClip.clip.projectItem.name, time: matchTime, method: "sourceMonitor.openProjectItem" });
 
-        case "capture_frame":
         case "get_project_scratch_disks":
         case "get_project_panel_metadata":
         case "get_xmp_metadata":
