@@ -4,6 +4,25 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-08-30
+
+- Clip, effect, and transition names now match localized Premiere labels
+  (Motion/Movimento, Scale/Escala, Volume/Lautstärke, Gaussian Blur/Flou
+  gaussien, Cross Dissolve, Crop, and the same family of aliases). 1.2.4 only
+  compared case.
+- `add_keyframe`, `set_clip_properties`, `adjust_audio_levels`, and the
+  expanded property helpers resolve Opacity on Motion, Position X/Y as the
+  Position array plus an axis, and refuse to pass arrays into scalar Scale.
+- `__findSequence` accepts a GUID, sequence name, or hex `projectItem.nodeId`
+  (`000f4344`). `__resolveProjectItem` also accepts a timeline clip id and
+  returns `clip.projectItem`. 1.2.4's hex/decimal `__idsMatch` only equated
+  two forms of the same object.
+- `export_frame` converts seconds to `HH:MM:SS:FF` first and retries QE after
+  opening the sequence. `apply_effect` reuses a component that is already
+  present. Transitions settle ~150ms then resolve by localized name.
+- `capture_frame` writes to `tmpdir()/premiere-mcp-frame-*.png` when the
+  agent omits `outputPath`.
+
 ## [1.2.4] - 2026-08-28
 
 - `speed_change` and `set_clip_speed_qe` now call QE `setSpeed` with its real
