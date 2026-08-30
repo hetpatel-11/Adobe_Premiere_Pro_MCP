@@ -248,4 +248,171 @@ describe('prelude QE helpers', () => {
       expect((sandbox.__result as { clip: { name: string } }).clip.name).toBe('A');
     });
   });
+
+  describe('__namesMatch locale aliases', () => {
+    it('treats localized Motion/Scale/Volume names as the English ones', async () => {
+      const sandbox = await runWithPrelude(`
+        __motion = __namesMatch('Movimento', 'Motion');
+        __scale = __namesMatch('Escala', 'Scale');
+        __volume = __namesMatch('Lautstärke', 'Volume');
+        __level = __namesMatch('Nivel', 'Level');
+        __opacity = __namesMatch('Opacité', 'Opacity');
+        __blur = __namesMatch('Flou gaussien', 'Gaussian Blur');
+        __no = __namesMatch('Rotation', 'Scale');
+      `);
+
+      expect(sandbox.__motion).toBe(true);
+      expect(sandbox.__scale).toBe(true);
+      expect(sandbox.__volume).toBe(true);
+      expect(sandbox.__level).toBe(true);
+      expect(sandbox.__opacity).toBe(true);
+      expect(sandbox.__blur).toBe(true);
+      expect(sandbox.__no).toBe(false);
+    });
+  });
+
+  describe('__resolveClipProperty', () => {
+    it('finds Scale on a Portuguese Motion component when the caller used English names', async () => {
+      const sandbox = await runWithPrelude(`
+        var clip = { components: { numItems: 1 } };
+        clip.components[0] = {
+          displayName: 'Movimento',
+          matchName: 'AE.ADBE Motion',
+          properties: { numItems: 2 }
+        };
+        clip.components[0].properties[0] = { displayName: 'Posição', getValue: function () { return [0.5, 0.5]; } };
+        clip.components[0].properties[1] = { displayName: 'Escala', getValue: function () { return 100; } };
+        __result = __resolveClipProperty(clip, 'Motion', 'Scale');
+      `);
+
+      const result = sandbox.__result as { ok: boolean; property: { displayName: string } };
+      expect(result.ok).toBe(true);
+      expect(result.property.displayName).toBe('Escala');
+    });
+
+    it('maps Opacity requested on Motion to the Opacity component', async () => {
+      const sandbox = await runWithPrelude(`
+        var clip = { components: { numItems: 2 } };
+        clip.components[0] = { displayName: 'Motion', matchName: '', properties: { numItems: 1 } };
+        clip.components[0].properties[0] = { displayName: 'Scale', getValue: function () { return 100; } };
+        clip.components[1] = { displayName: 'Opacity', matchName: '', properties: { numItems: 1 } };
+        clip.components[1].properties[0] = { displayName: 'Opacity', getValue: function () { return 100; } };
+        __result = __resolveClipProperty(clip, 'Motion', 'Opacity');
+      `);
+
+      const result = sandbox.__result as { ok: boolean; property: { displayName: string } };
+      expect(result.ok).toBe(true);
+      expect(result.property.displayName).toBe('Opacity');
+    });
+
+    it('maps Position X to the Position array and reports the x axis', async () => {
+      const sandbox = await runWithPrelude(`
+        var clip = { components: { numItems: 1 } };
+        clip.components[0] = { displayName: 'Motion', matchName: '', properties: { numItems: 1 } };
+        clip.components[0].properties[0] = { displayName: 'Position', getValue: function () { return [0.4, 0.6]; } };
+        __result = __resolveClipProperty(clip, 'Motion', 'Position X');
+      `);
+
+      const result = sandbox.__result as { ok: boolean; axis: string };
+      expect(result.ok).toBe(true);
+      expect(result.axis).toBe('x');
+    });
+  });
+
+  describe('__coercePropertyValue', () => {
+    it('writes a scalar into the X slot of a Position array', async () => {
+      const sandbox = await runWithPrelude(`
+        var prop = { getValue: function () { return [0.4, 0.6]; } };
+        __result = __coercePropertyValue(prop, 0.25, 'x');
+      `);
+
+      expect(sandbox.__result).toEqual([0.25, 0.6]);
+    });
+
+    it('does not pass an array to a scalar Scale property', async () => {
+      const sandbox = await runWithPrelude(`
+        var prop = { getValue: function () { return 100; } };
+        __result = __coercePropertyValue(prop, [110, 90], null);
+      `);
+
+      expect(sandbox.__result).toBe(110);
+    });
+  });
+
+  describe('__findSequence project-item ids', () => {
+    it('resolves a sequence by its project-item hex nodeId, not only by GUID', async () => {
+      const sandbox = await runWithPrelude(`
+        var seqItem = { nodeId: 1000260, name: 'Cut', treePath: '/Cut' };
+        var seq = { sequenceID: 'guid-cut', name: 'Cut', projectItem: seqItem };
+        app.project = {
+          sequences: { numSequences: 1, 0: seq },
+          rootItem: { nodeId: 1, name: 'Root', children: { numItems: 1, 0: seqItem } }
+        };
+        __byGuid = __findSequence('guid-cut');
+        __byHex = __findSequence('000f4344');
+        __byName = __findSequence('Cut');
+      `);
+
+      expect((sandbox.__byGuid as { name: string }).name).toBe('Cut');
+      expect((sandbox.__byHex as { name: string }).name).toBe('Cut');
+      expect((sandbox.__byName as { name: string }).name).toBe('Cut');
+    });
+  });
+
+  describe('__resolveProjectItem', () => {
+    it('falls back from a missing project-item id to the timeline clip projectItem', async () => {
+      const sandbox = await runWithPrelude(`
+        var footage = { nodeId: 200, name: 'A.mp4' };
+        var clip = { nodeId: '000f4241', name: 'A.mp4', projectItem: footage };
+        app.project = {
+          rootItem: { nodeId: 1, name: 'Root', children: { numItems: 1, 0: footage } },
+          activeSequence: {
+            sequenceID: 's1',
+            name: 'Seq',
+            videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } },
+            audioTracks: { numTracks: 0 }
+          },
+          sequences: { numSequences: 0 }
+        };
+        __direct = __resolveProjectItem(200);
+        __viaClip = __resolveProjectItem('000f4241');
+        __missing = __resolveProjectItem('nope');
+      `);
+
+      expect((sandbox.__direct as { name: string }).name).toBe('A.mp4');
+      expect((sandbox.__viaClip as { name: string }).name).toBe('A.mp4');
+      expect(sandbox.__missing).toBeNull();
+    });
+  });
+
+  describe('__secondsToTimecode', () => {
+    it('formats seconds as HH:MM:SS:FF at the sequence frame rate', async () => {
+      const sandbox = await runWithPrelude(`
+        __zero = __secondsToTimecode(0, 30);
+        __one = __secondsToTimecode(1, 30);
+        __drop = __secondsToTimecode(1.5, 24);
+      `);
+
+      expect(sandbox.__zero).toBe('00:00:00:00');
+      expect(sandbox.__one).toBe('00:00:01:00');
+      expect(sandbox.__drop).toBe('00:00:01:12');
+    });
+  });
+
+  describe('__findQeNamed', () => {
+    it('matches a localized effect list entry when the exact English name misses', async () => {
+      const sandbox = await runWithPrelude(`
+        qe = { project: {
+          getVideoEffectByName: function (name) {
+            if (name === 'Flou gaussien') return { name: name };
+            return null;
+          },
+          getVideoEffectList: function () { return ['Flou gaussien', 'Crop']; }
+        }};
+        __result = __findQeNamed('videoEffect', 'Gaussian Blur');
+      `);
+
+      expect((sandbox.__result as { name: string }).name).toBe('Flou gaussien');
+    });
+  });
 });

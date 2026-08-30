@@ -303,9 +303,28 @@ function __mcpParse(text) {
 }
 JSON.parse = __mcpParse;
 function __findSequence(id) {
-  if (!app.project || !app.project.sequences) return null;
+  if (!app.project || !app.project.sequences || id == null || id === "") return null;
+  var wanted = String(id);
+  var nameHits = [];
   for (var i = 0; i < app.project.sequences.numSequences; i++) {
-    if (app.project.sequences[i].sequenceID === id) return app.project.sequences[i];
+    var seq = app.project.sequences[i];
+    if (String(seq.sequenceID) === wanted || __idsMatch(seq.sequenceID, wanted)) return seq;
+    try {
+      if (seq.projectItem && (__idsMatch(seq.projectItem.nodeId, wanted) || seq.projectItem.treePath === wanted)) return seq;
+    } catch (ePI) {}
+    if (seq.name === wanted) nameHits.push(seq);
+  }
+  if (nameHits.length) return nameHits[0];
+  var item = __findProjectItem(wanted);
+  if (item) {
+    for (var j = 0; j < app.project.sequences.numSequences; j++) {
+      var s2 = app.project.sequences[j];
+      try {
+        if (s2.projectItem === item) return s2;
+        if (s2.projectItem && __idsMatch(s2.projectItem.nodeId, item.nodeId)) return s2;
+      } catch (e2) {}
+      if (s2.name === item.name) return s2;
+    }
   }
   return null;
 }
@@ -447,9 +466,12 @@ function __samePath(a, b) {
   return normalize(a) === normalize(b);
 }
 function __findProjectItem(nodeId) {
-  if (!app.project || !app.project.rootItem) return null;
+  if (!app.project || !app.project.rootItem || nodeId == null || nodeId === "") return null;
+  function matches(item) {
+    return __idsMatch(item.nodeId, nodeId) || item.name === nodeId || item.treePath === nodeId;
+  }
   function walk(item) {
-    if (__idsMatch(item.nodeId, nodeId)) return item;
+    if (matches(item)) return item;
     if (item.children) {
       for (var i = 0; i < item.children.numItems; i++) {
         var found = walk(item.children[i]);
@@ -460,11 +482,186 @@ function __findProjectItem(nodeId) {
   }
   return walk(app.project.rootItem);
 }
-function __ticksToSeconds(ticks) {
-  return parseInt(ticks, 10) / 254016000000;
+function __resolveProjectItem(id) {
+  var item = __findProjectItem(id);
+  if (item) return item;
+  var clipInfo = __findClip(id);
+  if (clipInfo && clipInfo.clip && clipInfo.clip.projectItem) return clipInfo.clip.projectItem;
+  return null;
 }
-function __secondsToTicks(seconds) {
-  return String(Math.round(seconds * 254016000000));
+function __foldName(s) {
+  s = String(s || "").toLowerCase();
+  var from = "àáâãäåèéêëìíîïòóôõöùúûüýÿñçß";
+  var to = "aaaaaaeeeeiiiiooooouuuuyyncs";
+  var out = "";
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    var idx = from.indexOf(ch);
+    out += idx >= 0 ? to.charAt(idx) : ch;
+  }
+  return out.split(" ").join("").split("_").join("").split("-").join("").split("/").join("");
+}
+function __canonicalName(s) {
+  var n = __foldName(s);
+  var aliases = {
+    motion: "motion", movimento: "motion", mouvement: "motion", bewegung: "motion", movimiento: "motion",
+    opacity: "opacity", opacite: "opacity", opazitat: "opacity", opacidad: "opacity", opacita: "opacity",
+    volume: "volume", volumen: "volume", lautstarke: "volume",
+    scale: "scale", escala: "scale", echelle: "scale", skalierung: "scale", scala: "scale",
+    uniformscale: "scale", scalewidth: "scale", scaleheight: "scale",
+    position: "position", posicion: "position", posizione: "position", positionx: "position", positiony: "position",
+    posx: "position", posy: "position",
+    rotation: "rotation", rotacion: "rotation", rotazione: "rotation", drehung: "rotation",
+    level: "level", nivel: "level", pegel: "level", niveau: "level", livello: "level",
+    gaussianblur: "gaussianblur", flougaussien: "gaussianblur", gausscherweichzeichner: "gaussianblur",
+    desenfocadogaussiano: "gaussianblur",
+    crop: "crop", recortar: "crop", recadrage: "crop", beschneiden: "crop",
+    lumetricolor: "lumetricolor",
+    crossdissolve: "crossdissolve", disolucioncruzada: "crossdissolve", fonduenchaine: "crossdissolve",
+    uberblendung: "crossdissolve", dissolvenzacruise: "crossdissolve"
+  };
+  return aliases[n] || n;
+}
+function __namesMatch(a, b) {
+  if (a == null || b == null) return false;
+  if (String(a) === String(b)) return true;
+  return __canonicalName(a) === __canonicalName(b);
+}
+function __resolveClipProperty(clip, componentName, paramName) {
+  if (!clip || !clip.components) {
+    return { ok: false, error: "Clip has no components", available: [] };
+  }
+  var wantComp = __canonicalName(componentName);
+  var wantParam = __canonicalName(paramName);
+  var rawParam = __foldName(paramName);
+  var axis = null;
+  if (rawParam === "positionx" || rawParam === "posx") axis = "x";
+  if (rawParam === "positiony" || rawParam === "posy") axis = "y";
+  var searchComps = [wantComp];
+  if (wantParam === "opacity") searchComps.push("opacity");
+  if (wantParam === "level") searchComps.push("volume");
+  var available = [];
+  var matchedComp = null;
+  var matchedParam = null;
+  for (var i = 0; i < clip.components.numItems; i++) {
+    var comp = clip.components[i];
+    var cName = String(comp.displayName);
+    var cMatch = "";
+    try { cMatch = String(comp.matchName || ""); } catch (eM) {}
+    var props = [];
+    for (var j = 0; j < comp.properties.numItems; j++) {
+      props.push(String(comp.properties[j].displayName));
+    }
+    available.push({ component: cName, matchName: cMatch, properties: props });
+    var compHits = false;
+    for (var sc = 0; sc < searchComps.length; sc++) {
+      if (__canonicalName(cName) === searchComps[sc] || __canonicalName(cMatch) === searchComps[sc]) {
+        compHits = true;
+      }
+    }
+    if (!compHits) continue;
+    if (!matchedComp) matchedComp = comp;
+    for (var k = 0; k < comp.properties.numItems; k++) {
+      var p = comp.properties[k];
+      if (__canonicalName(p.displayName) === wantParam) {
+        matchedParam = p;
+        break;
+      }
+    }
+    if (matchedParam) break;
+  }
+  if (!matchedParam) {
+    return {
+      ok: false,
+      error: "Parameter " + paramName + " not found in component " + componentName,
+      available: available
+    };
+  }
+  return { ok: true, component: matchedComp, property: matchedParam, axis: axis, available: available };
+}
+function __coercePropertyValue(property, value, axis) {
+  var current = null;
+  try { current = property.getValue(); } catch (eGet) {}
+  var currentIsArray = Object.prototype.toString.call(current) === "[object Array]";
+  var valueIsArray = Object.prototype.toString.call(value) === "[object Array]";
+  if (axis && currentIsArray) {
+    var next = [];
+    for (var i = 0; i < current.length; i++) next[i] = current[i];
+    if (axis === "x") next[0] = valueIsArray ? value[0] : value;
+    if (axis === "y") next[1] = valueIsArray ? value[value.length > 1 ? 1 : 0] : value;
+    return next;
+  }
+  if (currentIsArray && !valueIsArray && typeof value === "number") {
+    if (current.length >= 2) return [value, value];
+    return [value];
+  }
+  if (!currentIsArray && valueIsArray) return value[0];
+  return value;
+}
+function __secondsToTimecode(seconds, fps) {
+  fps = Number(fps);
+  if (!isFinite(fps) || fps <= 0) fps = 30;
+  var frameRate = Math.round(fps);
+  var totalFrames = Math.round(Number(seconds) * fps);
+  if (!isFinite(totalFrames) || totalFrames < 0) totalFrames = 0;
+  var f = totalFrames % frameRate;
+  var totalSeconds = Math.floor(totalFrames / frameRate);
+  var s = totalSeconds % 60;
+  var totalMinutes = Math.floor(totalSeconds / 60);
+  var m = totalMinutes % 60;
+  var h = Math.floor(totalMinutes / 60);
+  function pad(n) { return (n < 10 ? "0" : "") + String(n); }
+  return pad(h) + ":" + pad(m) + ":" + pad(s) + ":" + pad(f);
+}
+function __qeSequenceForRetry(seq) {
+  var found = __qeSequenceFor(seq);
+  if (found) return found;
+  if (seq && seq.openInTimeline) {
+    try { seq.openInTimeline(); } catch (eOpen) {}
+  }
+  try { if (typeof $ !== "undefined" && $.sleep) $.sleep(250); } catch (eSleep) {}
+  found = __qeSequenceFor(seq);
+  if (found) return found;
+  try {
+    var active = qe.project.getActiveSequence();
+    if (!active || !seq) return null;
+    if (String(active.guid) === String(seq.sequenceID)) return active;
+    if (String(active.name) === String(seq.name)) return active;
+  } catch (eActive) {}
+  return null;
+}
+function __findQeNamed(kind, name) {
+  var getters = {
+    videoEffect: "getVideoEffectByName",
+    audioEffect: "getAudioEffectByName",
+    videoTransition: "getVideoTransitionByName",
+    audioTransition: "getAudioTransitionByName"
+  };
+  var lists = {
+    videoEffect: "getVideoEffectList",
+    audioEffect: "getAudioEffectList",
+    videoTransition: "getVideoTransitionList",
+    audioTransition: "getAudioTransitionList"
+  };
+  try { app.enableQE(); } catch (eEnable) { return null; }
+  if (!qe || !qe.project) return null;
+  var getter = getters[kind];
+  var listName = lists[kind];
+  if (!getter) return null;
+  var direct = null;
+  try { direct = qe.project[getter](name); } catch (eDirect) {}
+  if (direct) return direct;
+  var list = [];
+  try { list = qe.project[listName]() || []; } catch (eList) {}
+  for (var i = 0; i < list.length; i++) {
+    if (__namesMatch(list[i], name)) {
+      try {
+        var found = qe.project[getter](list[i]);
+        if (found) return found;
+      } catch (eFound) {}
+    }
+  }
+  return null;
 }
 `;
 

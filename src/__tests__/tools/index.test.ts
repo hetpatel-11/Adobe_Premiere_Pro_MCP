@@ -457,7 +457,7 @@ describe('PremiereProTools', () => {
           sequenceId: 'seq-guid', time: 15, outputPath: '/tmp/f.png',
         });
 
-        expect(script).toContain('var qeSequence = __qeSequenceFor(sequence);');
+        expect(script).toContain('var qeSequence = __qeSequenceForRetry(sequence);');
         // Match the assignment, not the bare call: the surrounding comment
         // names getActiveSequence() to explain what it replaced.
         expect(script).not.toContain('var qeSequence = qe.project.getActiveSequence()');
@@ -686,7 +686,7 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript).toHaveBeenCalled();
     });
 
-    it('keeps the expanded dispatcher fail-closed for missing handlers and placeholder reads', async () => {
+    it('keeps the expanded dispatcher fail-closed for missing handlers and defaults capture_frame output', async () => {
       mockBridge.executeScript.mockResolvedValue({ success: false, error: 'not executed in unit test' });
 
       await executeExpandedTool(mockBridge, 'ripple_delete', { clipId: 'clip-123' });
@@ -695,9 +695,9 @@ describe('PremiereProTools', () => {
       expect(missingHandlerScript).not.toContain('accepted: true');
 
       await executeExpandedTool(mockBridge, 'capture_frame', {});
-      const placeholderReadScript = mockBridge.executeScript.mock.calls[1][0];
-      expect(placeholderReadScript).toContain('not implemented with a verifiable Premiere DOM readback yet');
-      expect(placeholderReadScript).not.toContain('Read operation completed');
+      const captureScript = mockBridge.executeScript.mock.calls[1][0] as string;
+      expect(captureScript).toContain('__qeSequenceForRetry');
+      expect(captureScript).toContain('premiere-mcp-frame-');
     });
 
     it('creates a sequence from a single projectItemId or a timeline clip id', async () => {
@@ -1375,7 +1375,7 @@ describe('PremiereProTools', () => {
       expect(result.effectName).toBe('Crop');
       expect(mockBridge.executeScript).toHaveBeenCalledTimes(1);
       const script = mockBridge.executeScript.mock.calls[0][0];
-      expect(script).toContain('getVideoEffectByName("Crop")');
+      expect(script).toContain('__findQeNamed("videoEffect", "Crop")');
       expect(script).toContain('findQeClipByTime');
       expect(script).toContain('"Left":12');
       expect(script).toContain('"Bottom":25');
@@ -1751,7 +1751,7 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript.mock.calls[0][0]).toContain('__normalizeSpeedRatio(150)');
     });
 
-    it('matches add_keyframe component and parameter names without regard to case', async () => {
+    it('matches add_keyframe component and parameter names through locale aliases', async () => {
       mockBridge.executeScript.mockResolvedValue({ success: true });
 
       await tools.executeTool('add_keyframe', {
@@ -1763,9 +1763,25 @@ describe('PremiereProTools', () => {
       });
 
       const script = mockBridge.executeScript.mock.calls[0][0] as string;
-      expect(script).toContain('replace(/[\\s_-]+/g, "")');
+      expect(script).toContain('__resolveClipProperty');
       expect(script).toContain('"motion"');
       expect(script).toContain('"scale"');
+    });
+
+    it('accepts a Position array as add_keyframe value', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      const result = await tools.executeTool('add_keyframe', {
+        clipId: 'clip-1',
+        componentName: 'Motion',
+        paramName: 'Position',
+        time: 1,
+        value: [0.4, 0.6],
+      });
+
+      expect(result.success).not.toBe(false);
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('[0.4,0.6]');
     });
 
     it('fails batch_add_transitions when no transition is verifiably added', async () => {

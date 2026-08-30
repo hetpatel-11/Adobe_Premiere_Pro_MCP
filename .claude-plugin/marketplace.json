@@ -12,7 +12,7 @@
       "name": "premiere-pro-mcp",
       "source": "./claude-plugins/premiere-pro-mcp",
       "description": "Inspect, edit, verify, and export local Adobe Premiere Pro projects through MCP.",
-      "version": "1.2.4",
+      "version": "1.2.5",
       "category": "creative",
       "tags": ["premiere-pro", "video-editing", "mcp"]
     }
