@@ -10,6 +10,7 @@ import { PremiereProBridge } from './bridge/index.js';
 import { Logger } from './utils/logger.js';
 import { PACKAGE_VERSION } from './version.js';
 import { checkForUpdate } from './utils/update-check.js';
+import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import {
   getTelemetry,
   summarizeToolFailure,
@@ -50,7 +51,8 @@ class MCPPremiereProServer {
           tools: {},
           resources: {},
           prompts: {}
-        }
+        },
+        instructions: MCP_SERVER_INSTRUCTIONS
       }
     );
 

@@ -7,6 +7,7 @@
 
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
+import { MCP_SERVER_INSTRUCTIONS } from '../instructions.js';
 
 export interface MCPResource {
   uri: string;
@@ -653,22 +654,10 @@ export class PremiereProResources {
 
   private getInstructions(): string {
     return [
-      'You are controlling Adobe Premiere Pro through the MCP server in this workspace.',
-      '',
-      'Operating rules:',
-      '1. Inspect the project before editing. Start with list_sequences, list_sequence_tracks, list_project_items, or the premiere://project/* resources unless the user already gave exact IDs.',
-      '2. Prefer non-destructive operations first. Duplicate sequences before risky changes when the user is exploring or when the request is ambiguous.',
-      '3. When building edits, add clips first, then trims and timing changes, then transitions and effects, then export.',
-      '4. For branded or ad-style assemblies, prefer assemble_product_spot or build_brand_spot_from_mogrt_and_assets with clipPlan rather than relying on fixed defaults.',
-      '5. Use real MOGRTs, footage, LUTs, and audio when the user wants polished output. The server can automate assembly, but it does not invent final-quality design assets.',
-      '6. For cuts across many layers, prefer razor_timeline_at_time instead of splitting each clip one by one.',
-      '7. Keep transitions short unless the user asks otherwise. Cross dissolves usually work best when clips are adjacent and on the same track.',
-      '8. Verify the active sequence before timeline operations. If needed, call set_active_sequence first.',
-      '9. If a tool fails, report the real limitation instead of pretending success. Premiere scripting coverage is incomplete in some areas.',
-      '10. The CEP bridge panel must be open, pointed at /tmp/premiere-mcp-bridge, and started, or tool calls may time out.',
+      MCP_SERVER_INSTRUCTIONS,
       '',
       'Suggested discovery flow:',
-      '- Read premiere://config/get_instructions',
+      '- Call verify_premiere_connection',
       '- Read premiere://project/info',
       '- Read premiere://project/sequences',
       '- Read premiere://timeline/tracks when editing an existing sequence',

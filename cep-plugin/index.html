@@ -540,7 +540,7 @@
                     <div class="status-caption">Premiere</div>
                     <div class="status-indicator">
                         <div class="status-dot disconnected" id="serverStatus"></div>
-                        <span class="status-text" id="serverText">Start Bridge to enable</span>
+                        <span class="status-text" id="serverText">Waiting for Premiere</span>
                     </div>
                 </div>
             </div>
@@ -580,7 +580,7 @@
                 <button class="utility" onclick="clearLog()" id="clearButton">Clear Log</button>
             </div>
             <div class="micro-copy" style="margin-top: 10px; margin-bottom: 0;">
-                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory. Once Start Bridge is on, connect from Codex, Claude, or another MCP client using the same temp directory. If commands fail, run diagnostics and share the generated JSON report from the temp directory.
+                Reload the panel after updating bridge code so Premiere is not running stale JavaScript in memory. The bridge starts automatically when this panel loads. Stop Bridge still works if you need to pause it. Connect from Codex, Claude, or another MCP client using the same temp directory.
             </div>
         </section>
 
@@ -602,8 +602,8 @@
                 <span>Recent messages</span>
             </div>
             <div class="log-container" id="logContainer">
-                <div class="log-entry info">MCP Bridge (CEP) loaded. This is the supported release path for Premiere automation.</div>
-                <div class="log-entry info">Set the temp directory to match your MCP client, then click Start Bridge and connect from Codex or Claude.</div>
+                <div class="log-entry info">MCP Bridge (CEP) loaded. The bridge starts automatically when this panel opens.</div>
+                <div class="log-entry info">Set the temp directory to match your MCP client if it is not already /tmp/premiere-mcp-bridge.</div>
             </div>
         </section>
 

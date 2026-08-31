@@ -4,6 +4,33 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-08-31
+
+- Prelude now defines `__ticksToSeconds` / `__secondsToTicks` (and accepts Premiere
+  `Time` objects, not just tick strings). `list_sequences`, `get_active_sequence`,
+  `set_playhead_position`, `create_sequence`, work area, MOGRT import, and subclip
+  tools no longer throw `ReferenceError` on a Connected panel. Tests derive the
+  host-global allowlist from the prelude so a missing helper cannot ship again.
+- `replace_clip` honors `preserveEffects` (default true): restore source in/out,
+  enabled, Motion, and re-apply other effects. It no longer reports success after
+  dropping Scale/enabled/trim.
+- `move_clip_to_track` restores source in/out, skips the source clip in occupancy
+  checks, refuses an occupied destination unless `overwrite` is true, and places
+  onto the destination track only (no longer `sequence.overwriteClip` onto A1).
+- `trim_clip` duration writes `clip.end` and, only after that duration actually
+  applies, syncs source `outPoint`. Unsupported graphic extensions still leave
+  `outPoint` untouched.
+- `create_sequence_from_clips` parses JSON-encoded id arrays (`["000f4241"]`) and
+  comma-separated hex ids. The import helper `createSequenceFromProjectItems`
+  uses `__resolveProjectItem` / `__idsMatch`.
+- `apply_effect` matches parameter names with locale aliases (`Exposure` /
+  `Exposition`) and coerces values before `setValue`. Effect removal tries
+  `components.remove` and QE named-remove APIs, then verifies the component is gone.
+- The CEP panel auto-starts the bridge when it loads. `verify_premiere_connection`
+  launches Premiere when it is installed and the heartbeat is missing, then waits
+  for the panel. MCP `instructions` tell the agent to call that once and stop
+  with `userActionRequired` instead of spraying tools at a closed Premiere.
+
 ## [1.2.5] - 2026-08-30
 
 - Clip, effect, and transition names now match localized Premiere labels

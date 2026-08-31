@@ -631,7 +631,9 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.retry).toBe(false);
-      expect(result.nextStep).toMatch(/Start Bridge/);
+      expect(result.userActionRequired).toBe(true);
+      expect(result.agentAction).toBe('verify_premiere_connection');
+      expect(result.nextStep).toMatch(/verify_premiere_connection/);
     });
 
     it('executes expanded tools through our bridge dispatcher', async () => {
@@ -705,7 +707,8 @@ describe('PremiereProTools', () => {
 
       await executeExpandedTool(mockBridge, 'create_sequence_from_clips', { projectItemId: 'item-1', name: 'Cut' });
       const script = mockBridge.executeScript.mock.calls[0][0] as string;
-      expect(script).toContain('if (!clipItemIds.length && args.projectItemId) clipItemIds = [args.projectItemId]');
+      expect(script).toContain('mergeIds(args.projectItemId)');
+      expect(script).toContain('__expandIdList');
       expect(script).toContain('asTimelineClip.clip.projectItem');
       expect(script).toContain('findClipAnywhere(wantedId)');
       expect(script).toContain('findParentItem(clipItems[0])');
@@ -1337,7 +1340,8 @@ describe('PremiereProTools', () => {
       expect(script).toContain('Premiere accepted setValue but the resulting value could not be read back');
       expect(script).toContain('if (!valuesEquivalent(actual[vai], requested[vai]))');
       expect(script).toContain('warnings: paramWarnings');
-      expect(script).toContain('if (!paramResults[pr].ok)');
+      expect(script).toContain('if (__namesMatch(newComp.properties[k].displayName, pName))');
+      expect(script).toContain('__coercePropertyValue');
     });
 
     it('returns an explicit unsupported result for caption track deletion', async () => {
@@ -1412,8 +1416,9 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(true);
       const script = mockBridge.executeScript.mock.calls[0][0];
-      expect(script).not.toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
       expect(script).toContain('clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration)');
+      expect(script).toContain('if (closeEnough(durationAfterEnd.duration, targetDuration))');
+      expect(script).toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
       expect(script).not.toContain('new Time(clip.inPoint.seconds + 2.5)');
       expect(script).toContain('timeline duration did not change to requested value');
       expect(script).toContain('TRIM_UNSUPPORTED_FOR_CLIP');

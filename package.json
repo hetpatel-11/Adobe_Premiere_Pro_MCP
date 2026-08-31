@@ -1,6 +1,6 @@
 {
   "name": "adobe-premiere-pro-mcp",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "MCP Bridge for Adobe Premiere Pro with 283 tools for AI-driven video editing.",
   "main": "dist/index.js",
   "bin": {

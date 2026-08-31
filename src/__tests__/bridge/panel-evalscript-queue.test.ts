@@ -55,6 +55,23 @@ describe('CEP evalScript single-flight', () => {
   });
 });
 
+describe('CEP panel auto-start', () => {
+  it('starts the bridge when the panel initializes and a temp directory exists', () => {
+    const { bridge } = loadPanel();
+    const started: string[] = [];
+    bridge.loadConfig = () => {};
+    bridge.updateUI = () => {};
+    bridge.startCommandPolling = () => {};
+    bridge.checkForPackageUpdate = () => {};
+    bridge.getTempDirectory = () => '/tmp/premiere-mcp-bridge';
+    bridge.startBridge = function () { started.push('started'); };
+    bridge.csInterface = { getHostEnvironment: () => ({ appName: 'PPRO', appVersion: '26.0.0' }) };
+    bridge.log = () => {};
+    bridge.init();
+    expect(started).toEqual(['started']);
+  });
+});
+
 describe('CEP panel heartbeat', () => {
   it('writes bridge-heartbeat.json so the server can fail fast when Premiere is not listening', () => {
     const { bridge, fs } = loadPanel();
