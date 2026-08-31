@@ -464,11 +464,11 @@ export class PremiereProTools {
       },
       {
         name: 'move_clip',
-        description: 'Moves a clip to a different position on the timeline.',
+        description: 'Moves a clip to a different position on the timeline. The result is verified against the clip\'s actual post-move position; if Premiere rejects or clamps the move (e.g. a timeline collision), success is false. When newTrackIndex differs from the clip\'s current track, Premiere has to recreate the clip on the new track (via remove + re-insert), so its clipId changes — the response returns the new id (also check clipIdChanged). Re-inserting on the new track initially uses the source\'s full in/out range; if the clip had been trimmed, the tool re-applies the original trim afterward and reports it under restoredTrimAfterMove — success is false (errorCode MOVE_TRIM_NOT_RESTORED) if that re-apply did not verifiably match the original trim.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to move'),
           newTime: z.number().describe('The new time position in seconds'),
-          newTrackIndex: z.number().optional().describe('The new track index (if moving to different track)')
+          newTrackIndex: z.number().optional().describe('The new track index (if moving to different track, within the same track type as the clip\'s current track). Note: moving across tracks assigns the clip a new clipId; use the id returned in the response for subsequent calls.')
         })
       },
       {
@@ -3187,22 +3187,174 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async moveClip(clipId: string, newTime: number, _newTrackIndex?: number): Promise<any> {
+  private async moveClip(clipId: string, newTime: number, newTrackIndex?: number): Promise<any> {
     const script = `
       try {
-        var info = __findClip("${clipId}");
+        var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
-        var oldTime = clip.start.seconds;
-        var shiftAmount = ${newTime} - oldTime;
-        clip.move(shiftAmount);
+        var sequence = info.sequence;
+        function secondsOf(value) {
+          if (value === undefined || value === null) return null;
+          if (typeof value === "number") return value;
+          if (value.seconds !== undefined) return Number(value.seconds);
+          if (value.ticks !== undefined) return Number(value.ticks) / 254016000000.0;
+          return null;
+        }
+        function secondsToTicks(seconds) { return String(Math.round(Number(seconds || 0) * 254016000000)); }
+        function frameDurationOf(seq) {
+          try {
+            if (seq && seq.timebase !== undefined) {
+              var value = Number(seq.timebase) / 254016000000.0;
+              if (value > 0 && isFinite(value)) return value;
+            }
+          } catch (frameError) {}
+          return 1 / 48;
+        }
+        var frameDurationSeconds = frameDurationOf(sequence);
+        var oldTime = secondsOf(clip.start);
+        var oldTrackIndex = info.trackIndex;
+        var oldTrackType = info.trackType;
+        var crossTrack = ${newTrackIndex !== undefined ? 'true' : 'false'};
+        var requestedTrackIndex = ${newTrackIndex !== undefined ? Number(newTrackIndex) : 'null'};
+        var newClipId = null;
+        var restoredTrimAfterMove = null;
+
+        if (crossTrack && requestedTrackIndex !== oldTrackIndex) {
+          // TrackItem.move() only shifts a clip within its own track — it cannot change
+          // track. Changing track requires removing the item and re-inserting it via
+          // Sequence.overwriteClip on the target track (same technique used by
+          // move_clip_to_track). Note this creates a NEW TrackItem, so the original
+          // clipId (nodeId) will no longer resolve afterwards; we look up and return
+          // the new one below.
+          var tracksList = oldTrackType === "video" ? sequence.videoTracks : sequence.audioTracks;
+          if (requestedTrackIndex < 0 || requestedTrackIndex >= tracksList.numTracks) {
+            return JSON.stringify({ success: false, error: "Target track index out of range", errorCode: "MOVE_TRACK_OUT_OF_RANGE", requestedTrackIndex: requestedTrackIndex, availableTracks: tracksList.numTracks });
+          }
+          var projectItem = clip.projectItem;
+          if (!projectItem) {
+            return JSON.stringify({ success: false, error: "Clip has no projectItem; cannot move across tracks", errorCode: "MOVE_NO_PROJECT_ITEM" });
+          }
+          // Sequence.overwriteClip() always inserts the project item's FULL current
+          // in/out range — it has no parameter for a specific source range. If the
+          // clip being moved had been trimmed (inPoint/outPoint narrower than the
+          // project item's own range), that trim would otherwise be silently lost
+          // and replaced by the untrimmed clip. Capture the original source range
+          // (and nodeId, for identity matching below) before removing the clip, so
+          // we can re-apply the trim to the freshly-placed clip afterward.
+          var projectItemNodeId = projectItem.nodeId;
+          var originalInPointSeconds = secondsOf(clip.inPoint);
+          var originalOutPointSeconds = secondsOf(clip.outPoint);
+          var beforeTargetCount = tracksList[requestedTrackIndex].clips.numItems;
+          clip.remove(false, true);
+          if (oldTrackType === "video") sequence.overwriteClip(projectItem, secondsToTicks(${newTime}), requestedTrackIndex, 0);
+          else sequence.overwriteClip(projectItem, secondsToTicks(${newTime}), 0, requestedTrackIndex);
+          var afterTargetCount = tracksList[requestedTrackIndex].clips.numItems;
+          if (afterTargetCount <= beforeTargetCount) {
+            return JSON.stringify({ success: false, error: "Move to target track did not create a clip there", errorCode: "MOVE_TRACK_FAILED", beforeTargetCount: beforeTargetCount, afterTargetCount: afterTargetCount });
+          }
+          // Identify the newly placed clip: the item on the target track whose source
+          // matches and whose start is closest to the requested time. Match by the
+          // project item's nodeId (a string), NOT by object reference (\`!==\`) —
+          // ExtendScript's DOM returns a fresh proxy object on every \`.projectItem\`
+          // access, so two references to the same underlying item are not \`===\` to
+          // each other; a reference-equality check here always misses, even when the
+          // move itself succeeded (this was a real bug: it made this branch report
+          // MOVE_TRACK_LOST on every cross-track move regardless of outcome).
+          var candidateTrack = tracksList[requestedTrackIndex];
+          var bestMatch = null;
+          var bestDelta = Infinity;
+          for (var ci = 0; ci < candidateTrack.clips.numItems; ci++) {
+            var candidate = candidateTrack.clips[ci];
+            var candidateProjectItem = candidate.projectItem;
+            if (!candidateProjectItem || candidateProjectItem.nodeId !== projectItemNodeId) continue;
+            var candidateStart = secondsOf(candidate.start);
+            var delta = Math.abs(candidateStart - ${newTime});
+            if (delta < bestDelta) { bestDelta = delta; bestMatch = candidate; }
+          }
+          if (!bestMatch) {
+            return JSON.stringify({ success: false, error: "Clip moved to target track but could not be re-identified", errorCode: "MOVE_TRACK_LOST" });
+          }
+          clip = bestMatch;
+          newClipId = clip.nodeId;
+          // Re-apply the original trim (source in/out) that overwriteClip discarded.
+          if (originalInPointSeconds !== null && originalOutPointSeconds !== null) {
+            var placedInPoint = secondsOf(clip.inPoint);
+            var placedOutPoint = secondsOf(clip.outPoint);
+            var needsInFix = Math.abs(placedInPoint - originalInPointSeconds) > 0.000001;
+            var needsOutFix = Math.abs(placedOutPoint - originalOutPointSeconds) > 0.000001;
+            restoredTrimAfterMove = { attempted: needsInFix || needsOutFix, inPointError: null, outPointError: null };
+            if (needsInFix) {
+              try { clip.inPoint = new Time(originalInPointSeconds + "s"); }
+              catch (inFixError) { restoredTrimAfterMove.inPointError = inFixError.toString(); }
+            }
+            if (needsOutFix) {
+              try { clip.outPoint = new Time(originalOutPointSeconds + "s"); }
+              catch (outFixError) { restoredTrimAfterMove.outPointError = outFixError.toString(); }
+            }
+            restoredTrimAfterMove.finalInPoint = secondsOf(clip.inPoint);
+            restoredTrimAfterMove.finalOutPoint = secondsOf(clip.outPoint);
+            restoredTrimAfterMove.matchesOriginal =
+              Math.abs(restoredTrimAfterMove.finalInPoint - originalInPointSeconds) <= (frameDurationSeconds / 2) + 0.000001 &&
+              Math.abs(restoredTrimAfterMove.finalOutPoint - originalOutPointSeconds) <= (frameDurationSeconds / 2) + 0.000001;
+          }
+        } else {
+          var shiftAmount = ${newTime} - oldTime;
+          clip.move(shiftAmount);
+        }
+
+        // Verify the actual outcome instead of trusting the requested values — Premiere
+        // can silently reject or clamp a move (e.g. an overlap with an adjacent clip).
+        var actualTime = secondsOf(clip.start);
+        var timeMatches = actualTime !== null && Math.abs(actualTime - ${newTime}) <= (frameDurationSeconds / 2) + 0.000001;
+        var trimRestoreFailed = restoredTrimAfterMove !== null && restoredTrimAfterMove.attempted && restoredTrimAfterMove.matchesOriginal === false;
+        if (!timeMatches) {
+          return JSON.stringify({
+            success: false,
+            error: "Premiere did not apply the requested move exactly (likely a timeline collision or clamp)",
+            errorCode: "MOVE_NOT_APPLIED",
+            clipId: ${JSON.stringify(clipId)},
+            newClipId: newClipId,
+            requested: { time: ${newTime}, trackIndex: requestedTrackIndex },
+            oldTime: oldTime,
+            oldTrackIndex: oldTrackIndex,
+            oldTrackType: oldTrackType,
+            actualTime: actualTime,
+            restoredTrimAfterMove: restoredTrimAfterMove
+          });
+        }
+        if (trimRestoreFailed) {
+          // The cross-track re-insert (Sequence.overwriteClip) always drops the
+          // original source trim; we tried to re-apply it above but it did not take.
+          // Report this as a failure rather than silently handing back a clip whose
+          // duration/content no longer matches what was actually being moved.
+          return JSON.stringify({
+            success: false,
+            error: "Clip moved to the new track, but its original trim (inPoint/outPoint) could not be restored — the moved clip's duration/content differs from the source clip",
+            errorCode: "MOVE_TRIM_NOT_RESTORED",
+            clipId: newClipId || ${JSON.stringify(clipId)},
+            originalClipId: ${JSON.stringify(clipId)},
+            oldTime: oldTime,
+            newTime: actualTime,
+            oldTrackIndex: oldTrackIndex,
+            trackIndex: requestedTrackIndex,
+            trackType: oldTrackType,
+            restoredTrimAfterMove: restoredTrimAfterMove
+          });
+        }
+
         return JSON.stringify({
           success: true,
           message: "Clip moved successfully",
-          clipId: "${clipId}",
+          clipId: newClipId || ${JSON.stringify(clipId)},
+          originalClipId: ${JSON.stringify(clipId)},
+          clipIdChanged: newClipId !== null,
           oldTime: oldTime,
-          newTime: ${newTime},
-          trackIndex: info.trackIndex
+          newTime: actualTime,
+          oldTrackIndex: oldTrackIndex,
+          trackIndex: newClipId !== null ? requestedTrackIndex : oldTrackIndex,
+          trackType: oldTrackType,
+          restoredTrimAfterMove: restoredTrimAfterMove
         });
       } catch (e) {
         return JSON.stringify({
@@ -3308,11 +3460,71 @@ export class PremiereProTools {
         ` : ''}
         ${duration !== undefined ? `
         var targetDuration = ${duration};
-        if (!exactEnough(before.duration, targetDuration)) {
+        var speedFactor = 1;
+        try {
+          var rawSpeed = Number(clip.getSpeed());
+          // TrackItem.getSpeed() is inconsistent about whether it returns a fractional
+          // multiplier (1 = normal speed) or a percentage (100 = normal speed). Use the
+          // same heuristic already relied on elsewhere in this codebase (speedChange):
+          // small values are fractional multipliers already; larger ones are percentages.
+          if (isFinite(rawSpeed) && rawSpeed !== 0) {
+            speedFactor = rawSpeed <= 10 ? rawSpeed : rawSpeed / 100;
+          }
+        } catch (speedError) {}
+        // The requested timeline duration cannot exceed how much real source media
+        // remains past inPoint. Read the project item's authoritative master-clip
+        // out point (NOT the possibly-already-desynced clip.outPoint on this track
+        // item) so we never write an outPoint past the real media boundary.
+        var maxSourceOutSeconds = null;
+        try {
+          var sourceProjectItem = clip.projectItem;
+          if (sourceProjectItem && sourceProjectItem.getOutPoint) {
+            var masterOutTime = sourceProjectItem.getOutPoint();
+            maxSourceOutSeconds = secondsOf(masterOutTime);
+          }
+        } catch (mediaBoundsError) {}
+        var mediaBoundaryHit = false;
+        var maxAchievableDurationSeconds = null;
+        var effectiveTargetDuration = targetDuration;
+        if (maxSourceOutSeconds !== null && before.inPoint !== null) {
+          var maxDurationFromMedia = (maxSourceOutSeconds - before.inPoint) / speedFactor;
+          if (targetDuration > maxDurationFromMedia + 0.000001) {
+            mediaBoundaryHit = true;
+            maxAchievableDurationSeconds = maxDurationFromMedia;
+            effectiveTargetDuration = maxDurationFromMedia;
+          }
+        }
+        if (!exactEnough(before.duration, effectiveTargetDuration)) {
           try {
-            clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration);
+            clip.end = timeFromSeconds(secondsOf(clip.start) + effectiveTargetDuration);
           } catch (timelineError) {
             recordWriteError("end", timelineError);
+          }
+        }
+        // clip.end only moves the on-timeline extent; Premiere does NOT recompute
+        // outPoint (the source media out point) to match. Left unsynced, (outPoint -
+        // inPoint) no longer equals the applied duration, and Premiere's native UI
+        // trim-drag later reads that stale outPoint as "no media handle left" and
+        // refuses to let the user extend the clip by hand. Mirror the source out
+        // point explicitly, same as roll_edit already does for its start/end writes.
+        // This runs even when .end already matched the target (e.g. self-healing a
+        // clip left desynced by this bug in the past) and is skipped when the .end
+        // write didn't actually take effect: some clip types (e.g. Graphics/MOGRTs)
+        // silently ignore .end writes, and mutating outPoint in that case would
+        // introduce the very desync this sync exists to prevent. The unconditional
+        // check here (based on current state, not on whether the .end write above
+        // changed anything this call) is what makes this self-healing: a clip left
+        // desynced by a past bug gets its outPoint corrected even when a later call
+        // requests the same (already-applied) duration.
+        var endWriteTookEffect = closeEnough(secondsOf(clip.end) - secondsOf(clip.start), effectiveTargetDuration);
+        if (endWriteTookEffect && before.inPoint !== null) {
+          var currentOutPointGap = secondsOf(clip.outPoint) - secondsOf(clip.inPoint);
+          if (!closeEnough(currentOutPointGap, effectiveTargetDuration * speedFactor)) {
+            try {
+              clip.outPoint = timeFromSeconds(secondsOf(clip.inPoint) + (effectiveTargetDuration * speedFactor));
+            } catch (outPointSyncError) {
+              recordWriteError("outPoint", outPointSyncError);
+            }
           }
         }
         ` : ''}
@@ -3333,9 +3545,15 @@ export class PremiereProTools {
         }
         ` : ''}
         ${duration !== undefined ? `
-        if (!closeEnough(after.duration, ${duration})) {
+        if (!closeEnough(after.duration, effectiveTargetDuration)) {
           verified = false;
-          verificationErrors.push("timeline duration did not change to requested value");
+          verificationErrors.push(mediaBoundaryHit
+            ? "timeline duration did not reach the clamped media-boundary value"
+            : "timeline duration did not change to requested value");
+        }
+        if (closeEnough(after.duration, effectiveTargetDuration) && !closeEnough(after.outPoint - after.inPoint, effectiveTargetDuration * speedFactor)) {
+          verified = false;
+          verificationErrors.push("outPoint/inPoint fell out of sync with the applied duration");
         }
         ` : ''}
 
@@ -3360,7 +3578,7 @@ export class PremiereProTools {
             exactEnough(restored.end, before.end);
           var errorCode = "TRIM_NOT_APPLIED";
           ${duration !== undefined ? `
-          if (${duration} > before.duration && closeEnough(attempted.duration, before.duration)) {
+          if (effectiveTargetDuration > before.duration && closeEnough(attempted.duration, before.duration)) {
             errorCode = "TRIM_UNSUPPORTED_FOR_CLIP";
           }
           ` : ''}
@@ -3376,6 +3594,7 @@ export class PremiereProTools {
               outPoint: ${outPoint !== undefined ? outPoint : 'null'},
               duration: ${duration !== undefined ? duration : 'null'}
             },
+            ${duration !== undefined ? 'mediaBoundaryHit: mediaBoundaryHit, maxAchievableDurationSeconds: maxAchievableDurationSeconds,' : ''}
             before: before,
             after: after,
             attempted: attempted,
@@ -3390,7 +3609,7 @@ export class PremiereProTools {
 
         return JSON.stringify({
           success: true,
-          message: "Clip trimmed and verified",
+          message: ${duration !== undefined ? '(mediaBoundaryHit ? "Clip trimmed and verified, but clamped to the real source media boundary (requested duration exceeded available media)" : "Clip trimmed and verified")' : '"Clip trimmed and verified"'},
           clipId: ${JSON.stringify(clipId)},
           oldInPoint: before.inPoint,
           oldOutPoint: before.outPoint,
@@ -3398,6 +3617,7 @@ export class PremiereProTools {
           newInPoint: after.inPoint,
           newOutPoint: after.outPoint,
           newDuration: after.duration,
+          ${duration !== undefined ? 'mediaBoundaryHit: mediaBoundaryHit, maxAchievableDurationSeconds: maxAchievableDurationSeconds,' : ''}
           before: before,
           after: after,
           writeErrors: writeErrors,

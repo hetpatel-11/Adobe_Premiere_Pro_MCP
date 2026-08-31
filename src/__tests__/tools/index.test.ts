@@ -795,7 +795,7 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
       const script = mockBridge.executeScript.mock.calls[0][0];
       expect(script).not.toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
-      expect(script).toContain('clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration)');
+      expect(script).toContain('clip.end = timeFromSeconds(secondsOf(clip.start) + effectiveTargetDuration)');
       expect(script).not.toContain('new Time(clip.inPoint.seconds + 2.5)');
       expect(script).toContain('timeline duration did not change to requested value');
       expect(script).toContain('TRIM_UNSUPPORTED_FOR_CLIP');
@@ -861,6 +861,103 @@ describe('PremiereProTools', () => {
       expect(outPointWrites).toBe(0);
     });
 
+    it('verifies move_clip against the actual post-move position instead of trusting the request', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: 'clip-123', newTime: 12 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const clip: any = {
+        start: { seconds: 5 },
+        nodeId: 'clip-123',
+        move: jest.fn((shift: number) => {
+          clip.start = { seconds: clip.start.seconds + shift };
+        })
+      };
+      const info = {
+        clip,
+        sequence: {},
+        trackIndex: 0,
+        trackType: 'video',
+        sequenceId: 'seq-1'
+      };
+      const runScript = new Function('__findClip', script);
+      const parsed = JSON.parse(runScript(() => info));
+
+      expect(clip.move).toHaveBeenCalledWith(7);
+      expect(parsed.success).toBe(true);
+      expect(parsed.oldTime).toBe(5);
+      expect(parsed.newTime).toBe(12);
+      expect(parsed.trackIndex).toBe(0);
+    });
+
+    it('reports move_clip failure instead of claiming success when Premiere silently rejects the move (collision)', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: 'clip-123', newTime: 12 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const clip: any = {
+        start: { seconds: 5 },
+        nodeId: 'clip-123',
+        // Simulates Premiere refusing the move (e.g. it would overlap an adjacent clip):
+        // the start position never actually changes.
+        move: jest.fn()
+      };
+      const info = {
+        clip,
+        sequence: {},
+        trackIndex: 0,
+        trackType: 'video',
+        sequenceId: 'seq-1'
+      };
+      const runScript = new Function('__findClip', script);
+      const parsed = JSON.parse(runScript(() => info));
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.errorCode).toBe('MOVE_NOT_APPLIED');
+      expect(parsed.oldTime).toBe(5);
+      expect(parsed.actualTime).toBe(5);
+    });
+
+    it('moves a clip across tracks and returns the new clipId, since Premiere assigns a new nodeId', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: 'clip-123', newTime: 10, newTrackIndex: 1 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const projectItem = { id: 'source-media' };
+      const oldClip: any = { start: { seconds: 2 }, nodeId: 'clip-123', projectItem, remove: jest.fn() };
+      let targetTrackItems: any[] = [];
+      function clipsCollection(items: any[]) {
+        const collection: any = { numItems: items.length };
+        items.forEach((item, i) => { collection[i] = item; });
+        return collection;
+      }
+      const targetTrack = { get clips() { return clipsCollection(targetTrackItems); } };
+      const videoTracks: any = { numTracks: 2, 0: {}, 1: targetTrack };
+      const sequence: any = {
+        videoTracks,
+        overwriteClip: jest.fn(() => {
+          targetTrackItems.push({ start: { seconds: 10 }, nodeId: 'clip-456', projectItem });
+        })
+      };
+      const info = {
+        clip: oldClip,
+        sequence,
+        trackIndex: 0,
+        trackType: 'video',
+        sequenceId: 'seq-1'
+      };
+      const runScript = new Function('__findClip', script);
+      const parsed = JSON.parse(runScript(() => info));
+
+      expect(oldClip.remove).toHaveBeenCalledWith(false, true);
+      expect(sequence.overwriteClip).toHaveBeenCalledWith(projectItem, expect.any(String), 1, 0);
+      expect(parsed.success).toBe(true);
+      expect(parsed.clipId).toBe('clip-456');
+      expect(parsed.originalClipId).toBe('clip-123');
+      expect(parsed.clipIdChanged).toBe(true);
+      expect(parsed.trackIndex).toBe(1);
+    });
+
     it('accepts a duration that Premiere quantizes to the nearest frame', async () => {
       mockBridge.executeScript.mockResolvedValue({ success: true });
       await tools.executeTool('trim_clip', { clipId: 'clip-123', duration: 7 });
@@ -902,8 +999,8 @@ describe('PremiereProTools', () => {
       await tools.executeTool('trim_clip', { clipId: 'clip-123', duration: 5.0333666667 });
       const script = mockBridge.executeScript.mock.calls[0][0];
 
-      expect(script).toContain('if (!exactEnough(before.duration, targetDuration))');
-      expect(script).not.toContain('if (!closeEnough(before.duration, targetDuration))');
+      expect(script).toContain('if (!exactEnough(before.duration, effectiveTargetDuration))');
+      expect(script).not.toContain('if (!closeEnough(before.duration, effectiveTargetDuration))');
       expect(script).toContain('frameDurationSeconds / 2');
     });
 
