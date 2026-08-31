@@ -10,6 +10,7 @@ Use this skill when working with the Adobe Premiere Pro MCP server from `hetpate
 ## Core Rules
 
 - Use the MCP tools for Premiere operations; do not invent ExtendScript unless the MCP tool surface is missing the needed operation.
+- Default MCP `tools/list` is a small always-on set. Call `search_tools` (BM25 query or regex pattern), then `invoke_tool` with the exact name. `PREMIERE_MCP_TOOLSET=full` lists every tool.
 - Prefer read-only discovery first: `get_project_info`, `list_sequences`, `list_project_items`, `get_active_sequence`, and relevant resource reads.
 - Use real imported media. If the user asks to edit with assets, verify file paths exist, import them with `import_media`, then place the imported project item IDs on a sequence.
 - Keep the temp directory consistent across the MCP server and CEP panel: `/tmp/premiere-mcp-bridge` unless the user explicitly configured another path.

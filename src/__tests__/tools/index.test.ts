@@ -81,8 +81,11 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('capture_frame');
       expect(toolNames).toContain('add_tracks');
       expect(toolNames).toContain('get_encoder_presets');
+      expect(toolNames).toContain('search_tools');
+      expect(toolNames).toContain('get_tool_schema');
+      expect(toolNames).toContain('invoke_tool');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(283);
+      expect(availableTools).toHaveLength(286);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -578,14 +581,29 @@ describe('PremiereProTools', () => {
     });
 
     it('reports local capabilities without probing the Premiere bridge by default', async () => {
-      const result = await tools.executeTool('get_capabilities', {});
+      const previous = process.env.PREMIERE_MCP_TOOLSET;
+      delete process.env.PREMIERE_MCP_TOOLSET;
+      try {
+        const result = await tools.executeTool('get_capabilities', {});
 
-      expect(result.success).toBe(true);
-      expect(result.catalog).toEqual({ tools: 283, resources: 13, prompts: 10 });
-      expect(result.liveConnection.checked).toBe(false);
-      expect(result.update.current).toBeTruthy();
-      expect(result.update.available).toBe(false);
-      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+        expect(result.success).toBe(true);
+        expect(result.catalog).toEqual({
+          tools: 286,
+          advertised: 5,
+          toolset: 'search',
+          search: 'search_tools',
+          invoke: 'invoke_tool',
+          resources: 13,
+          prompts: 10,
+        });
+        expect(result.liveConnection.checked).toBe(false);
+        expect(result.update.current).toBeTruthy();
+        expect(result.update.available).toBe(false);
+        expect(mockBridge.executeScript).not.toHaveBeenCalled();
+      } finally {
+        if (previous === undefined) delete process.env.PREMIERE_MCP_TOOLSET;
+        else process.env.PREMIERE_MCP_TOOLSET = previous;
+      }
     });
 
     it('can include an explicit read-only live connection check in capabilities', async () => {

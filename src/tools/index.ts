@@ -17,6 +17,15 @@ import { createMotionDemoAssets } from '../utils/demoAssets.js';
 import { executeExpandedTool, getExpandedTools, isExpandedTool } from './expanded.js';
 import { canonicalizeMcpArgs } from '../utils/mcp-args.js';
 import { checkForUpdate } from '../utils/update-check.js';
+import {
+  advertisedToolNames,
+  categorizeTool,
+  resolveToolset,
+  schemaTextFromShape,
+  searchPremiereTools,
+  type SearchDetail,
+  type SearchableTool,
+} from './search.js';
 
 const HEALTH_CHECK_TIMEOUT_MS = 8000;
 
@@ -344,6 +353,31 @@ export class PremiereProTools {
 
   private getLocalTools(): MCPTool[] {
     return [
+      {
+        name: 'search_tools',
+        description: 'Search the Premiere tool catalog with a BM25 natural-language query or a regex pattern, then call invoke_tool. Use this instead of expecting 280 editing tools in the MCP tool list. Empty query lists categories. Default 5 matches.',
+        inputSchema: z.object({
+          query: z.string().optional().describe('Natural language BM25 query, e.g. "trim clip duration" or "export sequence"'),
+          pattern: z.string().optional().describe('Case-insensitive regex over tool name, description, category, and argument names. e.g. "^list_" or "mogrt"'),
+          limit: z.number().optional().describe('Max matches, 1-25. Defaults to 5.'),
+          detail: z.enum(['names', 'descriptions', 'schema']).optional().describe('How much of each match to return. schema includes the JSON input schema. Defaults to descriptions.')
+        })
+      },
+      {
+        name: 'get_tool_schema',
+        description: 'Return the full JSON input schema for one Premiere tool name from search_tools. After reading it, call invoke_tool.',
+        inputSchema: z.object({
+          name: z.string().min(1).describe('Exact tool name, e.g. trim_clip')
+        })
+      },
+      {
+        name: 'invoke_tool',
+        description: 'Run a Premiere tool by exact name. Use after search_tools. Hosts that only advertise the small always-on set cannot call trim_clip etc. as top-level MCP tools.',
+        inputSchema: z.object({
+          name: z.string().min(1).describe('Exact tool name returned by search_tools'),
+          arguments: z.record(z.string(), z.any()).optional().describe('Arguments for that tool')
+        })
+      },
       // Discovery Tools (NEW)
       {
         name: 'list_project_items',
@@ -1457,6 +1491,17 @@ export class PremiereProTools {
     ];
   }
 
+  getAdvertisedTools(): MCPTool[] {
+    const catalog = this.getAvailableTools();
+    const advertised = advertisedToolNames();
+    if (!advertised) return catalog;
+    const byName = new Map(catalog.map((tool) => [tool.name, tool]));
+    return advertised.flatMap((name) => {
+      const tool = byName.get(name);
+      return tool ? [tool] : [];
+    });
+  }
+
   async executeTool(name: string, args: Record<string, any>): Promise<any> {
     // Premiere truncates a string at the first NUL when it is assigned — a
     // marker named "p\0q" is created as "p" — and reports success for the
@@ -1479,8 +1524,10 @@ export class PremiereProTools {
     if (!tool) {
       return {
         success: false,
-        error: `Tool '${name}' not found`,
-        availableTools: this.getAvailableTools().map(t => t.name)
+        retry: false,
+        errorCode: 'tool_not_found',
+        agentAction: 'search_tools',
+        error: `Tool '${name}' not found. Call search_tools with a query or pattern, then invoke_tool with the exact name.`,
       };
     }
 
@@ -1540,6 +1587,12 @@ export class PremiereProTools {
     
     try {
       switch (name) {
+        case 'search_tools':
+          return this.searchToolsCatalog(args);
+        case 'get_tool_schema':
+          return this.getToolSchema(String(args.name || ''));
+        case 'invoke_tool':
+          return this.invokeCatalogTool(args);
         // Discovery Tools
         case 'list_project_items':
           return await this.listProjectItems(args.includeBins, args.includeMetadata);
@@ -1870,8 +1923,10 @@ export class PremiereProTools {
         default:
           return {
             success: false,
-            error: `Tool '${name}' not implemented`,
-            availableTools: this.getAvailableTools().map(t => t.name)
+            retry: false,
+            errorCode: 'tool_not_implemented',
+            agentAction: 'search_tools',
+            error: `Tool '${name}' not implemented. Call search_tools, then invoke_tool with a catalog name.`,
           };
       }
     } catch (error) {
@@ -1890,6 +1945,85 @@ export class PremiereProTools {
   }
 
   // Discovery Tools Implementation
+  private searchToolsCatalog(args: Record<string, unknown>): ReturnType<typeof searchPremiereTools> {
+    const detail: SearchDetail =
+      args.detail === 'names' || args.detail === 'schema' ? args.detail : 'descriptions';
+    const catalog = this.getAvailableTools().map((tool) => {
+      const entry: SearchableTool = {
+        name: tool.name,
+        description: tool.description,
+        schemaText: schemaTextFromShape(tool.inputSchema as { shape?: Record<string, { description?: string }> }),
+      };
+      if (detail === 'schema') {
+        entry.inputSchema = z.toJSONSchema(tool.inputSchema as z.ZodTypeAny, { unrepresentable: 'any' });
+      }
+      return entry;
+    });
+    const query = typeof args.query === 'string' ? args.query : undefined;
+    const pattern = typeof args.pattern === 'string' ? args.pattern : undefined;
+    const limit = typeof args.limit === 'number' ? args.limit : undefined;
+    return searchPremiereTools(catalog, {
+      ...(query !== undefined ? { query } : {}),
+      ...(pattern !== undefined ? { pattern } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      detail,
+      advertised: this.getAdvertisedTools().map((tool) => tool.name),
+      toolset: resolveToolset(),
+    });
+  }
+
+  private getToolSchema(name: string): Record<string, unknown> {
+    const tool = this.getAvailableTools().find((candidate) => candidate.name === name);
+    if (!tool) {
+      return {
+        success: false,
+        retry: false,
+        errorCode: 'tool_not_found',
+        agentAction: 'search_tools',
+        error: `Tool '${name}' not found. Call search_tools, then get_tool_schema with an exact catalog name.`,
+      };
+    }
+    return {
+      success: true,
+      name: tool.name,
+      description: tool.description,
+      category: categorizeTool(tool.name),
+      inputSchema: z.toJSONSchema(tool.inputSchema as z.ZodTypeAny, { unrepresentable: 'any' }),
+      nextStep:
+        resolveToolset() === 'full'
+          ? `Call ${tool.name} directly, or invoke_tool with this name and arguments.`
+          : `Call invoke_tool with name ${tool.name} and its arguments.`,
+    };
+  }
+
+  private async invokeCatalogTool(args: Record<string, unknown>): Promise<unknown> {
+    const innerName = typeof args.name === 'string' ? args.name.trim() : '';
+    if (!innerName) {
+      return {
+        success: false,
+        status: 'validation',
+        retry: false,
+        errorCode: 'invoke_missing_name',
+        error: 'invoke_tool requires name (the exact catalog tool name from search_tools).',
+      };
+    }
+    if (innerName === 'invoke_tool') {
+      return {
+        success: false,
+        status: 'validation',
+        retry: false,
+        errorCode: 'invoke_nested',
+        error: 'invoke_tool cannot invoke itself.',
+      };
+    }
+    const rawArgs = args.arguments ?? args.args;
+    const innerArgs =
+      rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : {};
+    return this.executeTool(innerName, innerArgs);
+  }
+
   private async listProjectItems(includeBins = true, _includeMetadata = false): Promise<any> {
     const script = `
       try {
@@ -2168,12 +2302,17 @@ ${this.buildSequenceResolver(sequenceId)}
       },
       catalog: {
         tools: this.getAvailableTools().length,
+        advertised: this.getAdvertisedTools().length,
+        toolset: resolveToolset(),
+        search: 'search_tools',
+        invoke: 'invoke_tool',
         resources: 13,
         prompts: 10
       },
       liveConnection,
       safety: {
         recommendedFirstCall: 'verify_premiere_connection',
+        toolDiscovery: 'search_tools then invoke_tool. Set PREMIERE_MCP_TOOLSET=full to advertise every tool to the MCP host.',
         rawExtendScript: 'Available through execute_extendscript and evaluate_expression. Require explicit user approval before using either tool.',
         note: 'A detected CEP installation does not prove that Premiere is running or the bridge is connected.'
       }

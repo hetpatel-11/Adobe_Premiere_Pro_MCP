@@ -5,7 +5,7 @@ description: Inspect, edit, verify, and export an open Adobe Premiere Pro projec
 
 # Edit Premiere Project
 
-Use the `premiere-pro` MCP server for Premiere operations. Start every session with `get_capabilities`, then call `verify_premiere_connection` before any mutation.
+Use the `premiere-pro` MCP server for Premiere operations. Start every session with `verify_premiere_connection` before any mutation. Discover editing tools with `search_tools`, inspect one with `get_tool_schema` if needed, then run it with `invoke_tool`.
 
 Inspect project and sequence state before editing. Ask before destructive actions or overwriting exports. Re-read the relevant sequence, clip, or project state after every mutation and never report a project change as complete without that readback.
 

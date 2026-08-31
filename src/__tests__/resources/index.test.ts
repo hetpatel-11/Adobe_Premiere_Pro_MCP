@@ -399,6 +399,8 @@ describe('PremiereProResources', () => {
         expect(typeof result).toBe('string');
         expect(result).toContain('You are driving Adobe Premiere Pro through this MCP server');
         expect(result).toContain('verify_premiere_connection');
+        expect(result).toContain('search_tools');
+        expect(result).toContain('invoke_tool');
         expect(result).toContain('razor_timeline_at_time');
         expect(mockBridge.executeScript).not.toHaveBeenCalled();
       });

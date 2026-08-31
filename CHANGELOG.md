@@ -32,6 +32,12 @@ All notable changes are documented here. Releases use semantic versioning.
   with `userActionRequired` instead of spraying tools at a closed Premiere.
   Launch paths are joined with posix/win32 keyed off `process.platform`, so a
   darwin stub on Windows CI no longer feeds backslashes to `open -a`.
+- Tool search (Anthropic-style BM25 + regex): `tools/list` advertises
+  `search_tools`, `get_tool_schema`, `invoke_tool`, `verify_premiere_connection`,
+  and `list_sequences` by default. The other 280+ Premiere tools stay in the
+  catalog and run through `invoke_tool`. Empty `search_tools` lists categories.
+  Set `PREMIERE_MCP_TOOLSET=full` to restore a flat list for hosts that natively
+  defer MCP schemas. Unknown-tool errors no longer dump every tool name.
 
 ## [1.2.5] - 2026-08-30
 
