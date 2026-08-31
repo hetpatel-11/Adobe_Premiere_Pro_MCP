@@ -4,6 +4,17 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-08-31
+
+- Premiere 26 QE cannot enumerate sequences (`getSequenceAt` throws; `openInTimeline` is missing). `__qeSequenceFor` now activates the requested sequence via `openSequence` / `activeSequence` so QE tools address that timeline, not whatever is on screen.
+- `set_sequence_field_type` writes numeric field type `0` / `1` / `2` instead of the string `"No Fields"`.
+- `set_metadata` no longer coerces `value` to a number when a metadata `key` is present.
+- Expanded tools that need a clip or project item now require `clipId` / `projectItemId` in the schema.
+- `add_transition` matches `add_transition_to_clip` (`applied_verified` / `accepted_unverified`). Transition verification no longer exports FCP XML, which opened Translation Results dialogs.
+- `apply_audio_effect` rejects video-only clips with `clip_has_no_audio`.
+- `import_fcp_xml` warns that Premiere may still show Translation Results windows.
+- Removed `remove_effect`, `remove_effect_by_name`, and `remove_all_effects`. Premiere 26 has no effect-removal API. Catalog is 283 tools.
+
 ## [1.2.6] - 2026-08-31
 
 - Prelude now defines `__ticksToSeconds` / `__secondsToTicks` (and accepts Premiere

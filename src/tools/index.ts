@@ -1355,7 +1355,7 @@ export class PremiereProTools {
         inputSchema: z.object({
           projectItemId: z.string().describe('The ID of the project item'),
           key: z.string().describe('The metadata key/field name'),
-          value: z.string().describe('The metadata value to set')
+          value: z.union([z.string(), z.number(), z.boolean()]).transform(String).describe('The metadata value to set')
         })
       },
       {
@@ -1679,8 +1679,6 @@ export class PremiereProTools {
             zoom: args.zoom,
             edgeFeather: args.edgeFeather
           });
-        case 'remove_effect':
-          return await this.removeEffect(args.clipId, args.effectName);
         case 'add_transition':
           return await this.addTransition(args.clipId1, args.clipId2, args.transitionName, args.duration);
         case 'add_transition_to_clip':
@@ -3102,7 +3100,13 @@ ${this.buildSequenceResolver(sequenceId)}
           if (!imported) {
             return JSON.stringify({ success: false, imported: false, path: ${JSON.stringify(filePath)}, method: "importFiles(suppressUI=true)", error: "Premiere rejected the FCP7 XML import" });
           }
-          return JSON.stringify({ success: true, imported: true, path: ${JSON.stringify(filePath)}, method: "importFiles(suppressUI=true)" });
+          return JSON.stringify({
+            success: true,
+            imported: true,
+            path: ${JSON.stringify(filePath)},
+            method: "importFiles(suppressUI=true)",
+            warning: "Premiere may still open FCP Translation Results windows. suppressUI does not hide those reports. Click OK on each; they are not import failures."
+          });
         } catch (e) {
           return JSON.stringify({ success: false, error: e.toString() });
         }
@@ -3987,31 +3991,15 @@ ${this.buildSequenceResolver(sequenceId)}
           return false;
         }
         function __transitionXmlCount(seq) {
-          var state = { available: false, count: 0, path: null, error: null };
-          try {
-            if (!seq || typeof seq.exportAsFinalCutProXML !== "function") {
-              state.error = "exportAsFinalCutProXML unavailable";
-              return state;
-            }
-            var file = new File(Folder.temp.fsName + "/premiere-mcp-transition-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000) + ".xml");
-            seq.exportAsFinalCutProXML(file.fsName);
-            state.path = file.fsName;
-            if (!file.exists) {
-              state.error = "XML export file was not created";
-              return state;
-            }
-            file.open("r");
-            var text = file.read();
-            file.close();
-            var matches = text.match(/<transitionitem[\\s>]/g);
-            state.available = true;
-            state.count = matches ? matches.length : 0;
-            try { file.remove(); } catch (removeError) {}
-            return state;
-          } catch (xmlError) {
-            state.error = xmlError.toString();
-            return state;
-          }
+          // Do not call seq.exportAsFinalCutProXML here. Each export opens Premiere's
+          // FCP Translation Results window (suppressUI does not apply to exports).
+          // Transition tools verify through QE enumeration only.
+          return {
+            available: false,
+            count: 0,
+            path: null,
+            error: "Skipped: FCP XML export opens Translation Results dialogs"
+          };
         }
         function __transitionWasVerifiedByXml(beforeXml, afterXml) {
           return beforeXml && afterXml && beforeXml.available && afterXml.available && afterXml.count > beforeXml.count;
@@ -4682,32 +4670,6 @@ ${this.buildSequenceResolver(sequenceId)}
     return await this.bridge.executeScript(script);
   }
 
-  private async removeEffect(clipId: string, effectName: string): Promise<any> {
-    const script = `
-      try {
-        var info = __findClip(${JSON.stringify(clipId)});
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-        var found = false;
-        for (var i = 0; i < clip.components.numItems; i++) {
-          if (clip.components[i].displayName === ${JSON.stringify(effectName)} || clip.components[i].matchName === ${JSON.stringify(effectName)}) {
-            found = true;
-            break;
-          }
-        }
-        return JSON.stringify({
-          success: false,
-          error: "Effect removal is not supported by the ExtendScript API. The effect '" + ${JSON.stringify(effectName)} + "' was " + (found ? "found" : "not found") + " on this clip.",
-          note: "Remove effects manually in Premiere Pro"
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
   private async addTransition(clipId1: string, clipId2: string, transitionName: string, duration: number): Promise<any> {
     const script = `
       try {
@@ -4735,15 +4697,19 @@ ${this.buildSequenceResolver(sequenceId)}
         ${this.transitionVerificationScript()}
         var before = __readQeTransitionState(qeClip);
         var beforeXml = __transitionXmlCount(seq);
-        qeClip.addTransition(transition, info2 ? false : true, String(frames), "0", 0.5, false, true);
+        qeClip.addTransition(transition, info2 ? false : true, String(frames), "0", 0.5, true, true);
         try { if (typeof $ !== "undefined" && $.sleep) $.sleep(150); } catch (eWait) {}
         var afterClip = __findQeClipByDomClip(qeTrack, targetInfo.clip);
         var after = __readQeTransitionState(afterClip);
         var afterXml = __transitionXmlCount(seq);
-        if (!__transitionWasVerified(before, after) && !__transitionWasVerifiedByXml(beforeXml, afterXml)) {
+        var qeVerified = __transitionWasVerified(before, after);
+        var xmlVerified = __transitionWasVerifiedByXml(beforeXml, afterXml);
+        if (!qeVerified && !xmlVerified) {
           return JSON.stringify({
-            success: false,
-            error: "Transition call completed but Premiere Pro did not expose a verified transition change",
+            success: true,
+            status: "accepted_unverified",
+            verified: false,
+            warning: "Transition command accepted; Premiere did not expose a readable transition-list change. Same inspection gap as add_transition_to_clip.",
             transitionName: ${JSON.stringify(transitionName)},
             duration: ${duration},
             frames: frames,
@@ -4753,7 +4719,7 @@ ${this.buildSequenceResolver(sequenceId)}
             afterXml: afterXml
           });
         }
-        return JSON.stringify({ success: true, message: "Transition added and verified", transitionName: ${JSON.stringify(transitionName)}, duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
+        return JSON.stringify({ success: true, status: "applied_verified", verified: true, message: "Transition added and verified", transitionName: ${JSON.stringify(transitionName)}, duration: ${duration}, frames: frames, before: before, after: after, beforeXml: beforeXml, afterXml: afterXml });
       } catch (e) {
         return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
       }
@@ -6773,6 +6739,27 @@ ${this.buildSequenceResolver(sequenceId)}
   }
 
   private async applyAudioEffect(clipId: string, effectName: string, parameters?: any): Promise<any> {
+    const guard = await this.bridge.executeScript(`
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        if (info.trackType !== "audio") {
+          return JSON.stringify({
+            success: false,
+            status: "wrong_clip_type",
+            retry: false,
+            errorCode: "clip_has_no_audio",
+            error: "apply_audio_effect needs an audio-track clip. '" + info.clip.name + "' is on a video track (stills and video-only clips have no Volume component). Call list_sequence_tracks and pass an audio clip id.",
+            clipId: ${JSON.stringify(clipId)},
+            trackType: info.trackType
+          });
+        }
+        return JSON.stringify({ success: true });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    if (guard && guard.success === false) return guard;
     return await this.applyEffect(clipId, effectName, parameters);
   }
 

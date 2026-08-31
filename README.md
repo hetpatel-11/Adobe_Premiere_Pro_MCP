@@ -126,14 +126,14 @@ This repository is currently validated for:
 
 Current catalog status as of August 31, 2026:
 
-- `286` catalog tools (`search_tools`, `get_tool_schema`, `invoke_tool`, plus 283 Premiere operations)
+- `283` catalog tools (`search_tools`, `get_tool_schema`, `invoke_tool`, plus 280 Premiere operations)
 - `tools/list` advertises the small always-on set by default (`search_tools`, `get_tool_schema`, `invoke_tool`, `verify_premiere_connection`, `list_sequences`). Set `PREMIERE_MCP_TOOLSET=full` to list every tool, which is what Claude Code native tool search indexes
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
 - the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, export readiness validation, and linked audio/video operations
 
 Most recent completed local live validation:
 
-- `286` catalog tools; `get_capabilities` reports `catalog.advertised` vs `catalog.tools`, local installation, and optional live connection state. `verify_premiere_connection` is the canonical read-only bridge and host readiness check
+- `283` catalog tools; `get_capabilities` reports `catalog.advertised` vs `catalog.tools`, local installation, and optional live connection state. `verify_premiere_connection` is the canonical read-only bridge and host readiness check
 - `0` known parked or placeholder tools are advertised
 - `import_ae_comps` is intentionally not advertised because Premiere returned `false` for real `.aep` fixtures in this environment and a generic `.aep` import can wedge the CEP bridge
 
@@ -233,7 +233,7 @@ For a real-host sweep, use a disposable Premiere project and run `node scripts/l
 
 ## Tools
 
-All `286` catalog tools have an implementation. `tools/list` advertises a small always-on set so hosts that dump every MCP schema do not spend the context window on unused Premiere operations (Anthropic tool-search / MCP progressive discovery). Call `search_tools` (BM25 `query` or regex `pattern`), optionally `get_tool_schema`, then `invoke_tool`. Set `PREMIERE_MCP_TOOLSET=full` to restore a flat 286-tool list. This catalog explains the editing surface in human terms. Start with `verify_premiere_connection`, then inspect the project before asking an agent to mutate it.
+All `283` catalog tools have an implementation. `tools/list` advertises a small always-on set so hosts that dump every MCP schema do not spend the context window on unused Premiere operations (Anthropic tool-search / MCP progressive discovery). Call `search_tools` (BM25 `query` or regex `pattern`), optionally `get_tool_schema`, then `invoke_tool`. Set `PREMIERE_MCP_TOOLSET=full` to restore a flat 283-tool list. This catalog explains the editing surface in human terms. Start with `verify_premiere_connection`, then inspect the project before asking an agent to mutate it.
 
 ### Discovery and project inspection
 
@@ -299,7 +299,7 @@ All `286` catalog tools have an implementation. `tools/list` advertises a small 
 | Tools | What they do |
 | :--- | :--- |
 | `list_available_effects` / `list_clip_effects` / `get_effect_properties` | Discover installed effects, applied effects, and their properties. |
-| `apply_effect` / `remove_effect` / `remove_effect_by_name` / `remove_all_effects` | Add or remove visual/audio effect components. `apply_effect` identifies and reads back the new component. |
+| `apply_effect` | Add a visual/audio effect component. Identifies and reads back the new component. Premiere 26 has no scripting API to remove effects. |
 | `batch_apply_effect` / `copy_effects_between_clips` / `copy_effect_values` | Apply or copy effect treatments across clips. |
 | `set_effect_property` / `set_color_value` / `set_blend_mode` | Change supported effect parameters, color values, and blend modes. |
 | `color_correct` / `apply_lut` / `stabilize_clip` | Apply basic correction, LUTs, or Warp Stabilizer. |

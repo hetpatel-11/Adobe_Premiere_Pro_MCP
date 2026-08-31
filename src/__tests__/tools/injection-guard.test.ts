@@ -86,7 +86,7 @@ const PARSE_EXEMPT = new Set([BREAKOUT_LINE_SEPARATOR]);
 const HELPER_SAMPLE = 6;
 
 /**
- * The 171 free-form tools emit one shared ~123 KB body, so every payload against
+ * The 168 free-form tools emit one shared ~123 KB body, so every payload against
  * every one of them re-parses that body. They are driven with the breakout
  * payloads only: those are what detect an escape, and they exercise the parse
  * check as thoroughly as the benign values do. Tools with a declared schema still
@@ -152,7 +152,7 @@ describe('generated scripts cannot be broken out of', () => {
         if (probeScript) {
           // The arguments the shared helpers read apply to every one of these
           // tools, and they all emit the same body, so fuzzing those names once
-          // per tool is 171 times the work for the same answer. They are covered
+          // per tool is 168 times the work for the same answer. They are covered
           // on a few representatives; each tool still gets its own case block
           // fuzzed in full.
           freeForm = true;
@@ -202,7 +202,7 @@ describe('generated scripts cannot be broken out of', () => {
     // Floored on tools that actually EMITTED a script. Two earlier floors were
     // wrong in the same direction: one counted schema arithmetic without touching
     // executeTool, the next was set at 60 while 71% of the catalogue emitted
-    // nothing, because the 171 free-form tools carried no fuzzable position at
+    // nothing, because the 168 free-form tools carried no fuzzable position at
     // all. With those driven from the arguments their own script reads, this sits
     // just under the real number.
     expect(emittingTools.size).toBeGreaterThan(180);

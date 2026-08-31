@@ -6,7 +6,7 @@ This file tracks current, confirmed limits. It is no longer a backlog of already
 
 The current built tool catalog exposes:
 
-- `286` tools (`115` declared in `src/tools/index.ts`, `171` in `src/tools/expanded.ts`)
+- `283` tools (`115` declared in `src/tools/index.ts`, `168` in `src/tools/expanded.ts`)
 - By default `tools/list` advertises 5 always-on tools; the rest are reached with `search_tools` then `invoke_tool`. Set `PREMIERE_MCP_TOOLSET=full` to list the whole catalog.
 
 Counted from the built catalog with `getAvailableTools().length`, not from this file.
@@ -217,7 +217,7 @@ These issues were real and are now resolved in the current code:
 - `create_sequence` could create a sequence in Premiere but still report failure after a bridge timeout
 - `create_sequence` could open the native New Sequence dialog because it used the wrong API; it now requires a preset and uses `newSequence`.
 - `export_frame` called a non-existent API and now uses the QE export path
-- `remove_effect` was advertised even though actual removal is not supported and has been removed from the tool catalog
+- `remove_effect`, `remove_effect_by_name`, and `remove_all_effects` were deleted. Premiere 26 has no `components.remove` or QE `removeVideoEffect` API, so those tools could only report failure.
 - the branded workflow response returned the wrong message due to object spread order
 - `add_marker`, `update_marker`, `delete_marker`, `list_markers`, `lock_track` and
   `toggle_track_visibility` required a `sequenceId` and then ignored it, always operating on

@@ -252,7 +252,7 @@
                 }
             } catch (eRead) {}
         }
-        return '1.2.6';
+        return '1.2.7';
     }
 
     MCPPremiereBridge.prototype.comparePackageVersions = function(a, b) {

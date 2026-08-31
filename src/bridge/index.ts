@@ -344,9 +344,8 @@ function __findSequence(id) {
   }
   return null;
 }
-function __qeSequenceFor(seq) {
+function __qeSequenceLookup(seq) {
   if (!seq) return null;
-  try { app.enableQE(); } catch (eEnable) { return null; }
   var count = 0;
   try { count = qe.project.numSequences; } catch (eCount) { return null; }
   for (var qi = 0; qi < count; qi++) {
@@ -370,6 +369,28 @@ function __qeSequenceFor(seq) {
     if (activeCandidate && String(activeCandidate.guid) === String(seq.sequenceID)) return activeCandidate;
   } catch (eActive) {}
   return null;
+}
+function __activateSequenceForQE(seq) {
+  if (!seq) return;
+  // Premiere 26: Sequence.openInTimeline is missing, and getSequenceAt throws
+  // "Unknown error exception" for every index. QE can still address a sequence
+  // after it is the active timeline. openSequence(id) and assigning
+  // activeSequence are the APIs that actually work.
+  try {
+    if (typeof app.project.openSequence === "function") app.project.openSequence(seq.sequenceID);
+  } catch (eOpen) {}
+  try { app.project.activeSequence = seq; } catch (eSet) {}
+  try { if (seq.openInTimeline) seq.openInTimeline(); } catch (eTL) {}
+  try { if (typeof $ !== "undefined" && $.sleep) $.sleep(250); } catch (eSleep) {}
+}
+function __qeSequenceFor(seq) {
+  if (!seq) return null;
+  try { app.enableQE(); } catch (eEnable) { return null; }
+  var found = __qeSequenceLookup(seq);
+  if (found) return found;
+  __activateSequenceForQE(seq);
+  try { app.enableQE(); } catch (eEnable2) {}
+  return __qeSequenceLookup(seq);
 }
 function __findQeClipByDomClip(qeTrack, domClip) {
   // QE track items are not the DOM clip list: they include gaps and
@@ -722,11 +743,9 @@ function __expandIdList(value) {
 function __qeSequenceForRetry(seq) {
   var found = __qeSequenceFor(seq);
   if (found) return found;
-  if (seq && seq.openInTimeline) {
-    try { seq.openInTimeline(); } catch (eOpen) {}
-  }
-  try { if (typeof $ !== "undefined" && $.sleep) $.sleep(250); } catch (eSleep) {}
-  found = __qeSequenceFor(seq);
+  __activateSequenceForQE(seq);
+  try { app.enableQE(); } catch (eEnable) {}
+  found = __qeSequenceLookup(seq);
   if (found) return found;
   try {
     var active = qe.project.getActiveSequence();

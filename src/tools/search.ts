@@ -119,7 +119,6 @@ const TOOL_ALIASES: Record<string, string> = {
   move_clip_to_track: 'relocate occupancy overwrite destination track',
   create_sequence_from_clips: 'nodeid hex ids from clips make sequence',
   apply_effect: 'lumetri exposure blur filter',
-  remove_effect_by_name: 'delete effect uninstall component',
   add_text_overlay: 'title caption mogrt graphics type',
   detect_silence: 'quiet gaps ffmpeg audio silence',
   razor_timeline_at_time: 'cut split blade razor',

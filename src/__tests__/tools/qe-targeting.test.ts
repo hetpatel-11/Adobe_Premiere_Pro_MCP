@@ -24,7 +24,7 @@ describe('QE targeting, second pass', () => {
   /**
    * The block for one tool inside the shared script.
    *
-   * All 171 expanded tools emit the same ~123 KB body, differing only in the tool
+   * All 168 expanded tools emit the same ~123 KB body, differing only in the tool
    * name near the top, so asserting `toContain` against the whole script says
    * nothing about the tool under test: `sequenceRequestError()` appears in it 39
    * times no matter which tool asked. Every case below therefore passed while the
@@ -113,7 +113,9 @@ describe('QE targeting, second pass', () => {
       // name to explain what replaced it, and a naive count picks those up.
       const code = script.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
       const total = (code.match(/qe\.project\.getActiveSequence\(\)/g) || []).length;
-      expect(total).toBe(1);
+      // One read before activate, one after openSequence/activeSequence assignment.
+      // Both must still guid-check so this never becomes "use whatever is on screen".
+      expect(total).toBe(2);
       expect(inFallback).toContain('String(activeCandidate.guid) === String(seq.sequenceID)');
     });
   });

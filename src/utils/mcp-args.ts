@@ -114,8 +114,13 @@ function canonicalizeValue(value: unknown, key = ''): unknown {
 
 export function canonicalizeMcpArgs(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const metadataValue = typeof args.key === 'string' || typeof args.field === 'string';
   for (const [rawKey, rawValue] of Object.entries(args)) {
     const lookupKey = ARG_ALIASES[rawKey] ?? rawKey;
+    if (metadataValue && lookupKey === 'value') {
+      out[rawKey] = rawValue;
+      continue;
+    }
     out[rawKey] = canonicalizeValue(rawValue, lookupKey);
   }
   for (const [rawKey, rawValue] of Object.entries(args)) {

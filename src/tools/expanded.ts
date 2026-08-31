@@ -97,7 +97,6 @@ export const expandedToolNames = [
   'create_sequence_from_preset',
   'attach_custom_property',
   'get_export_file_extension',
-  'remove_effect',
   'set_xmp_metadata',
   'capture_frame',
   'export_omf',
@@ -108,7 +107,6 @@ export const expandedToolNames = [
   'slide_edit',
   'slip_edit',
   'move_clip_to_track',
-  'remove_all_effects',
   'set_clip_speed_qe',
   'set_frame_blend',
   'set_time_interpolation',
@@ -135,7 +133,6 @@ export const expandedToolNames = [
   'copy_effect_values',
   'replace_clip_media',
   'batch_apply_effect',
-  'remove_effect_by_name',
   'set_blend_mode',
   'set_all_tracks_targeted',
   'razor_all_tracks',
@@ -183,14 +180,73 @@ export const expandedToolNames = [
 
 export const unimplementedExpandedToolNames = [] as const;
 
+const EXPANDED_REQUIRED_CLIP_ID = new Set([
+  'ripple_delete',
+  'roll_edit',
+  'slide_edit',
+  'slip_edit',
+  'move_clip_to_track',
+  'set_clip_speed_qe',
+  'set_frame_blend',
+  'set_time_interpolation',
+  'set_color_value',
+  'set_effect_property',
+  'remove_keyframe_range',
+  'set_keyframe_interpolation',
+  'get_value_at_time',
+  'set_blend_mode',
+  'set_clip_start_time',
+  'set_clip_position',
+  'set_clip_scale',
+  'set_clip_rotation',
+  'set_clip_anchor_point',
+  'set_clip_opacity',
+  'set_clip_volume',
+  'set_clip_pan',
+  'set_anti_alias_quality',
+  'set_uniform_scale',
+  'set_scale_width_height',
+  'freeze_frame',
+]);
+
+const EXPANDED_REQUIRED_PROJECT_ITEM_ID = new Set([
+  'replace_clip_media',
+  'delete_bin',
+  'rename_bin',
+  'add_custom_metadata_field',
+  'set_offline',
+  'has_proxy',
+  'detach_proxy',
+  'set_override_frame_rate',
+  'set_override_pixel_aspect_ratio',
+  'set_scale_to_frame_size',
+  'select_item',
+  'set_start_time',
+  'attach_custom_property',
+  'set_xmp_metadata',
+  'encode_project_item',
+  'set_poster_frame',
+  'delete_project_item',
+]);
+
 export function getExpandedTools(existingNames: Set<string>): MCPTool[] {
   return expandedToolNames
     .filter((name) => !existingNames.has(name))
-    .map((name) => ({
-      name,
-      description: `Premiere Pro expanded operation: ${name.replace(/_/g, ' ')}.`,
-      inputSchema: z.record(z.string(), z.any())
-    }));
+    .map((name) => {
+      let inputSchema: z.ZodTypeAny = z.record(z.string(), z.any());
+      if (EXPANDED_REQUIRED_CLIP_ID.has(name)) {
+        inputSchema = z.object({ clipId: z.string().min(1).describe('Timeline clip id') }).passthrough();
+      } else if (EXPANDED_REQUIRED_PROJECT_ITEM_ID.has(name)) {
+        inputSchema = z.object({
+          projectItemId: z.string().min(1).describe('Project item id from list_project_items'),
+        }).passthrough();
+      }
+      return {
+        name,
+        description: `Premiere Pro expanded operation: ${name.replace(/_/g, ' ')}.`,
+        inputSchema,
+      };
+    });
 }
 
 export function isExpandedTool(name: string): boolean {
@@ -675,6 +731,19 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
         var activeCandidate = qe.project.getActiveSequence();
         if (activeCandidate && String(activeCandidate.guid) === String(seq.sequenceID)) return activeCandidate;
       } catch (eActive) {}
+      // Premiere 26: openInTimeline is missing and getSequenceAt throws for every
+      // index. Activating the DOM sequence is what makes QE address it.
+      try {
+        if (typeof app.project.openSequence === "function") app.project.openSequence(seq.sequenceID);
+      } catch (eOpen) {}
+      try { app.project.activeSequence = seq; } catch (eSet) {}
+      try { if (seq.openInTimeline) seq.openInTimeline(); } catch (eTL) {}
+      try { if (typeof $ !== "undefined" && $.sleep) $.sleep(250); } catch (eSleep) {}
+      try { app.enableQE(); } catch (eEnable2) {}
+      try {
+        activeCandidate = qe.project.getActiveSequence();
+        if (activeCandidate && String(activeCandidate.guid) === String(seq.sequenceID)) return activeCandidate;
+      } catch (eActivated) {}
       return null;
     }
     function sequenceRequestError() {
@@ -1598,25 +1667,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           else if (extensionPreset.indexOf("hdv") !== -1 || extensionPreset.indexOf("m2t") !== -1) extension = "m2t";
           return ok({ extension: extension, method: "presetPathFallback", presetPath: String(args.presetPath || args.preset || "") });
 
-        case "remove_effect":
-        case "remove_effect_by_name":
-          var removeEffectClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!removeEffectClip) return fail(pendingSequenceError || "Clip not found");
-          var effectToRemove = findComponent(removeEffectClip.clip, args.effectName || args.name);
-          if (!effectToRemove) return ok({ removed: true, changed: false, effect: args.effectName || args.name, note: "Effect was already absent from clip" });
-          var removeEffectResult = tryCall(removeEffectClip.clip.components, ["remove"], [effectToRemove.index]);
-          if (!removeEffectResult.called) removeEffectResult = tryCall(effectToRemove.component, ["remove", "delete"], []);
-          if (!removeEffectResult.called) {
-            var qeRemoveClip = qeClipForClip(removeEffectClip);
-            if (qeRemoveClip) {
-              removeEffectResult = tryCall(qeRemoveClip, ["removeVideoEffect", "removeAudioEffect", "removeEffect"], [effectToRemove.component.displayName]);
-            }
-          }
-          if (!removeEffectResult.called) return fail(removeEffectResult.error, { effect: args.effectName || args.name, note: "Premiere's public ExtendScript DOM often exposes effect read/set APIs without an effect removal API." });
-          var stillThere = findComponent(removeEffectClip.clip, args.effectName || args.name);
-          if (stillThere) return fail("Premiere accepted a remove call but the component is still on the clip", { effect: args.effectName || args.name, method: removeEffectResult.method });
-          return ok({ removed: true, effect: args.effectName || args.name, method: removeEffectResult.method });
-
         case "ripple_delete":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("ripple_delete requires clipId.");
           var rippleClip = findClip(args.clipId || args.node_id || args.nodeId);
@@ -1713,24 +1763,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var trimRestored = Math.abs(valueOfTime(placed.inPoint) - moveIn) < 0.05 && Math.abs(valueOfTime(placed.outPoint) - moveOut) < 0.05;
           if (!trimRestored) return fail("Clip moved but source in/out could not be restored", { clipId: placed.nodeId, requestedIn: moveIn, requestedOut: moveOut, actualIn: valueOfTime(placed.inPoint), actualOut: valueOfTime(placed.outPoint) });
           return ok({ moved: true, trackIndex: moveTargetIndex, method: "remove+overwriteClip", start: moveStart, clipId: placed.nodeId, oldClipId: args.clipId || args.node_id || args.nodeId, trimRestored: true });
-
-        case "remove_all_effects":
-          if (!args.clipId && !args.node_id && !args.nodeId) return fail("remove_all_effects requires clipId.");
-          var removeAllClip = findClip(args.clipId || args.node_id || args.nodeId);
-          if (!removeAllClip) return fail(pendingSequenceError || "Clip not found");
-          var removedEffects = [];
-          var failedEffects = [];
-          for (var rai = removeAllClip.clip.components.numItems - 1; rai >= 0; rai--) {
-            var componentToRemove = removeAllClip.clip.components[rai];
-            var componentName = String(componentToRemove.displayName);
-            if (normalizeName(componentName) === "motion" || normalizeName(componentName) === "opacity" || normalizeName(componentName) === "volume") continue;
-            var oneRemove = tryCall(removeAllClip.clip.components, ["remove"], [rai]);
-            if (!oneRemove.called) oneRemove = tryCall(componentToRemove, ["remove", "delete"], []);
-            if (oneRemove.called) removedEffects.push({ name: componentName, method: oneRemove.method });
-            else failedEffects.push({ name: componentName, error: oneRemove.error });
-          }
-          if (failedEffects.length) return fail("One or more effects could not be removed", { removed: removedEffects, failed: failedEffects });
-          return ok({ removed: removedEffects });
 
         case "set_clip_speed_qe":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("set_clip_speed_qe requires clipId.");
@@ -2240,7 +2272,23 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             if (!parText) return fail("pixelAspectRatio must be a positive number or an 'N:M' ratio string.");
             seqSettings.videoPixelAspectRatio = parText;
           }
-          if (toolName === "set_sequence_field_type") seqSettings.videoFieldType = String(args.fieldType || args.value || "No Fields");
+          if (toolName === "set_sequence_field_type") {
+            var fieldRaw = args.fieldType !== undefined ? args.fieldType : args.value;
+            var fieldNum = 0;
+            if (typeof fieldRaw === "number" && isFinite(fieldRaw)) {
+              fieldNum = fieldRaw < 0 ? Math.ceil(fieldRaw) : Math.floor(fieldRaw);
+            } else if (fieldRaw !== undefined && fieldRaw !== null && String(fieldRaw).trim() !== "") {
+              var fieldText = String(fieldRaw).toLowerCase().trim();
+              if (fieldText === "1" || fieldText.indexOf("upper") !== -1) fieldNum = 1;
+              else if (fieldText === "2" || fieldText.indexOf("lower") !== -1) fieldNum = 2;
+              else if (fieldText === "0" || fieldText.indexOf("no field") !== -1 || fieldText.indexOf("progressive") !== -1 || fieldText === "none") fieldNum = 0;
+              else {
+                var parsedField = Number(fieldText);
+                fieldNum = isFinite(parsedField) ? (parsedField < 0 ? Math.ceil(parsedField) : Math.floor(parsedField)) : 0;
+              }
+            }
+            seqSettings.videoFieldType = fieldNum;
+          }
           if (toolName === "set_sequence_display_format") seqSettings.videoDisplayFormat = args.displayFormat || args.value || seqSettings.videoDisplayFormat;
           settingsSeq.setSettings(seqSettings);
           return ok({ sequenceId: settingsSeq.sequenceID, settings: seqSettings });

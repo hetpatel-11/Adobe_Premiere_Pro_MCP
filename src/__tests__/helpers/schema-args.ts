@@ -184,7 +184,7 @@ export function withPayloadAt(base: unknown, path: (string | number)[], payload:
 /**
  * The argument names a tool actually reads, taken from the script it emits.
  *
- * The 171 "expanded" tools declare `z.record(z.string(), z.any())` — a free-form
+ * The 168 "expanded" tools declare `z.record(z.string(), z.any())` — a free-form
  * bag with no `.shape` — so seeding from the schema yields `{}` and they carry no
  * fuzzable position at all. That silently excluded 60% of the catalogue from the
  * injection sweep while every floor and every acceptance check still passed,

@@ -103,6 +103,35 @@ describe('prelude QE helpers', () => {
       expect((sandbox.__result as { guid: string }).guid).toBe('WANTED');
     });
 
+    it('activates the requested sequence when getSequenceAt is dead', async () => {
+      // Premiere 26: every getSequenceAt throws, and QE only sees the active
+      // timeline. Assigning app.project.activeSequence is what makes the guid
+      // fallback succeed for a sequence that is not already on screen.
+      const sandbox = await runWithPrelude(`
+        var assigned = null;
+        app.project = {
+          openSequence: function (id) { assigned = id; return true; },
+          _active: { sequenceID: 'OTHER', name: 'Other' }
+        };
+        Object.defineProperty(app.project, 'activeSequence', {
+          get: function () { return this._active; },
+          set: function (s) { this._active = s; assigned = s.sequenceID; }
+        });
+        qe = { project: {
+          numSequences: 3,
+          getSequenceAt: function () { throw new Error('Unknown error exception'); },
+          getActiveSequence: function () {
+            return app.project.activeSequence
+              ? { guid: app.project.activeSequence.sequenceID, name: app.project.activeSequence.name }
+              : null;
+          }
+        }};
+        __result = __qeSequenceFor({ sequenceID: 'WANTED', name: 'Sweep Demo' });
+      `);
+
+      expect((sandbox.__result as { guid: string }).guid).toBe('WANTED');
+    });
+
     it('falls back to the active sequence only when its guid matches', async () => {
       // The fallback exists because a duplicate never opened in a timeline is
       // invisible to getSequenceAt even while active. The guid check is what stops

@@ -78,7 +78,7 @@ describe("generated ExtendScript is syntactically valid", () => {
   it("rejects an escape that collapses before it reaches the host", async () => {
     // Pin the specific regression: a double-quoted ExtendScript string whose
     // quotes were written as \" in the template literal. Guards the seven QE
-    // fail() messages that took down all 171 tools.
+    // fail() messages that took down all 168 tools.
     const script = await capture("add_tracks");
     expect(script).toContain("Could not address sequence '");
     expect(script).not.toContain('Could not address sequence "" +');

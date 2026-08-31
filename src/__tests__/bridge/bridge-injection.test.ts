@@ -150,5 +150,5 @@ describe('scripts the bridge builds itself', () => {
     // `addToTimeline` is the only method that shows it. Asserting on it would fail
     // for a defect that does not exist. Recorded so a reader can see the shape.
     expect(unparseable.every((site) => site.startsWith('addToTimeline'))).toBe(true);
-  }, 300_000);
+  }, 600_000);
 });

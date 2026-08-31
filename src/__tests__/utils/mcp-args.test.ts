@@ -38,6 +38,28 @@ describe('canonicalizeMcpArgs', () => {
     });
   });
 
+  it('leaves metadata value strings alone even when they look numeric', () => {
+    expect(canonicalizeMcpArgs({
+      projectItemId: '000f4241',
+      key: 'SweepVerifier',
+      value: '1788211569358',
+    })).toEqual({
+      projectItemId: '000f4241',
+      key: 'SweepVerifier',
+      value: '1788211569358',
+    });
+  });
+
+  it('still coerces keyframe value strings when no metadata key is present', () => {
+    expect(canonicalizeMcpArgs({
+      clipId: '000f4244',
+      value: '101',
+    })).toMatchObject({
+      clipId: '000f4244',
+      value: 101,
+    });
+  });
+
   it('lowercases format enumerations', () => {
     expect(canonicalizeMcpArgs({ format: 'PNG' })).toEqual({ format: 'png' });
   });

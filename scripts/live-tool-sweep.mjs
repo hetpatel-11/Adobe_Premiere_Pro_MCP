@@ -439,7 +439,6 @@ async function main() {
   if (demoClipId) {
     sampleArgs.set('get_clip_properties', { clipId: demoClipId });
     sampleArgs.set('apply_effect', { clipId: demoClipId, effectName: 'Gaussian Blur' });
-    sampleArgs.set('remove_effect', { clipId: demoClipId, effectName: 'Gaussian Blur' });
     sampleArgs.set('add_transition_to_clip', {
       clipId: demoClipId,
       transitionName: 'Cross Dissolve',

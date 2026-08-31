@@ -85,7 +85,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('get_tool_schema');
       expect(toolNames).toContain('invoke_tool');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(286);
+      expect(availableTools).toHaveLength(283);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -588,7 +588,7 @@ describe('PremiereProTools', () => {
 
         expect(result.success).toBe(true);
         expect(result.catalog).toEqual({
-          tools: 286,
+          tools: 283,
           advertised: 5,
           toolset: 'search',
           search: 'search_tools',
@@ -1647,10 +1647,12 @@ describe('PremiereProTools', () => {
       const script = mockBridge.executeScript.mock.calls[0][0];
       expect(script).toContain('var info2 = __findClip("clip-2")');
       expect(script).toContain('qeClip.addTransition(transition, info2 ? false : true, String(frames), "0"');
+      expect(script).toContain(', 0.5, true, true)');
       expect(script).not.toContain('frames + ":00"');
       expect(script).toContain('__transitionWasVerified(before, after)');
       expect(script).toContain('__transitionWasVerifiedByXml(beforeXml, afterXml)');
-      expect(script).toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
+      expect(script).toContain('accepted_unverified');
+      expect(script).not.toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
     });
 
     it('distinguishes verified, accepted-unverified, and failed add_transition_to_clip results', async () => {
@@ -1687,8 +1689,8 @@ describe('PremiereProTools', () => {
       expect(script).toContain('status: "failed"');
       expect(script).not.toContain('applied: true');
       expect(script).not.toContain('Transition call completed but Premiere Pro did not expose a verified transition change');
-      expect(script).toContain('new Date().getTime()');
-      expect(script).not.toContain('Date.now()');
+      expect(script).toContain('Skipped: FCP XML export opens Translation Results dialogs');
+      expect(script).not.toContain('seq.exportAsFinalCutProXML(file.fsName)');
 
       const tool = tools.getAvailableTools().find((candidate) => candidate.name === 'add_transition_to_clip');
       expect(tool?.description).toContain('do not retry automatically');
