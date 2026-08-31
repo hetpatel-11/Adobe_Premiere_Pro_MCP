@@ -4,6 +4,10 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+- Removed the GitHub Actions `Publish npm package` workflow. The repo `NPM_TOKEN`
+  cannot publish `adobe-premiere-pro-mcp`; releases go up with a local
+  `npm publish` after `npm login`.
+
 ## [1.2.7] - 2026-08-31
 
 - Premiere 26 QE cannot enumerate sequences (`getSequenceAt` throws; `openInTimeline` is missing). `__qeSequenceFor` now activates the requested sequence via `openSequence` / `activeSequence` so QE tools address that timeline, not whatever is on screen.
