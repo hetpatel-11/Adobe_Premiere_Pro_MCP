@@ -30,6 +30,8 @@ All notable changes are documented here. Releases use semantic versioning.
   launches Premiere when it is installed and the heartbeat is missing, then waits
   for the panel. MCP `instructions` tell the agent to call that once and stop
   with `userActionRequired` instead of spraying tools at a closed Premiere.
+  Launch paths are joined with posix/win32 keyed off `process.platform`, so a
+  darwin stub on Windows CI no longer feeds backslashes to `open -a`.
 
 ## [1.2.5] - 2026-08-30
 

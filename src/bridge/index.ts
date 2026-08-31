@@ -10,7 +10,7 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'fs';
-import { extname, join } from 'path';
+import { extname, join, posix as pathPosix, win32 as pathWin32 } from 'path';
 import { createSecureTempDir, validateFilePath } from '../utils/security.js';
 import type { EnsureHostOptions, EnsureHostResult, PremiereProTransport } from './types.js';
 
@@ -25,6 +25,18 @@ export const BRIDGE_PANEL_NOT_RUNNING =
 export const BRIDGE_NOT_STARTED =
   'MCP Bridge panel is open but the bridge is not started. Click Start Bridge, wait until it says Connected, then retry once.';
 export const PREMIERE_LAUNCH_WAIT_MS = 45000;
+
+/**
+ * Join Premiere install/launch paths using `process.platform`, not the OS
+ * Node's default `path.join` was compiled for. Tests stub `process.platform`
+ * to `darwin`/`win32`; on Windows CI the default joiner still uses
+ * backslashes, which turned `open -a /Applications/...` into
+ * `open -a \\Applications\\...`.
+ */
+export function joinPremiereHostPath(...segments: string[]): string {
+  const joiner = process.platform === 'win32' ? pathWin32.join : pathPosix.join;
+  return joiner(...segments);
+}
 
 
 const UNSUPPORTED_MODAL_PRONE_IMPORT_EXTENSIONS = new Set([
@@ -869,8 +881,8 @@ export class PremiereProBridge implements PremiereProTransport {
     // Scan the install root instead of hardcoding release years, so new
     // versions (2025, 2026, ...) are detected without a code change.
     const searchDirs = process.platform === 'win32'
-      ? [join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Adobe')]
-      : ['/Applications'];
+      ? [joinPremiereHostPath(process.env['ProgramFiles'] || 'C:\\Program Files', 'Adobe')]
+      : [joinPremiereHostPath('/Applications')];
 
     for (const dir of searchDirs) {
       let entries: string[] = [];
@@ -888,7 +900,7 @@ export class PremiereProBridge implements PremiereProTransport {
         .reverse();
 
       for (const candidate of candidates) {
-        const installPath = join(dir, candidate);
+        const installPath = joinPremiereHostPath(dir, candidate);
         try {
           await fs.access(installPath);
           const launchPath = await this.findPremiereLaunchPath(installPath);
@@ -910,14 +922,14 @@ export class PremiereProBridge implements PremiereProTransport {
       try {
         const listing = await fs.readdir(installPath);
         const app = listing.find((entry) => entry.endsWith('.app'));
-        if (app) return join(installPath, app);
+        if (app) return joinPremiereHostPath(installPath, app);
       } catch {
         return installPath;
       }
       return installPath;
     }
     if (process.platform === 'win32') {
-      const exe = join(installPath, 'Adobe Premiere Pro.exe');
+      const exe = joinPremiereHostPath(installPath, 'Adobe Premiere Pro.exe');
       try {
         await fs.access(exe);
         return exe;

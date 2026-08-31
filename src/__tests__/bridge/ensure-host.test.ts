@@ -1,7 +1,19 @@
 import { spawn, execFile } from 'node:child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { PremiereProBridge } from '../../bridge/index.js';
+import { joinPremiereHostPath, PremiereProBridge } from '../../bridge/index.js';
+
+function stubProcessPlatform(value: NodeJS.Platform): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', {
+    configurable: true,
+    enumerable: true,
+    value,
+  });
+  return () => {
+    if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+  };
+}
 
 jest.mock('fs', () => ({
   promises: {
@@ -78,32 +90,89 @@ describe('ensureHost', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
+  it('joins Premiere launch paths with the stubbed platform separators', () => {
+    const restoreDarwin = stubProcessPlatform('darwin');
+    try {
+      expect(joinPremiereHostPath('/Applications', 'Adobe Premiere Pro 2026', 'Adobe Premiere Pro 2026.app'))
+        .toBe('/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app');
+    } finally {
+      restoreDarwin();
+    }
+
+    const restoreWin32 = stubProcessPlatform('win32');
+    try {
+      expect(joinPremiereHostPath('C:\\Program Files', 'Adobe', 'Adobe Premiere Pro 2026', 'Adobe Premiere Pro.exe'))
+        .toBe(path.win32.join('C:\\Program Files', 'Adobe', 'Adobe Premiere Pro 2026', 'Adobe Premiere Pro.exe'));
+    } finally {
+      restoreWin32();
+    }
+  });
+
   it('launches Premiere when an install path is found and the heartbeat is missing', async () => {
-    const originalPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'darwin' });
-    mockFs.readdir.mockImplementation(async (target) => {
-      if (String(target) === '/Applications') return ['Adobe Premiere Pro 2026'] as never;
-      if (String(target).includes('Adobe Premiere Pro 2026')) return ['Adobe Premiere Pro 2026.app'] as never;
-      return [] as never;
-    });
-    mockFs.access.mockResolvedValue(undefined);
-    mockFs.readFile.mockImplementation(async (file) => {
-      if (String(file) === heartbeatPath) throw new Error('ENOENT');
-      throw new Error('ENOENT');
-    });
+    const restore = stubProcessPlatform('darwin');
+    try {
+      const appPath = joinPremiereHostPath(
+        '/Applications',
+        'Adobe Premiere Pro 2026',
+        'Adobe Premiere Pro 2026.app',
+      );
+      mockFs.readdir.mockImplementation(async (target) => {
+        if (String(target) === '/Applications') return ['Adobe Premiere Pro 2026'] as never;
+        if (String(target).includes('Adobe Premiere Pro 2026')) return ['Adobe Premiere Pro 2026.app'] as never;
+        return [] as never;
+      });
+      mockFs.access.mockResolvedValue(undefined);
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) throw new Error('ENOENT');
+        throw new Error('ENOENT');
+      });
 
-    const bridge = new PremiereProBridge();
-    await bridge.initialize();
-    const result = await bridge.ensureHost({ launchIfNeeded: true, waitMs: 20 });
+      const bridge = new PremiereProBridge();
+      await bridge.initialize();
+      const result = await bridge.ensureHost({ launchIfNeeded: true, waitMs: 20 });
 
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'open',
-      ['-a', '/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app'],
-      expect.objectContaining({ detached: true }),
-    );
-    expect(result.launched).toBe(true);
-    expect(result.ready).toBe(false);
-    expect(result.userActionRequired).toBe(true);
-    Object.defineProperty(process, 'platform', { value: originalPlatform });
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'open',
+        ['-a', appPath],
+        expect.objectContaining({ detached: true }),
+      );
+      expect(appPath).toBe('/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app');
+      expect(result.launched).toBe(true);
+      expect(result.ready).toBe(false);
+      expect(result.userActionRequired).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('launches Premiere.exe when an install path is found on Windows', async () => {
+    const restore = stubProcessPlatform('win32');
+    try {
+      const adobeRoot = joinPremiereHostPath(process.env.ProgramFiles || 'C:\\Program Files', 'Adobe');
+      const installDir = joinPremiereHostPath(adobeRoot, 'Adobe Premiere Pro 2026');
+      const exe = joinPremiereHostPath(installDir, 'Adobe Premiere Pro.exe');
+      mockFs.readdir.mockImplementation(async (target) => {
+        if (String(target) === adobeRoot) return ['Adobe Premiere Pro 2026'] as never;
+        return [] as never;
+      });
+      mockFs.access.mockResolvedValue(undefined);
+      mockFs.readFile.mockRejectedValue(new Error('ENOENT'));
+
+      const bridge = new PremiereProBridge();
+      await bridge.initialize();
+      const result = await bridge.ensureHost({ launchIfNeeded: true, waitMs: 20 });
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        exe,
+        [],
+        expect.objectContaining({ detached: true }),
+      );
+      expect(exe.includes('/')).toBe(false);
+      expect(result.launched).toBe(true);
+      expect(result.ready).toBe(false);
+      expect(result.userActionRequired).toBe(true);
+    } finally {
+      restore();
+    }
   });
 });
