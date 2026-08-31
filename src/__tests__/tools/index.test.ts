@@ -81,8 +81,11 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('capture_frame');
       expect(toolNames).toContain('add_tracks');
       expect(toolNames).toContain('get_encoder_presets');
+      expect(toolNames).toContain('search_tools');
+      expect(toolNames).toContain('get_tool_schema');
+      expect(toolNames).toContain('invoke_tool');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(283);
+      expect(availableTools).toHaveLength(286);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -578,14 +581,29 @@ describe('PremiereProTools', () => {
     });
 
     it('reports local capabilities without probing the Premiere bridge by default', async () => {
-      const result = await tools.executeTool('get_capabilities', {});
+      const previous = process.env.PREMIERE_MCP_TOOLSET;
+      delete process.env.PREMIERE_MCP_TOOLSET;
+      try {
+        const result = await tools.executeTool('get_capabilities', {});
 
-      expect(result.success).toBe(true);
-      expect(result.catalog).toEqual({ tools: 283, resources: 13, prompts: 10 });
-      expect(result.liveConnection.checked).toBe(false);
-      expect(result.update.current).toBeTruthy();
-      expect(result.update.available).toBe(false);
-      expect(mockBridge.executeScript).not.toHaveBeenCalled();
+        expect(result.success).toBe(true);
+        expect(result.catalog).toEqual({
+          tools: 286,
+          advertised: 5,
+          toolset: 'search',
+          search: 'search_tools',
+          invoke: 'invoke_tool',
+          resources: 13,
+          prompts: 10,
+        });
+        expect(result.liveConnection.checked).toBe(false);
+        expect(result.update.current).toBeTruthy();
+        expect(result.update.available).toBe(false);
+        expect(mockBridge.executeScript).not.toHaveBeenCalled();
+      } finally {
+        if (previous === undefined) delete process.env.PREMIERE_MCP_TOOLSET;
+        else process.env.PREMIERE_MCP_TOOLSET = previous;
+      }
     });
 
     it('can include an explicit read-only live connection check in capabilities', async () => {
@@ -631,7 +649,9 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(false);
       expect(result.retry).toBe(false);
-      expect(result.nextStep).toMatch(/Start Bridge/);
+      expect(result.userActionRequired).toBe(true);
+      expect(result.agentAction).toBe('verify_premiere_connection');
+      expect(result.nextStep).toMatch(/verify_premiere_connection/);
     });
 
     it('executes expanded tools through our bridge dispatcher', async () => {
@@ -705,7 +725,8 @@ describe('PremiereProTools', () => {
 
       await executeExpandedTool(mockBridge, 'create_sequence_from_clips', { projectItemId: 'item-1', name: 'Cut' });
       const script = mockBridge.executeScript.mock.calls[0][0] as string;
-      expect(script).toContain('if (!clipItemIds.length && args.projectItemId) clipItemIds = [args.projectItemId]');
+      expect(script).toContain('mergeIds(args.projectItemId)');
+      expect(script).toContain('__expandIdList');
       expect(script).toContain('asTimelineClip.clip.projectItem');
       expect(script).toContain('findClipAnywhere(wantedId)');
       expect(script).toContain('findParentItem(clipItems[0])');
@@ -1337,7 +1358,8 @@ describe('PremiereProTools', () => {
       expect(script).toContain('Premiere accepted setValue but the resulting value could not be read back');
       expect(script).toContain('if (!valuesEquivalent(actual[vai], requested[vai]))');
       expect(script).toContain('warnings: paramWarnings');
-      expect(script).toContain('if (!paramResults[pr].ok)');
+      expect(script).toContain('if (__namesMatch(newComp.properties[k].displayName, pName))');
+      expect(script).toContain('__coercePropertyValue');
     });
 
     it('returns an explicit unsupported result for caption track deletion', async () => {
@@ -1412,8 +1434,9 @@ describe('PremiereProTools', () => {
 
       expect(result.success).toBe(true);
       const script = mockBridge.executeScript.mock.calls[0][0];
-      expect(script).not.toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
       expect(script).toContain('clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration)');
+      expect(script).toContain('if (closeEnough(durationAfterEnd.duration, targetDuration))');
+      expect(script).toContain('clip.outPoint = timeFromSeconds(targetOutPoint)');
       expect(script).not.toContain('new Time(clip.inPoint.seconds + 2.5)');
       expect(script).toContain('timeline duration did not change to requested value');
       expect(script).toContain('TRIM_UNSUPPORTED_FOR_CLIP');

@@ -28,6 +28,9 @@ class MCPPremiereBridge {
             this.log('Initializing MCP Premiere Pro Bridge (UXP)...', 'info');
             await this.loadConfig();
             this.updateUI();
+            if (this.tempFolderToken) {
+                await this.startBridge();
+            }
             this.log('Bridge initialized successfully', 'info');
         } catch (error) {
             this.log(`Initialization error: ${error.message}`, 'error');
@@ -340,9 +343,8 @@ class MCPPremiereBridge {
 
             this.saveConfig();
             this.log(`Temp folder selected: ${this.tempDirectory}`, 'info');
-            // Heartbeat before Start Bridge so the server can say "click Start"
-            // instead of hanging a minute, then guessing the panel is missing.
             this.startCommandPolling();
+            await this.startBridge();
         } catch (error) {
             this.log(`Error selecting folder: ${error.message}`, 'error');
         }

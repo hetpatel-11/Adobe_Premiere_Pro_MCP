@@ -4,7 +4,7 @@
 
 **Operate local Adobe Premiere Pro projects through MCP.**
 
-283 tools, 13 context resources, and 10 guided prompts for Codex, Claude Code, Claude Desktop, and other MCP clients. CEP is the supported production bridge; UXP remains experimental.
+283 Premiere tools behind `search_tools` / `invoke_tool`, 13 context resources, and 10 guided prompts for Codex, Claude Code, Claude Desktop, and other MCP clients. CEP is the supported production bridge; UXP remains experimental.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-5fd3c6.svg)](LICENSE.md)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org/)
@@ -17,7 +17,7 @@
 
 **Languages:** English | [日本語](README.ja.md) | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [한국어](README.ko.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Dansk](README.da.md) | [Polski](README.pl.md) | [Русский](README.ru.md) | [Bosanski](README.bs.md) | [العربية](README.ar.md) | [Norsk](README.no.md) | [Português (Brasil)](README.pt-BR.md) | [ไทย](README.th.md) | [Türkçe](README.tr.md) | [ភាសាខ្មែរ](README.km.md)
 
-**Start here:** install the local bridge, open it in Premiere, then run `verify_premiere_connection` before editing.
+**Start here:** install the local bridge, open it in Premiere, then run `verify_premiere_connection` before editing. MCP hosts see a small always-on set; call `search_tools` then `invoke_tool` for the rest.
 
 [Install](#install) | [Codex plugin](#codex-plugin) | [Claude Code plugin](#claude-code-plugin) | [Verify](#verify-the-install) | [Telemetry](#telemetry) | [Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
 
@@ -124,15 +124,16 @@ This repository is currently validated for:
 - the included Windows installer path for GitHub Copilot in VS Code and Claude Desktop config
 - manual MCP registration for Codex, Claude Code, and similar MCP clients
 
-Current catalog status as of August 5, 2026:
+Current catalog status as of August 31, 2026:
 
-- `283` MCP tools are exposed for AI-driven video editing
+- `286` catalog tools (`search_tools`, `get_tool_schema`, `invoke_tool`, plus 283 Premiere operations)
+- `tools/list` advertises the small always-on set by default (`search_tools`, `get_tool_schema`, `invoke_tool`, `verify_premiere_connection`, `list_sequences`). Set `PREMIERE_MCP_TOOLSET=full` to list every tool, which is what Claude Code native tool search indexes
 - coverage spans project setup, media ingest, bins, sequences, timeline editing, transitions, effects, keyframes, captions, markers, metadata, proxies, multicam, color, audio, exports, and higher-level assembly workflows
 - the catalog includes practical agent workflows such as product-spot assembly, motion-graphics demos, timeline razoring, caption reads, audio ducking, scene edit detection, EDL import, export readiness validation, and linked audio/video operations
 
 Most recent completed local live validation:
 
-- `283` active tools are exposed; `get_capabilities` reports local installation and optional live connection state, while `verify_premiere_connection` is the canonical read-only bridge and host readiness check
+- `286` catalog tools; `get_capabilities` reports `catalog.advertised` vs `catalog.tools`, local installation, and optional live connection state. `verify_premiere_connection` is the canonical read-only bridge and host readiness check
 - `0` known parked or placeholder tools are advertised
 - `import_ae_comps` is intentionally not advertised because Premiere returned `false` for real `.aep` fixtures in this environment and a generic `.aep` import can wedge the CEP bridge
 
@@ -232,7 +233,7 @@ For a real-host sweep, use a disposable Premiere project and run `node scripts/l
 
 ## Tools
 
-All `283` advertised tools have an implementation. Tool schemas are available through MCP discovery; this catalog explains the editing surface in human terms. Start with `verify_premiere_connection`, then inspect the project before asking an agent to mutate it.
+All `286` catalog tools have an implementation. `tools/list` advertises a small always-on set so hosts that dump every MCP schema do not spend the context window on unused Premiere operations (Anthropic tool-search / MCP progressive discovery). Call `search_tools` (BM25 `query` or regex `pattern`), optionally `get_tool_schema`, then `invoke_tool`. Set `PREMIERE_MCP_TOOLSET=full` to restore a flat 286-tool list. This catalog explains the editing surface in human terms. Start with `verify_premiere_connection`, then inspect the project before asking an agent to mutate it.
 
 ### Discovery and project inspection
 
@@ -390,6 +391,8 @@ Opt out in any of these ways:
 - Set `"telemetry": false` in `~/.premiere-mcp-bridge/config.json`
 - Set `PREMIERE_MCP_TELEMETRY=0` in the MCP server environment
 - Set `DO_NOT_TRACK=1`
+
+By default `tools/list` advertises `search_tools`, `get_tool_schema`, `invoke_tool`, `verify_premiere_connection`, and `list_sequences`. Call `search_tools` then `invoke_tool` for the rest of the catalog. Set `PREMIERE_MCP_TOOLSET=full` to advertise every tool (use this when the host natively defers MCP schemas, as Claude Code tool search does).
 
 ## Updates
 

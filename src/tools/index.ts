@@ -11,22 +11,23 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, parse } from 'node:path';
 import type { PremiereProTransport } from '../bridge/types.js';
+import { bridgeUnavailableResult, isBridgeUnavailableMessage } from '../bridge/errors.js';
 import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
 import { executeExpandedTool, getExpandedTools, isExpandedTool } from './expanded.js';
 import { canonicalizeMcpArgs } from '../utils/mcp-args.js';
 import { checkForUpdate } from '../utils/update-check.js';
+import {
+  advertisedToolNames,
+  categorizeTool,
+  resolveToolset,
+  schemaTextFromShape,
+  searchPremiereTools,
+  type SearchDetail,
+  type SearchableTool,
+} from './search.js';
 
 const HEALTH_CHECK_TIMEOUT_MS = 8000;
-
-function isBridgeUnavailable(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('mcp bridge is not running') ||
-    normalized.includes('start bridge') ||
-    normalized.includes('bridge response timeout')
-  );
-}
 
 export interface MCPTool {
   name: string;
@@ -352,6 +353,31 @@ export class PremiereProTools {
 
   private getLocalTools(): MCPTool[] {
     return [
+      {
+        name: 'search_tools',
+        description: 'Search the Premiere tool catalog with a BM25 natural-language query or a regex pattern, then call invoke_tool. Use this instead of expecting 280 editing tools in the MCP tool list. Empty query lists categories. Default 5 matches.',
+        inputSchema: z.object({
+          query: z.string().optional().describe('Natural language BM25 query, e.g. "trim clip duration" or "export sequence"'),
+          pattern: z.string().optional().describe('Case-insensitive regex over tool name, description, category, and argument names. e.g. "^list_" or "mogrt"'),
+          limit: z.number().optional().describe('Max matches, 1-25. Defaults to 5.'),
+          detail: z.enum(['names', 'descriptions', 'schema']).optional().describe('How much of each match to return. schema includes the JSON input schema. Defaults to descriptions.')
+        })
+      },
+      {
+        name: 'get_tool_schema',
+        description: 'Return the full JSON input schema for one Premiere tool name from search_tools. After reading it, call invoke_tool.',
+        inputSchema: z.object({
+          name: z.string().min(1).describe('Exact tool name, e.g. trim_clip')
+        })
+      },
+      {
+        name: 'invoke_tool',
+        description: 'Run a Premiere tool by exact name. Use after search_tools. Hosts that only advertise the small always-on set cannot call trim_clip etc. as top-level MCP tools.',
+        inputSchema: z.object({
+          name: z.string().min(1).describe('Exact tool name returned by search_tools'),
+          arguments: z.record(z.string(), z.any()).optional().describe('Arguments for that tool')
+        })
+      },
       // Discovery Tools (NEW)
       {
         name: 'list_project_items',
@@ -380,8 +406,10 @@ export class PremiereProTools {
       },
       {
         name: 'verify_premiere_connection',
-        description: 'Read-only readiness check for the live CEP bridge and Premiere Pro host. Fails in a couple of seconds if the MCP Bridge panel is not running (does not hang for a minute). Run this before an editing workflow. If it fails, start the panel rather than retrying.',
-        inputSchema: z.object({})
+        description: 'Readiness check for Premiere Pro and the MCP Bridge. Call this before any editing tool. If Premiere is installed and not running, this launches it and waits for the CEP panel, which auto-starts the bridge. If it fails, tell the user the nextStep and do not retry other tools.',
+        inputSchema: z.object({
+          launchIfNeeded: z.boolean().optional().describe('When true (the default), launch Premiere if it is installed and the bridge heartbeat is missing. Set false for a check that never starts the app.')
+        })
       },
       {
         name: 'get_capabilities',
@@ -586,7 +614,7 @@ export class PremiereProTools {
       },
       {
         name: 'move_clip',
-        description: 'Moves a clip along the timeline, keeping it on its current track. To move a clip to a different track, use move_clip_to_track: on this Premiere build that is a remove-and-reinsert, which can overwrite whatever occupies the destination and gives the clip a new id, so it is deliberately a separate call rather than an option here.',
+        description: 'Moves a clip along the timeline, keeping it on its current track. To change tracks, use move_clip_to_track: that call restores source in/out after a remove-and-reinsert, refuses an occupied destination unless overwrite is true, and gives the clip a new id.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to move'),
           newTime: z.number().describe('The new time position in seconds')
@@ -957,7 +985,7 @@ export class PremiereProTools {
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to replace'),
           newProjectItemId: z.string().describe('The ID of the new project item to use'),
-          preserveEffects: z.boolean().optional().describe('Whether to keep effects and settings (default: true)')
+          preserveEffects: z.boolean().optional().describe('When true (default), restore source in/out, the enabled flag, Motion values, and other effects on the replacement. When false, the new item is placed at full duration with default Motion.')
         })
       },
 
@@ -1463,6 +1491,17 @@ export class PremiereProTools {
     ];
   }
 
+  getAdvertisedTools(): MCPTool[] {
+    const catalog = this.getAvailableTools();
+    const advertised = advertisedToolNames();
+    if (!advertised) return catalog;
+    const byName = new Map(catalog.map((tool) => [tool.name, tool]));
+    return advertised.flatMap((name) => {
+      const tool = byName.get(name);
+      return tool ? [tool] : [];
+    });
+  }
+
   async executeTool(name: string, args: Record<string, any>): Promise<any> {
     // Premiere truncates a string at the first NUL when it is assigned — a
     // marker named "p\0q" is created as "p" — and reports success for the
@@ -1485,8 +1524,10 @@ export class PremiereProTools {
     if (!tool) {
       return {
         success: false,
-        error: `Tool '${name}' not found`,
-        availableTools: this.getAvailableTools().map(t => t.name)
+        retry: false,
+        errorCode: 'tool_not_found',
+        agentAction: 'search_tools',
+        error: `Tool '${name}' not found. Call search_tools with a query or pattern, then invoke_tool with the exact name.`,
       };
     }
 
@@ -1546,6 +1587,12 @@ export class PremiereProTools {
     
     try {
       switch (name) {
+        case 'search_tools':
+          return this.searchToolsCatalog(args);
+        case 'get_tool_schema':
+          return this.getToolSchema(String(args.name || ''));
+        case 'invoke_tool':
+          return this.invokeCatalogTool(args);
         // Discovery Tools
         case 'list_project_items':
           return await this.listProjectItems(args.includeBins, args.includeMetadata);
@@ -1556,7 +1603,7 @@ export class PremiereProTools {
         case 'get_project_info':
           return await this.getProjectInfo();
         case 'verify_premiere_connection':
-          return await this.verifyPremiereConnection();
+          return await this.verifyPremiereConnection(args.launchIfNeeded !== false);
         case 'get_capabilities':
           return await this.getCapabilities(args.checkConnection);
         case 'validate_project_for_export':
@@ -1876,23 +1923,17 @@ export class PremiereProTools {
         default:
           return {
             success: false,
-            error: `Tool '${name}' not implemented`,
-            availableTools: this.getAvailableTools().map(t => t.name)
+            retry: false,
+            errorCode: 'tool_not_implemented',
+            agentAction: 'search_tools',
+            error: `Tool '${name}' not implemented. Call search_tools, then invoke_tool with a catalog name.`,
           };
       }
     } catch (error) {
       this.logger.error(`Error executing tool ${name}:`, error);
       const message = error instanceof Error ? error.message : String(error);
-      if (isBridgeUnavailable(message)) {
-        return {
-          success: false,
-          error: message,
-          tool: name,
-          retry: false,
-          status: 'bridge_unavailable',
-          nextStep:
-            'Open Premiere Pro → Window > Extensions > MCP Bridge → click Start Bridge. Do not retry until the panel says Connected.',
-        };
+      if (isBridgeUnavailableMessage(message)) {
+        return bridgeUnavailableResult(name, message);
       }
       return {
         success: false,
@@ -1904,6 +1945,85 @@ export class PremiereProTools {
   }
 
   // Discovery Tools Implementation
+  private searchToolsCatalog(args: Record<string, unknown>): ReturnType<typeof searchPremiereTools> {
+    const detail: SearchDetail =
+      args.detail === 'names' || args.detail === 'schema' ? args.detail : 'descriptions';
+    const catalog = this.getAvailableTools().map((tool) => {
+      const entry: SearchableTool = {
+        name: tool.name,
+        description: tool.description,
+        schemaText: schemaTextFromShape(tool.inputSchema as { shape?: Record<string, { description?: string }> }),
+      };
+      if (detail === 'schema') {
+        entry.inputSchema = z.toJSONSchema(tool.inputSchema as z.ZodTypeAny, { unrepresentable: 'any' });
+      }
+      return entry;
+    });
+    const query = typeof args.query === 'string' ? args.query : undefined;
+    const pattern = typeof args.pattern === 'string' ? args.pattern : undefined;
+    const limit = typeof args.limit === 'number' ? args.limit : undefined;
+    return searchPremiereTools(catalog, {
+      ...(query !== undefined ? { query } : {}),
+      ...(pattern !== undefined ? { pattern } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      detail,
+      advertised: this.getAdvertisedTools().map((tool) => tool.name),
+      toolset: resolveToolset(),
+    });
+  }
+
+  private getToolSchema(name: string): Record<string, unknown> {
+    const tool = this.getAvailableTools().find((candidate) => candidate.name === name);
+    if (!tool) {
+      return {
+        success: false,
+        retry: false,
+        errorCode: 'tool_not_found',
+        agentAction: 'search_tools',
+        error: `Tool '${name}' not found. Call search_tools, then get_tool_schema with an exact catalog name.`,
+      };
+    }
+    return {
+      success: true,
+      name: tool.name,
+      description: tool.description,
+      category: categorizeTool(tool.name),
+      inputSchema: z.toJSONSchema(tool.inputSchema as z.ZodTypeAny, { unrepresentable: 'any' }),
+      nextStep:
+        resolveToolset() === 'full'
+          ? `Call ${tool.name} directly, or invoke_tool with this name and arguments.`
+          : `Call invoke_tool with name ${tool.name} and its arguments.`,
+    };
+  }
+
+  private async invokeCatalogTool(args: Record<string, unknown>): Promise<unknown> {
+    const innerName = typeof args.name === 'string' ? args.name.trim() : '';
+    if (!innerName) {
+      return {
+        success: false,
+        status: 'validation',
+        retry: false,
+        errorCode: 'invoke_missing_name',
+        error: 'invoke_tool requires name (the exact catalog tool name from search_tools).',
+      };
+    }
+    if (innerName === 'invoke_tool') {
+      return {
+        success: false,
+        status: 'validation',
+        retry: false,
+        errorCode: 'invoke_nested',
+        error: 'invoke_tool cannot invoke itself.',
+      };
+    }
+    const rawArgs = args.arguments ?? args.args;
+    const innerArgs =
+      rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : {};
+    return this.executeTool(innerName, innerArgs);
+  }
+
   private async listProjectItems(includeBins = true, _includeMetadata = false): Promise<any> {
     const script = `
       try {
@@ -2082,7 +2202,11 @@ ${this.buildSequenceResolver(sequenceId)}
     return await this.bridge.executeScript(script);
   }
 
-  private async verifyPremiereConnection(): Promise<any> {
+  private async verifyPremiereConnection(launchIfNeeded = true): Promise<any> {
+    if (typeof this.bridge.ensureHost === 'function') {
+      const ensured = await this.bridge.ensureHost({ launchIfNeeded });
+      if (ensured && !ensured.ready) return ensured;
+    }
     const script = `
       try {
         var project = app.project;
@@ -2111,7 +2235,7 @@ ${this.buildSequenceResolver(sequenceId)}
           success: false,
           status: 'unavailable',
           error: e.toString(),
-          nextStep: 'Open Window > Extensions > MCP Bridge (CEP), start the bridge, then run this check again.'
+          nextStep: 'Open Window > Extensions > MCP Bridge if the panel is missing, then run verify_premiere_connection again.'
         });
       }
     `;
@@ -2178,12 +2302,17 @@ ${this.buildSequenceResolver(sequenceId)}
       },
       catalog: {
         tools: this.getAvailableTools().length,
+        advertised: this.getAdvertisedTools().length,
+        toolset: resolveToolset(),
+        search: 'search_tools',
+        invoke: 'invoke_tool',
         resources: 13,
         prompts: 10
       },
       liveConnection,
       safety: {
         recommendedFirstCall: 'verify_premiere_connection',
+        toolDiscovery: 'search_tools then invoke_tool. Set PREMIERE_MCP_TOOLSET=full to advertise every tool to the MCP host.',
         rawExtendScript: 'Available through execute_extendscript and evaluate_expression. Require explicit user approval before using either tool.',
         note: 'A detected CEP installation does not prove that Premiere is running or the bridge is connected.'
       }
@@ -3185,8 +3314,14 @@ ${this.buildSequenceResolver(sequenceId)}
         walk(app.project.rootItem, allItems);
         var items = [];
         for (var j = 0; j < ids.length; j++) {
+          var wanted = ids[j];
+          var resolved = __resolveProjectItem(wanted);
+          if (resolved) {
+            items.push(resolved);
+            continue;
+          }
           for (var k = 0; k < allItems.length; k++) {
-            if (String(allItems[k].nodeId) === String(ids[j])) {
+            if (__idsMatch(allItems[k].nodeId, wanted) || allItems[k].name === wanted) {
               items.push(allItems[k]);
               break;
             }
@@ -3696,6 +3831,14 @@ ${this.buildSequenceResolver(sequenceId)}
             clip.end = timeFromSeconds(secondsOf(clip.start) + targetDuration);
           } catch (timelineError) {
             recordWriteError("end", timelineError);
+          }
+        }
+        var durationAfterEnd = stateOf();
+        if (closeEnough(durationAfterEnd.duration, targetDuration)) {
+          var targetOutPoint = secondsOf(clip.inPoint) + durationAfterEnd.duration;
+          if (!closeEnough(durationAfterEnd.outPoint, targetOutPoint)) {
+            try { clip.outPoint = timeFromSeconds(targetOutPoint); }
+            catch (outSyncError) { recordWriteError("outPoint", outSyncError); }
           }
         }
         ` : ''}
@@ -4269,7 +4412,15 @@ ${this.buildSequenceResolver(sequenceId)}
               break;
             }
           }
-          // Pass 2: normalized match (strip case/whitespace/underscores/dashes)
+          // Pass 2: locale-aware / folded match (Exposure/Exposition, Scale/Escala)
+          if (!matched) {
+            for (var k = 0; k < newComp.properties.numItems; k++) {
+              if (__namesMatch(newComp.properties[k].displayName, pName)) {
+                matched = { idx: k, prop: newComp.properties[k], strategy: "canonical" };
+                break;
+              }
+            }
+          }
           if (!matched) {
             var nameN = normalize(pName);
             for (var k = 0; k < newComp.properties.numItems; k++) {
@@ -4284,11 +4435,12 @@ ${this.buildSequenceResolver(sequenceId)}
               var valueBefore = null;
               var beforeReadable = true;
               try { valueBefore = matched.prop.getValue(); } catch (eB) { beforeReadable = false; }
-              matched.prop.setValue(requestedVal, true);
+              var coercedVal = __coercePropertyValue(matched.prop, requestedVal, null);
+              matched.prop.setValue(coercedVal, true);
               var valueAfter = null;
               var afterReadable = true;
               try { valueAfter = matched.prop.getValue(); } catch (eA) { afterReadable = false; }
-              var verified = afterReadable && valuesEquivalent(valueAfter, requestedVal);
+              var verified = afterReadable && valuesEquivalent(valueAfter, coercedVal);
               var changed = beforeReadable && afterReadable && !valuesEquivalent(valueAfter, valueBefore);
               var acceptedWithWarning = !verified && changed;
               var unverifiable = !afterReadable;
@@ -6888,17 +7040,188 @@ ${this.buildSequenceResolver(sequenceId)}
     return await this.bridge.executeScript(script);
   }
 
-  private async replaceClip(clipId: string, newProjectItemId: string, _preserveEffects?: boolean): Promise<any> {
+  private async replaceClip(clipId: string, newProjectItemId: string, preserveEffects?: boolean): Promise<any> {
+    const keepSettings = preserveEffects !== false;
     const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var newItem = __findProjectItem(${JSON.stringify(newProjectItemId)});
+        if (!newItem) newItem = __resolveProjectItem(${JSON.stringify(newProjectItemId)});
         if (!newItem) return JSON.stringify({ success: false, error: "New project item not found" });
-        var startTime = info.clip.start.seconds;
-        info.clip.remove(false, true);
-        info.track.overwriteClip(newItem, startTime);
-        return JSON.stringify({ success: true, message: "Clip replaced" });
+
+        function secondsOf(value) {
+          if (value === undefined || value === null) return null;
+          if (typeof value === "number") return value;
+          if (value.seconds !== undefined) return Number(value.seconds);
+          if (value.ticks !== undefined) return __ticksToSeconds(value.ticks);
+          return null;
+        }
+        function timeFromSeconds(seconds) {
+          var t = new Time();
+          t.seconds = Number(seconds);
+          return t;
+        }
+        function isIntrinsic(name) {
+          var n = __canonicalName(name);
+          return n === "motion" || n === "opacity" || n === "volume";
+        }
+        function readMotion(clip) {
+          var motion = {};
+          if (!clip || !clip.components) return motion;
+          for (var ci = 0; ci < clip.components.numItems; ci++) {
+            var comp = clip.components[ci];
+            for (var pj = 0; pj < comp.properties.numItems; pj++) {
+              var pp = comp.properties[pj];
+              try {
+                if (__namesMatch(pp.displayName, "Opacity")) motion.opacity = pp.getValue();
+                else if (__namesMatch(pp.displayName, "Scale")) motion.scale = pp.getValue();
+                else if (__namesMatch(pp.displayName, "Rotation")) motion.rotation = pp.getValue();
+                else if (__namesMatch(pp.displayName, "Position")) motion.position = pp.getValue();
+              } catch (eRead) {}
+            }
+          }
+          return motion;
+        }
+        function writeMotion(clip, motion) {
+          var missing = [];
+          function applyNamed(componentName, paramName, value) {
+            if (value === undefined) return true;
+            var resolved = __resolveClipProperty(clip, componentName, paramName);
+            if (!resolved.ok) return false;
+            try {
+              resolved.property.setValue(__coercePropertyValue(resolved.property, value, resolved.axis), true);
+              return true;
+            } catch (eSet) { return false; }
+          }
+          if (!applyNamed("Opacity", "Opacity", motion.opacity)) missing.push("opacity");
+          if (!applyNamed("Motion", "Scale", motion.scale)) missing.push("scale");
+          if (!applyNamed("Motion", "Rotation", motion.rotation)) missing.push("rotation");
+          if (motion.position !== undefined) {
+            var resolvedPos = __resolveClipProperty(clip, "Motion", "Position");
+            if (!resolvedPos.ok) missing.push("position");
+            else {
+              try { resolvedPos.property.setValue(motion.position, true); }
+              catch (ePos) { missing.push("position"); }
+            }
+          }
+          return missing;
+        }
+        function readEffects(clip) {
+          var extra = [];
+          if (!clip || !clip.components) return extra;
+          for (var ei = 0; ei < clip.components.numItems; ei++) {
+            var component = clip.components[ei];
+            var displayName = String(component.displayName);
+            if (isIntrinsic(displayName)) continue;
+            var props = [];
+            try {
+              for (var ep = 0; ep < component.properties.numItems; ep++) {
+                var prop = component.properties[ep];
+                var value = null;
+                try { value = prop.getValue(); } catch (eVal) {}
+                props.push({ displayName: String(prop.displayName), value: value });
+              }
+            } catch (eProps) {}
+            extra.push({ displayName: displayName, properties: props });
+          }
+          return extra;
+        }
+
+        var clip = info.clip;
+        var saved = {
+          start: secondsOf(clip.start),
+          end: secondsOf(clip.end),
+          inPoint: secondsOf(clip.inPoint),
+          outPoint: secondsOf(clip.outPoint),
+          disabled: !!clip.disabled,
+          motion: readMotion(clip),
+          effects: readEffects(clip)
+        };
+        var destTrack = info.track;
+        var destIndex = info.trackIndex;
+        var destType = info.trackType;
+        clip.remove(false, true);
+        destTrack.overwriteClip(newItem, saved.start);
+
+        var placed = null;
+        var dest = destType === "video" ? info.sequence.videoTracks[destIndex] : info.sequence.audioTracks[destIndex];
+        if (!dest) dest = destTrack;
+        var bestDelta = null;
+        for (var ci = 0; ci < dest.clips.numItems; ci++) {
+          var candidate = dest.clips[ci];
+          var delta = Math.abs(secondsOf(candidate.start) - saved.start);
+          if (bestDelta === null || delta < bestDelta) {
+            placed = candidate;
+            bestDelta = delta;
+          }
+        }
+        if (!placed) return JSON.stringify({ success: false, error: "Replacement did not create a clip on the destination track", replaced: false });
+
+        var restored = { trim: false, enabled: false, motion: [], effects: [], failedEffects: [] };
+        if (${keepSettings ? 'true' : 'false'}) {
+          try { if (saved.inPoint !== null) placed.inPoint = timeFromSeconds(saved.inPoint); } catch (eIn) {}
+          try { if (saved.outPoint !== null) placed.outPoint = timeFromSeconds(saved.outPoint); } catch (eOut) {}
+          try { if (saved.end !== null) placed.end = timeFromSeconds(saved.end); } catch (eEnd) {}
+          restored.trim = Math.abs((secondsOf(placed.inPoint) || 0) - (saved.inPoint || 0)) < 0.05
+            && Math.abs((secondsOf(placed.outPoint) || 0) - (saved.outPoint || 0)) < 0.05;
+          try { placed.disabled = saved.disabled; restored.enabled = !!placed.disabled === saved.disabled; } catch (eEn) {}
+          restored.motion = writeMotion(placed, saved.motion);
+          if (saved.effects.length) {
+            try { app.enableQE(); } catch (eQe) {}
+            var qeSeq = __qeSequenceFor(info.sequence);
+            var qeTrack = qeSeq ? (destType === "video" ? qeSeq.getVideoTrackAt(destIndex) : qeSeq.getAudioTrackAt(destIndex)) : null;
+            var qeClip = qeTrack ? __findQeClipByDomClip(qeTrack, placed) : null;
+            for (var fi = 0; fi < saved.effects.length; fi++) {
+              var effect = saved.effects[fi];
+              var added = false;
+              if (qeClip) {
+                var qeEffect = destType === "video" ? __findQeNamed("videoEffect", effect.displayName) : __findQeNamed("audioEffect", effect.displayName);
+                try {
+                  if (qeEffect) {
+                    if (destType === "video" && qeClip.addVideoEffect) qeClip.addVideoEffect(qeEffect);
+                    else if (qeClip.addAudioEffect) qeClip.addAudioEffect(qeEffect);
+                    added = true;
+                  }
+                } catch (eAdd) { added = false; }
+              }
+              if (!added) {
+                restored.failedEffects.push(effect.displayName);
+                continue;
+              }
+              var appliedProps = [];
+              for (var pi = 0; pi < placed.components.numItems; pi++) {
+                if (!__namesMatch(placed.components[pi].displayName, effect.displayName)) continue;
+                for (var pp = 0; pp < effect.properties.length; pp++) {
+                  var want = effect.properties[pp];
+                  for (var pj = 0; pj < placed.components[pi].properties.numItems; pj++) {
+                    var hostProp = placed.components[pi].properties[pj];
+                    if (!__namesMatch(hostProp.displayName, want.displayName)) continue;
+                    try { hostProp.setValue(__coercePropertyValue(hostProp, want.value, null), true); appliedProps.push(want.displayName); } catch (eProp) {}
+                  }
+                }
+              }
+              restored.effects.push({ name: effect.displayName, properties: appliedProps });
+            }
+          }
+        }
+
+        var coreFailed = ${keepSettings ? 'true' : 'false'} && (!restored.trim || !restored.enabled || restored.motion.length || restored.failedEffects.length);
+        return JSON.stringify({
+          success: !coreFailed,
+          replaced: true,
+          preserveEffects: ${keepSettings ? 'true' : 'false'},
+          clipId: placed.nodeId,
+          oldClipId: ${JSON.stringify(clipId)},
+          restored: restored,
+          error: coreFailed
+            ? ("Clip was replaced but settings were not fully restored: " +
+               (!restored.trim ? "trim " : "") +
+               (restored.motion.length ? ("motion " + restored.motion.join(",") + " ") : "") +
+               (restored.failedEffects.length ? ("effects " + restored.failedEffects.join(",")) : ""))
+            : undefined,
+          retry: false
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }

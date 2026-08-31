@@ -252,7 +252,7 @@
                 }
             } catch (eRead) {}
         }
-        return '1.2.5';
+        return '1.2.6';
     }
 
     MCPPremiereBridge.prototype.comparePackageVersions = function(a, b) {
@@ -476,6 +476,7 @@
         this.loadConfig();
         this.updateUI();
         this.startCommandPolling();
+        this.startBridge();
         this.checkForPackageUpdate();
     };
 
@@ -863,6 +864,11 @@
     };
 
     MCPPremiereBridge.prototype.startBridge = function() {
+        if (this.isConnected) {
+            this.updateUI();
+            this.updateServerStatus(true);
+            return;
+        }
         this.log('Starting MCP Bridge...', 'info');
         this.isProcessing = false;
         this.isConnected = true;
@@ -1035,7 +1041,7 @@
                 serverText.textContent = 'Premiere Pro: Ready';
             } else {
                 serverStatus.className = 'status-dot disconnected';
-                serverText.textContent = 'Premiere Pro: Start Bridge to enable';
+                serverText.textContent = 'Premiere Pro: Waiting';
             }
         }
     };

@@ -6,7 +6,8 @@ This file tracks current, confirmed limits. It is no longer a backlog of already
 
 The current built tool catalog exposes:
 
-- `283` tools (`112` declared in `src/tools/index.ts`, `171` in `src/tools/expanded.ts`)
+- `286` tools (`115` declared in `src/tools/index.ts`, `171` in `src/tools/expanded.ts`)
+- By default `tools/list` advertises 5 always-on tools; the rest are reached with `search_tools` then `invoke_tool`. Set `PREMIERE_MCP_TOOLSET=full` to list the whole catalog.
 
 Counted from the built catalog with `getAvailableTools().length`, not from this file.
 The previous figure of `104` was stale by a wide margin; check it against the build

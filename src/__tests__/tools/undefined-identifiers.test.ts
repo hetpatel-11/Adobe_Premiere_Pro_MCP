@@ -25,19 +25,17 @@ import { parse } from 'acorn';
 import { PremiereProTools } from '../../tools/index.js';
 import { expandedToolNames } from '../../tools/expanded.js';
 import { seedArgs, seedRequiredArgs } from '../helpers/schema-args.js';
+import { listPreludeHelperNames } from '../../bridge/index.js';
 
-// Provided by the ExtendScript host or by the prelude the bridge prepends.
+// Host builtins plus every helper the prelude actually defines. A handwritten
+// allowlist here is what hid the missing __ticksToSeconds / __secondsToTicks
+// functions: the generated scripts were legal against the list, and Premiere
+// threw ReferenceError on every call.
 const HOST_GLOBALS = new Set([
   'app', 'qe', 'JSON', 'Sequence', 'File', 'Folder', 'Time', 'String', 'Number', 'Boolean',
   'Math', 'Date', 'Array', 'Object', 'RegExp', 'Error', 'parseInt', 'parseFloat',
   'isFinite', 'isNaN', 'undefined', 'NaN', 'Infinity', '$', 'XMPMeta', 'ExternalObject',
-  '__findSequence', '__findClip', '__findClipInSequence', '__findProjectItem',
-  '__samePath', '__ticksToSeconds', '__secondsToTicks', '__mcpStringify',
-  '__mcpEscapeString', '__qeSequenceFor', '__findQeClipByDomClip',
-  '__idsMatch', '__normalizeSpeedRatio', '__setClipSpeed',
-  '__foldName', '__canonicalName', '__namesMatch', '__resolveClipProperty',
-  '__coercePropertyValue', '__resolveProjectItem', '__secondsToTimecode',
-  '__qeSequenceForRetry', '__findQeNamed',
+  ...listPreludeHelperNames(),
 ]);
 
 type Node = Record<string, any>;
@@ -176,9 +174,15 @@ describe('generated scripts declare everything they reference', () => {
     // Floored on distinct LOCAL tools, not on total scripts. The old floor of 100
     // scripts was met by the expanded tools alone -- they all emit one shared body,
     // so sabotaging every local tool left it green.
-    expect(localToolsSeen.size).toBeGreaterThan(60);
+      expect(localToolsSeen.size).toBeGreaterThan(60);
     expect(checked).toBeGreaterThan(100);
     expect([...new Set(offenders)]).toEqual([]);
+    expect(listPreludeHelperNames()).toEqual(expect.arrayContaining([
+      '__ticksToSeconds',
+      '__secondsToTicks',
+      '__expandIdList',
+      '__coerceProjectItemId',
+    ]));
     // Walks every generated script; the default 5s limit is not enough.
   }, 300_000);
 });

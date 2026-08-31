@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { PremiereProTransport } from '../bridge/types.js';
+import { bridgeUnavailableResult, isBridgeUnavailableMessage } from '../bridge/errors.js';
 import type { MCPTool } from './index.js';
 
 export const expandedToolNames = [
@@ -235,22 +236,13 @@ export async function executeExpandedTool(
     return await bridge.executeScript(script, timeoutMs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const bridgeDown =
-      message.toLowerCase().includes('mcp bridge is not running') ||
-      message.toLowerCase().includes('start bridge') ||
-      message.toLowerCase().includes('bridge response timeout');
+    if (isBridgeUnavailableMessage(message)) {
+      return bridgeUnavailableResult(name, message);
+    }
     return {
       success: false,
       tool: name,
       error: message,
-      ...(bridgeDown
-        ? {
-            retry: false,
-            status: 'bridge_unavailable',
-            nextStep:
-              'Open Premiere Pro → Window > Extensions > MCP Bridge → click Start Bridge. Do not retry until the panel says Connected.',
-          }
-        : {}),
     };
   }
 }
@@ -800,11 +792,10 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
       return foundAnywhere;
     }
     function coerceProjectItemId(value) {
-      if (value == null) return "";
-      if (typeof value === "object") {
-        return String(value.projectItemId || value.nodeId || value.id || value.clipId || value.itemId || "");
-      }
-      return String(value);
+      return __coerceProjectItemId(value);
+    }
+    function expandIdList(value) {
+      return __expandIdList(value);
     }
     function clipInfo(clip, trackType, trackIndex, clipIndex) {
       var item = {
@@ -1613,8 +1604,17 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!removeEffectClip) return fail(pendingSequenceError || "Clip not found");
           var effectToRemove = findComponent(removeEffectClip.clip, args.effectName || args.name);
           if (!effectToRemove) return ok({ removed: true, changed: false, effect: args.effectName || args.name, note: "Effect was already absent from clip" });
-          var removeEffectResult = tryCall(effectToRemove.component, ["remove", "delete"], []);
+          var removeEffectResult = tryCall(removeEffectClip.clip.components, ["remove"], [effectToRemove.index]);
+          if (!removeEffectResult.called) removeEffectResult = tryCall(effectToRemove.component, ["remove", "delete"], []);
+          if (!removeEffectResult.called) {
+            var qeRemoveClip = qeClipForClip(removeEffectClip);
+            if (qeRemoveClip) {
+              removeEffectResult = tryCall(qeRemoveClip, ["removeVideoEffect", "removeAudioEffect", "removeEffect"], [effectToRemove.component.displayName]);
+            }
+          }
           if (!removeEffectResult.called) return fail(removeEffectResult.error, { effect: args.effectName || args.name, note: "Premiere's public ExtendScript DOM often exposes effect read/set APIs without an effect removal API." });
+          var stillThere = findComponent(removeEffectClip.clip, args.effectName || args.name);
+          if (stillThere) return fail("Premiere accepted a remove call but the component is still on the clip", { effect: args.effectName || args.name, method: removeEffectResult.method });
           return ok({ removed: true, effect: args.effectName || args.name, method: removeEffectResult.method });
 
         case "ripple_delete":
@@ -1660,21 +1660,59 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("move_clip_to_track requires clipId.");
           var moveTrackClip = findClip(args.clipId || args.node_id || args.nodeId);
           if (!moveTrackClip) return fail(pendingSequenceError || "Clip not found");
-          var moveTrackResult = tryCall(moveTrackClip.clip, ["moveToTrack", "setTrack"], [Number(args.trackIndex || args.newTrackIndex || 0)]);
-          if (moveTrackResult.called) return ok({ moved: true, trackIndex: Number(args.trackIndex || args.newTrackIndex || 0), method: moveTrackResult.method });
           var moveTargetIndex = Number(args.trackIndex || args.newTrackIndex || 0);
+          var allowOverwrite = Boolean(args.overwrite);
           var moveStart = valueOfTime(moveTrackClip.clip.start);
+          var moveEnd = valueOfTime(moveTrackClip.clip.end);
+          var moveIn = valueOfTime(moveTrackClip.clip.inPoint);
+          var moveOut = valueOfTime(moveTrackClip.clip.outPoint);
+          var moveDisabled = false;
+          try { moveDisabled = !!moveTrackClip.clip.disabled; } catch (eDis) {}
           var moveItem = moveTrackClip.clip.projectItem;
           if (!moveItem) return fail("Clip has no projectItem for move fallback");
           if (moveTrackClip.trackType === "video" && moveTargetIndex >= moveTrackClip.sequence.videoTracks.numTracks) return fail("Target video track out of range");
           if (moveTrackClip.trackType === "audio" && moveTargetIndex >= moveTrackClip.sequence.audioTracks.numTracks) return fail("Target audio track out of range");
-          var beforeTargetCount = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex].clips.numItems : moveTrackClip.sequence.audioTracks[moveTargetIndex].clips.numItems;
+          if (moveTargetIndex === moveTrackClip.trackIndex) {
+            return ok({ moved: true, changed: false, trackIndex: moveTargetIndex, method: "already on requested track", clipId: moveTrackClip.clip.nodeId });
+          }
+          var destTrack = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex] : moveTrackClip.sequence.audioTracks[moveTargetIndex];
+          var occupant = null;
+          for (var oi = 0; oi < destTrack.clips.numItems; oi++) {
+            var other = destTrack.clips[oi];
+            if (__idsMatch(other.nodeId, moveTrackClip.clip.nodeId)) continue;
+            var otherStart = valueOfTime(other.start);
+            var otherEnd = valueOfTime(other.end);
+            if (moveStart < otherEnd && otherStart < moveEnd) { occupant = other; break; }
+          }
+          if (occupant && !allowOverwrite) {
+            return fail("Destination track is occupied at that time. Pass overwrite:true to replace the occupant, or pick another track/time.", {
+              occupantId: occupant.nodeId,
+              occupantName: occupant.name,
+              occupantStart: valueOfTime(occupant.start),
+              occupantEnd: valueOfTime(occupant.end)
+            });
+          }
+          var nativeMove = tryCall(moveTrackClip.clip, ["moveToTrack", "setTrack"], [moveTargetIndex]);
+          if (nativeMove.called) {
+            return ok({ moved: true, trackIndex: moveTargetIndex, method: nativeMove.method, clipId: moveTrackClip.clip.nodeId });
+          }
           moveTrackClip.clip.remove(false, true);
-          if (moveTrackClip.trackType === "video") moveTrackClip.sequence.overwriteClip(moveItem, secondsToTicks(moveStart), moveTargetIndex, 0);
-          else moveTrackClip.sequence.overwriteClip(moveItem, secondsToTicks(moveStart), 0, moveTargetIndex);
-          var afterTargetCount = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex].clips.numItems : moveTrackClip.sequence.audioTracks[moveTargetIndex].clips.numItems;
-          if (afterTargetCount <= beforeTargetCount) return fail("Move fallback did not create a clip on the target track", { beforeTargetCount: beforeTargetCount, afterTargetCount: afterTargetCount });
-          return ok({ moved: true, trackIndex: moveTargetIndex, method: "remove+overwriteClip", start: moveStart, beforeTargetCount: beforeTargetCount, afterTargetCount: afterTargetCount });
+          destTrack.overwriteClip(moveItem, moveStart);
+          var placed = null;
+          var bestDelta = null;
+          for (var pi = 0; pi < destTrack.clips.numItems; pi++) {
+            var candidate = destTrack.clips[pi];
+            var delta = Math.abs(valueOfTime(candidate.start) - moveStart);
+            if (bestDelta === null || delta < bestDelta) { placed = candidate; bestDelta = delta; }
+          }
+          if (!placed) return fail("Move did not create a clip on the target track");
+          try { placed.inPoint = secondsToTime(moveIn); } catch (eIn) {}
+          try { placed.outPoint = secondsToTime(moveOut); } catch (eOut) {}
+          try { placed.end = secondsToTime(moveEnd); } catch (eEnd) {}
+          try { placed.disabled = moveDisabled; } catch (eEn) {}
+          var trimRestored = Math.abs(valueOfTime(placed.inPoint) - moveIn) < 0.05 && Math.abs(valueOfTime(placed.outPoint) - moveOut) < 0.05;
+          if (!trimRestored) return fail("Clip moved but source in/out could not be restored", { clipId: placed.nodeId, requestedIn: moveIn, requestedOut: moveOut, actualIn: valueOfTime(placed.inPoint), actualOut: valueOfTime(placed.outPoint) });
+          return ok({ moved: true, trackIndex: moveTargetIndex, method: "remove+overwriteClip", start: moveStart, clipId: placed.nodeId, oldClipId: args.clipId || args.node_id || args.nodeId, trimRestored: true });
 
         case "remove_all_effects":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("remove_all_effects requires clipId.");
@@ -1686,7 +1724,8 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             var componentToRemove = removeAllClip.clip.components[rai];
             var componentName = String(componentToRemove.displayName);
             if (normalizeName(componentName) === "motion" || normalizeName(componentName) === "opacity" || normalizeName(componentName) === "volume") continue;
-            var oneRemove = tryCall(componentToRemove, ["remove", "delete"], []);
+            var oneRemove = tryCall(removeAllClip.clip.components, ["remove"], [rai]);
+            if (!oneRemove.called) oneRemove = tryCall(componentToRemove, ["remove", "delete"], []);
             if (oneRemove.called) removedEffects.push({ name: componentName, method: oneRemove.method });
             else failedEffects.push({ name: componentName, error: oneRemove.error });
           }
@@ -1742,11 +1781,23 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
 
         case "create_sequence_from_clips":
           if (!app.project || !app.project.createNewSequenceFromClips) return fail("app.project.createNewSequenceFromClips is unavailable");
-          var clipItemIds = args.projectItemIds || args.itemIds || args.ids || args.clipIds || args.clips || [];
-          if (typeof clipItemIds === "string") clipItemIds = [clipItemIds];
-          if (!clipItemIds.length && args.projectItemId) clipItemIds = [args.projectItemId];
-          if (args.itemId && clipItemIds.indexOf(args.itemId) === -1) clipItemIds = clipItemIds.concat([args.itemId]);
-          if (args.clipId && clipItemIds.indexOf(args.clipId) === -1) clipItemIds = clipItemIds.concat([args.clipId]);
+          var clipItemIds = [];
+          function mergeIds(value) {
+            var extra = expandIdList(value);
+            for (var mi = 0; mi < extra.length; mi++) {
+              var already = false;
+              for (var mj = 0; mj < clipItemIds.length; mj++) if (clipItemIds[mj] === extra[mi]) already = true;
+              if (!already) clipItemIds.push(extra[mi]);
+            }
+          }
+          mergeIds(args.projectItemIds);
+          mergeIds(args.itemIds);
+          mergeIds(args.ids);
+          mergeIds(args.clipIds);
+          mergeIds(args.clips);
+          mergeIds(args.projectItemId);
+          mergeIds(args.itemId);
+          mergeIds(args.clipId);
           var clipItems = [];
           var unresolvedIds = [];
           for (var csi = 0; csi < clipItemIds.length; csi++) {

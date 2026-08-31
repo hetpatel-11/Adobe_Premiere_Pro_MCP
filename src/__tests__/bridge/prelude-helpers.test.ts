@@ -385,6 +385,36 @@ describe('prelude QE helpers', () => {
     });
   });
 
+  describe('tick conversion', () => {
+    it('converts seconds, tick strings, and Time objects', async () => {
+      const sandbox = await runWithPrelude(`
+        __fromSeconds = __secondsToTicks(2);
+        __fromTicks = __ticksToSeconds('508032000000');
+        __fromTime = __ticksToSeconds({ seconds: 3.5, ticks: '889056000000' });
+        __fromNumberTicks = __ticksToSeconds(254016000000);
+      `);
+
+      expect(sandbox.__fromSeconds).toBe('508032000000');
+      expect(sandbox.__fromTicks).toBe(2);
+      expect(sandbox.__fromTime).toBe(3.5);
+      expect(sandbox.__fromNumberTicks).toBe(1);
+    });
+  });
+
+  describe('__expandIdList', () => {
+    it('parses a JSON array string of timeline hex ids', async () => {
+      const sandbox = await runWithPrelude(`
+        __fromJson = __expandIdList('["000f4241","000f4242"]');
+        __fromCsv = __expandIdList('000f4241,000f4242');
+        __fromObject = __expandIdList({ nodeId: '000f4243' });
+      `);
+
+      expect(sandbox.__fromJson).toEqual(['000f4241', '000f4242']);
+      expect(sandbox.__fromCsv).toEqual(['000f4241', '000f4242']);
+      expect(sandbox.__fromObject).toEqual(['000f4243']);
+    });
+  });
+
   describe('__secondsToTimecode', () => {
     it('formats seconds as HH:MM:SS:FF at the sequence frame rate', async () => {
       const sandbox = await runWithPrelude(`

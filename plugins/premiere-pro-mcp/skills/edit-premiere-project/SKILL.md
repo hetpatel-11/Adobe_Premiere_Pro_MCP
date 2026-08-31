@@ -9,8 +9,8 @@ Operate Premiere through the `premiere-pro` MCP tools. Preserve the user's proje
 
 ## Establish A Live Session
 
-1. Call `get_capabilities` first. It reports local installation state without contacting Premiere.
-2. Call `verify_premiere_connection` before editing. If it fails, stop and ask the user to start `Window > Extensions > MCP Bridge (CEP)` in Premiere.
+1. Call `verify_premiere_connection` before editing. If it fails, stop and ask the user to start `Window > Extensions > MCP Bridge (CEP)` in Premiere.
+2. Discover editing tools with `search_tools` (BM25 query or regex pattern), then `invoke_tool`. `get_capabilities` reports catalog.advertised vs catalog.tools.
 3. Inspect the active project, sequence, tracks, and media before making an edit.
 
 ## Editing Rules

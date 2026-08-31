@@ -5,8 +5,29 @@ import type {
   PremiereProSequence,
 } from './index.js';
 
+export interface EnsureHostOptions {
+  launchIfNeeded?: boolean;
+  waitMs?: number;
+}
+
+export interface EnsureHostResult {
+  ready: boolean;
+  success: boolean;
+  status: string;
+  launched?: boolean;
+  premiereRunning?: boolean;
+  installPath?: string;
+  error?: string;
+  retry?: boolean;
+  userActionRequired?: boolean;
+  agentAction?: string;
+  nextStep?: string;
+  tool?: string;
+}
+
 export interface PremiereProTransport {
   executeScript(script: string, timeoutMs?: number, callerAuthored?: boolean): Promise<any>;
+  ensureHost?(options?: EnsureHostOptions): Promise<EnsureHostResult>;
   createProject(name: string, location: string): Promise<PremiereProProject>;
   openProject(path: string): Promise<PremiereProProject>;
   saveProject(): Promise<void>;

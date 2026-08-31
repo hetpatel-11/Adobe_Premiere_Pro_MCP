@@ -4,6 +4,41 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-08-31
+
+- Prelude now defines `__ticksToSeconds` / `__secondsToTicks` (and accepts Premiere
+  `Time` objects, not just tick strings). `list_sequences`, `get_active_sequence`,
+  `set_playhead_position`, `create_sequence`, work area, MOGRT import, and subclip
+  tools no longer throw `ReferenceError` on a Connected panel. Tests derive the
+  host-global allowlist from the prelude so a missing helper cannot ship again.
+- `replace_clip` honors `preserveEffects` (default true): restore source in/out,
+  enabled, Motion, and re-apply other effects. It no longer reports success after
+  dropping Scale/enabled/trim.
+- `move_clip_to_track` restores source in/out, skips the source clip in occupancy
+  checks, refuses an occupied destination unless `overwrite` is true, and places
+  onto the destination track only (no longer `sequence.overwriteClip` onto A1).
+- `trim_clip` duration writes `clip.end` and, only after that duration actually
+  applies, syncs source `outPoint`. Unsupported graphic extensions still leave
+  `outPoint` untouched.
+- `create_sequence_from_clips` parses JSON-encoded id arrays (`["000f4241"]`) and
+  comma-separated hex ids. The import helper `createSequenceFromProjectItems`
+  uses `__resolveProjectItem` / `__idsMatch`.
+- `apply_effect` matches parameter names with locale aliases (`Exposure` /
+  `Exposition`) and coerces values before `setValue`. Effect removal tries
+  `components.remove` and QE named-remove APIs, then verifies the component is gone.
+- The CEP panel auto-starts the bridge when it loads. `verify_premiere_connection`
+  launches Premiere when it is installed and the heartbeat is missing, then waits
+  for the panel. MCP `instructions` tell the agent to call that once and stop
+  with `userActionRequired` instead of spraying tools at a closed Premiere.
+  Launch paths are joined with posix/win32 keyed off `process.platform`, so a
+  darwin stub on Windows CI no longer feeds backslashes to `open -a`.
+- Tool search (Anthropic-style BM25 + regex): `tools/list` advertises
+  `search_tools`, `get_tool_schema`, `invoke_tool`, `verify_premiere_connection`,
+  and `list_sequences` by default. The other 280+ Premiere tools stay in the
+  catalog and run through `invoke_tool`. Empty `search_tools` lists categories.
+  Set `PREMIERE_MCP_TOOLSET=full` to restore a flat list for hosts that natively
+  defer MCP schemas. Unknown-tool errors no longer dump every tool name.
+
 ## [1.2.5] - 2026-08-30
 
 - Clip, effect, and transition names now match localized Premiere labels

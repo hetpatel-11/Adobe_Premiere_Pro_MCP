@@ -10,6 +10,7 @@ import { PremiereProBridge } from './bridge/index.js';
 import { Logger } from './utils/logger.js';
 import { PACKAGE_VERSION } from './version.js';
 import { checkForUpdate } from './utils/update-check.js';
+import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
 import {
   getTelemetry,
   summarizeToolFailure,
@@ -50,7 +51,8 @@ class MCPPremiereProServer {
           tools: {},
           resources: {},
           prompts: {}
-        }
+        },
+        instructions: MCP_SERVER_INSTRUCTIONS
       }
     );
 
@@ -69,7 +71,7 @@ class MCPPremiereProServer {
   private setupHandlers(server: Server): void {
     // List available tools
     server.setRequestHandler('tools/list', async () => {
-      const tools = this.tools.getAvailableTools().map((tool) => ({
+      const tools = this.tools.getAdvertisedTools().map((tool) => ({
         name: tool.name,
         description: tool.description,
         inputSchema: this.inputSchemaToJsonSchema(tool.inputSchema as ZodTypeAny)
@@ -81,10 +83,14 @@ class MCPPremiereProServer {
     server.setRequestHandler('tools/call', async (request) => {
       const { name, arguments: args } = request.params;
       const startedAt = Date.now();
+      const innerName =
+        name === 'invoke_tool' && args && typeof args === 'object' && typeof (args as { name?: unknown }).name === 'string'
+          ? String((args as { name: string }).name)
+          : undefined;
 
       try {
         const result = await this.tools.executeTool(name, args || {});
-        this.recordToolCall(name, result, Date.now() - startedAt);
+        this.recordToolCall(innerName || name, result, Date.now() - startedAt);
         const toolResult: CallToolResult = {
           content: [
             {
@@ -98,7 +104,7 @@ class MCPPremiereProServer {
         return server.projectCallToolResult(toolResult, undefined);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        this.recordToolCall(name, { success: false, error: errorMessage }, Date.now() - startedAt);
+        this.recordToolCall(innerName || name, { success: false, error: errorMessage }, Date.now() - startedAt);
         this.logger.error(`Tool execution failed: ${errorMessage}`);
         
         throw new ProtocolError(
