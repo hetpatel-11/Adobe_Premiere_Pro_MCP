@@ -1657,16 +1657,19 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!keyProperty) return fail("Property not found", { properties: componentProperties(keyComponent.component) });
           if (toolName === "remove_keyframe_range") {
             if (!keyProperty.removeKeyRange) return fail("removeKeyRange API unavailable on property");
-            keyProperty.removeKeyRange(secondsToTime(args.startTime || args.start || 0), secondsToTime(args.endTime || args.end || 0), true);
-            return ok({ removed: true, component: String(keyComponent.component.displayName), property: String(keyProperty.displayName), start: Number(args.startTime || args.start || 0), end: Number(args.endTime || args.end || 0) });
+            var rangeStartSeq = Number(args.startTime || args.start || 0);
+            var rangeEndSeq = Number(args.endTime || args.end || 0);
+            keyProperty.removeKeyRange(secondsToTime(__seqTimeToClipTime(keyClip.clip, rangeStartSeq)), secondsToTime(__seqTimeToClipTime(keyClip.clip, rangeEndSeq)), true);
+            return ok({ removed: true, component: String(keyComponent.component.displayName), property: String(keyProperty.displayName), start: rangeStartSeq, end: rangeEndSeq });
           }
           if (!keyProperty.addKey || !keyProperty.setInterpolationTypeAtKey) return fail("Keyframe interpolation APIs unavailable on property");
-          var interpolationTime = secondsToTime(args.time || args.seconds || 0);
+          var interpolationTimeSeq = Number(args.time || args.seconds || 0);
+          var interpolationTime = secondsToTime(__seqTimeToClipTime(keyClip.clip, interpolationTimeSeq));
           try { keyProperty.setTimeVarying(true); } catch (varyError) {}
           try { keyProperty.addKey(interpolationTime); } catch (addKeyError) {}
           var interpolationValue = Number(args.interpolationType || args.type || 0);
           keyProperty.setInterpolationTypeAtKey(interpolationTime, interpolationValue, true);
-          return ok({ interpolated: true, component: String(keyComponent.component.displayName), property: String(keyProperty.displayName), time: Number(args.time || args.seconds || 0), interpolationType: interpolationValue });
+          return ok({ interpolated: true, component: String(keyComponent.component.displayName), property: String(keyProperty.displayName), time: interpolationTimeSeq, interpolationType: interpolationValue });
 
         case "select_clips_by_color":
           var labelValue = Number(args.colorIndex || args.label || args.value || 0);

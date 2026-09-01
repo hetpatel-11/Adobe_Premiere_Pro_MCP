@@ -118,6 +118,12 @@ function __ticksToSeconds(ticks) {
 function __secondsToTicks(seconds) {
   return String(Math.round(seconds * 254016000000));
 }
+function __seqTimeToClipTime(clip, seqSeconds) {
+  return clip.inPoint.seconds + (seqSeconds - clip.start.seconds);
+}
+function __clipTimeToSeqTime(clip, clipSeconds) {
+  return clip.start.seconds + (clipSeconds - clip.inPoint.seconds);
+}
 `;
 
 export interface PremiereProProject {

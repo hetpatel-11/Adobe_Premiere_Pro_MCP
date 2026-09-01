@@ -990,12 +990,12 @@ export class PremiereProTools {
       // Keyframes
       {
         name: 'add_keyframe',
-        description: 'Adds a keyframe to a clip component parameter at a specific time.',
+        description: 'Adds a keyframe to a clip component parameter at a specific time. `time` is in sequence/timeline seconds (same space as clip start/end from get_selected_clips), NOT the clip\'s source/master-clip time — the tool converts internally.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip'),
           componentName: z.string().describe('The display name of the component (e.g., "Motion", "Opacity")'),
           paramName: z.string().describe('The display name of the parameter (e.g., "Position", "Scale")'),
-          time: z.number().describe('The time in seconds for the keyframe'),
+          time: z.number().describe('The time in sequence-timeline seconds for the keyframe (e.g. a value between the clip\'s start and end from get_selected_clips)'),
           value: z.number().describe('The value to set at this keyframe')
         })
       },
@@ -1006,12 +1006,12 @@ export class PremiereProTools {
           clipId: z.string().describe('The ID of the clip'),
           componentName: z.string().describe('The display name of the component'),
           paramName: z.string().describe('The display name of the parameter'),
-          time: z.number().describe('The time in seconds of the keyframe to remove')
+          time: z.number().describe('The time in sequence-timeline seconds of the keyframe to remove (same space as add_keyframe\'s time)')
         })
       },
       {
         name: 'get_keyframes',
-        description: 'Gets all keyframes for a clip component parameter.',
+        description: 'Gets all keyframes for a clip component parameter. Returned keyframe times are in sequence-timeline seconds (same space as add_keyframe\'s time).',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip'),
           componentName: z.string().describe('The display name of the component'),
@@ -6978,9 +6978,10 @@ export class PremiereProTools {
           }
         }
         if (!param) return JSON.stringify({ success: false, error: "Parameter " + ${JSON.stringify(paramName)} + " not found in component " + ${JSON.stringify(componentName)} });
+        var __clipTime = __seqTimeToClipTime(clip, ${time});
         param.setTimeVarying(true);
-        param.addKey(${time});
-        param.setValueAtKey(${time}, ${value}, true);
+        param.addKey(__clipTime);
+        param.setValueAtKey(__clipTime, ${value}, true);
         return JSON.stringify({
           success: true,
           message: "Keyframe added",
@@ -7016,7 +7017,7 @@ export class PremiereProTools {
           }
         }
         if (!param) return JSON.stringify({ success: false, error: "Parameter not found" });
-        param.removeKey(${time});
+        param.removeKey(__seqTimeToClipTime(clip, ${time}));
         return JSON.stringify({
           success: true,
           message: "Keyframe removed",
@@ -7058,11 +7059,12 @@ export class PremiereProTools {
             staticValue: param.getValue()
           });
         }
-        var keys = param.getKeys();
+        var keys = param.getKeys() || [];
         var result = [];
         for (var k = 0; k < keys.length; k++) {
+          var __seqSeconds = __clipTimeToSeqTime(clip, keys[k].seconds);
           result.push({
-            time: keys[k],
+            time: { seconds: __seqSeconds, ticks: __secondsToTicks(__seqSeconds) },
             value: param.getValueAtKey(keys[k])
           });
         }
