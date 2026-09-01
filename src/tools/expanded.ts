@@ -1726,43 +1726,98 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             return ok({ moved: true, changed: false, trackIndex: moveTargetIndex, method: "already on requested track", clipId: moveTrackClip.clip.nodeId });
           }
           var destTrack = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex] : moveTrackClip.sequence.audioTracks[moveTargetIndex];
-          var occupant = null;
+          var occupants = [];
+          var moveLastEnd = 0;
           for (var oi = 0; oi < destTrack.clips.numItems; oi++) {
             var other = destTrack.clips[oi];
             if (__idsMatch(other.nodeId, moveTrackClip.clip.nodeId)) continue;
             var otherStart = valueOfTime(other.start);
             var otherEnd = valueOfTime(other.end);
-            if (moveStart < otherEnd && otherStart < moveEnd) { occupant = other; break; }
+            if (otherEnd > moveLastEnd) moveLastEnd = otherEnd;
+            if (moveStart < otherEnd && otherStart < moveEnd) occupants.push(other);
           }
-          if (occupant && !allowOverwrite) {
+          if (occupants.length && !allowOverwrite) {
             return fail("Destination track is occupied at that time. Pass overwrite:true to replace the occupant, or pick another track/time.", {
-              occupantId: occupant.nodeId,
-              occupantName: occupant.name,
-              occupantStart: valueOfTime(occupant.start),
-              occupantEnd: valueOfTime(occupant.end)
+              occupantId: occupants[0].nodeId,
+              occupantName: occupants[0].name,
+              occupantStart: valueOfTime(occupants[0].start),
+              occupantEnd: valueOfTime(occupants[0].end)
             });
+          }
+          // Nothing is mutated before this point, so the refusal above costs the
+          // caller nothing. overwrite:true is the caller's sanction to clear the
+          // span, and the slide below will not overwrite on its own, so lift every
+          // overlapping occupant explicitly (ripple = false keeps the track's
+          // timing). Done ahead of the native attempt so both paths see the same
+          // destination.
+          if (occupants.length) {
+            for (var ori = occupants.length - 1; ori >= 0; ori--) occupants[ori].remove(false, true);
           }
           var nativeMove = tryCall(moveTrackClip.clip, ["moveToTrack", "setTrack"], [moveTargetIndex]);
           if (nativeMove.called) {
             return ok({ moved: true, trackIndex: moveTargetIndex, method: nativeMove.method, clipId: moveTrackClip.clip.nodeId });
           }
-          moveTrackClip.clip.remove(false, true);
-          destTrack.overwriteClip(moveItem, moveStart);
+          // The fallback reinserts from the projectItem, and overwriteClip lays the
+          // item down at its OWN duration -- not the trimmed length of the timeline
+          // clip -- so writing straight at the destination can reach past
+          // [start, end) and destroy a neighbour the occupancy guard never looked
+          // at. Park past the last clip on the target track instead (guaranteed
+          // empty), trim there, then slide into the span the guard verified.
+          var moveParkTime = moveLastEnd + 1.0;
+          var moveCleanupParked = function (parkedClip) {
+            // Remove the parked copy so no failure path strands a full-length
+            // clip on the target track. Without a reference, sweep the park zone:
+            // it was empty before, so anything past the old last end is ours.
+            try {
+              if (parkedClip) { parkedClip.remove(false, true); return; }
+            } catch (eClean) {}
+            for (var ci = destTrack.clips.numItems - 1; ci >= 0; ci--) {
+              var leftover = destTrack.clips[ci];
+              try { if (leftover && valueOfTime(leftover.start) > moveLastEnd + 0.5) leftover.remove(false, true); } catch (eSweep) {}
+            }
+          };
+          destTrack.overwriteClip(moveItem, moveParkTime);
           var placed = null;
-          var bestDelta = null;
           for (var pi = 0; pi < destTrack.clips.numItems; pi++) {
             var candidate = destTrack.clips[pi];
-            var delta = Math.abs(valueOfTime(candidate.start) - moveStart);
-            if (bestDelta === null || delta < bestDelta) { placed = candidate; bestDelta = delta; }
+            // By identity, not nearest start: if overwriteClip silently no-ops, a
+            // nearest-start pick would hand back a bystander and the trim below
+            // would rewrite its in/out.
+            if (candidate && candidate.projectItem && __idsMatch(candidate.projectItem.nodeId, moveItem.nodeId) && Math.abs(valueOfTime(candidate.start) - moveParkTime) < 0.2) { placed = candidate; break; }
           }
-          if (!placed) return fail("Move did not create a clip on the target track");
-          try { placed.inPoint = secondsToTime(moveIn); } catch (eIn) {}
-          try { placed.outPoint = secondsToTime(moveOut); } catch (eOut) {}
-          try { placed.end = secondsToTime(moveEnd); } catch (eEnd) {}
+          if (!placed) {
+            moveCleanupParked(null);
+            return fail("Move fallback did not create a clip on the target track; the source clip was left in place.");
+          }
+          // Restore the source trim while parked. Order the assignments so inPoint
+          // never transiently exceeds outPoint, which the DOM rejects.
+          try {
+            if (moveIn <= valueOfTime(placed.outPoint)) {
+              placed.inPoint = secondsToTime(moveIn);
+              placed.outPoint = secondsToTime(moveOut);
+            } else {
+              placed.outPoint = secondsToTime(moveOut);
+              placed.inPoint = secondsToTime(moveIn);
+            }
+          } catch (eTrim) {}
           try { placed.disabled = moveDisabled; } catch (eEn) {}
           var trimRestored = Math.abs(valueOfTime(placed.inPoint) - moveIn) < 0.05 && Math.abs(valueOfTime(placed.outPoint) - moveOut) < 0.05;
-          if (!trimRestored) return fail("Clip moved but source in/out could not be restored", { clipId: placed.nodeId, requestedIn: moveIn, requestedOut: moveOut, actualIn: valueOfTime(placed.inPoint), actualOut: valueOfTime(placed.outPoint) });
-          return ok({ moved: true, trackIndex: moveTargetIndex, method: "remove+overwriteClip", start: moveStart, clipId: placed.nodeId, oldClipId: args.clipId || args.node_id || args.nodeId, trimRestored: true });
+          if (!trimRestored) {
+            var placedIn = valueOfTime(placed.inPoint);
+            var placedOut = valueOfTime(placed.outPoint);
+            moveCleanupParked(placed);
+            return fail("Source in/out could not be restored on the target track; the source clip was left in place.", { requestedIn: moveIn, requestedOut: moveOut, actualIn: placedIn, actualOut: placedOut });
+          }
+          placed.move(moveStart - valueOfTime(placed.start));
+          if (Math.abs(valueOfTime(placed.start) - moveStart) > 0.05) {
+            var placedStart = valueOfTime(placed.start);
+            moveCleanupParked(placed);
+            return fail("Clip could not be slid into the destination span; the source clip was left in place.", { requestedStart: moveStart, actualStart: placedStart });
+          }
+          // Only now, with the copy verified at the destination, lift the original
+          // (ripple = false), so the source track's other clips keep their timing.
+          moveTrackClip.clip.remove(false, true);
+          return ok({ moved: true, trackIndex: moveTargetIndex, method: "park+trim+slide", start: moveStart, clipId: placed.nodeId, oldClipId: args.clipId || args.node_id || args.nodeId, trimRestored: true });
 
         case "set_clip_speed_qe":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("set_clip_speed_qe requires clipId.");

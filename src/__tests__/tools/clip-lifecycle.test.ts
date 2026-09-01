@@ -50,7 +50,7 @@ describe('clip replace, move, and sequence-from-clips scripts', () => {
     const script = mockBridge.executeScript.mock.calls[0][0] as string;
     expect(script).toContain('if (__idsMatch(other.nodeId, moveTrackClip.clip.nodeId)) continue');
     expect(script).toContain('Pass overwrite:true');
-    expect(script).toContain('destTrack.overwriteClip(moveItem, moveStart)');
+    expect(script).toContain('destTrack.overwriteClip(moveItem, moveParkTime)');
     expect(script).toContain('placed.inPoint = secondsToTime(moveIn)');
     expect(script).not.toContain('moveTrackClip.sequence.overwriteClip');
     expect(script).not.toContain('beforeTargetCount');
