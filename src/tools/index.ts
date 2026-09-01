@@ -3473,20 +3473,38 @@ export class PremiereProTools {
         } catch (speedError) {}
         // The requested timeline duration cannot exceed how much real source media
         // remains past inPoint. Read the project item's authoritative master-clip
-        // out point (NOT the possibly-already-desynced clip.outPoint on this track
+        // in/out (NOT the possibly-already-desynced clip.outPoint on this track
         // item) so we never write an outPoint past the real media boundary.
         var maxSourceOutSeconds = null;
+        var minSourceInSeconds = null;
         try {
           var sourceProjectItem = clip.projectItem;
           if (sourceProjectItem && sourceProjectItem.getOutPoint) {
             var masterOutTime = sourceProjectItem.getOutPoint();
             maxSourceOutSeconds = secondsOf(masterOutTime);
           }
+          if (sourceProjectItem && sourceProjectItem.getInPoint) {
+            var masterInTime = sourceProjectItem.getInPoint();
+            minSourceInSeconds = secondsOf(masterInTime);
+          }
         } catch (mediaBoundsError) {}
+        // Still images (and other generators with no fixed media length) get their
+        // TrackItem inPoint/outPoint anchored around an arbitrary large offset
+        // (commonly ~3600s) by Premiere, completely independent of the project
+        // item's own reported in/out (typically 0..defaultStillDuration). Comparing
+        // those two coordinate spaces directly produces nonsense (e.g. a negative
+        // "max achievable duration"), which then makes the clip.end write below
+        // throw. Only trust the media-boundary clamp when clip.inPoint actually
+        // falls inside the project item's own [inPoint, outPoint] span, i.e. the
+        // two are provably expressed in the same coordinate frame.
+        var boundaryCoordinatesReliable =
+          maxSourceOutSeconds !== null && minSourceInSeconds !== null && before.inPoint !== null &&
+          before.inPoint >= (minSourceInSeconds - 0.000001) &&
+          before.inPoint <= (maxSourceOutSeconds + 0.000001);
         var mediaBoundaryHit = false;
         var maxAchievableDurationSeconds = null;
         var effectiveTargetDuration = targetDuration;
-        if (maxSourceOutSeconds !== null && before.inPoint !== null) {
+        if (boundaryCoordinatesReliable) {
           var maxDurationFromMedia = (maxSourceOutSeconds - before.inPoint) / speedFactor;
           if (targetDuration > maxDurationFromMedia + 0.000001) {
             mediaBoundaryHit = true;

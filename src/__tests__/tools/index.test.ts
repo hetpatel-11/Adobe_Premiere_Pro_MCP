@@ -861,6 +861,62 @@ describe('PremiereProTools', () => {
       expect(outPointWrites).toBe(0);
     });
 
+    it('trims a still image to a shorter duration instead of misreading the media boundary from a mismatched coordinate frame', async () => {
+      // Premiere anchors a still image TrackItem's inPoint/outPoint around an arbitrary
+      // large offset (~3600s here), completely independent of the project item's own
+      // reported in/out (0..5, its default still-image duration). Comparing those two
+      // directly (before this fix) computed a negative "max achievable duration" and
+      // broke every trim of a still image to a shorter clip.
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('trim_clip', { clipId: 'still-1', duration: 0.64 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+      const clip: any = {
+        inPoint: at(3600),
+        start: at(16.16),
+        projectItem: {
+          getInPoint: () => at(0),
+          getOutPoint: () => at(5)
+        }
+      };
+      let timelineEnd = at(21.16);
+      let sourceOut = at(3605);
+      Object.defineProperty(clip, 'end', {
+        get: () => timelineEnd,
+        set: (value) => { timelineEnd = value; }
+      });
+      Object.defineProperty(clip, 'outPoint', {
+        get: () => sourceOut,
+        set: (value) => { sourceOut = value; }
+      });
+      Object.defineProperty(clip, 'duration', {
+        get: () => at(timelineEnd.seconds - clip.start.seconds)
+      });
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(
+        () => ({ clip, sequence: { timebase: String(Math.round(ticksPerSecond * 1001 / 30000)) } }),
+        FakeTime
+      ));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.mediaBoundaryHit).toBe(false);
+      expect(parsed.newDuration).toBeCloseTo(0.64);
+      expect(timelineEnd.seconds).toBeCloseTo(16.8);
+      expect(sourceOut.seconds).toBeCloseTo(3600.64);
+    });
+
     it('verifies move_clip against the actual post-move position instead of trusting the request', async () => {
       mockBridge.executeScript.mockResolvedValue({ success: true });
       await tools.executeTool('move_clip', { clipId: 'clip-123', newTime: 12 });
