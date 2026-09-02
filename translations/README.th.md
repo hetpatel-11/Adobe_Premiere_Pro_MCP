@@ -1,6 +1,6 @@
 # Adobe Premiere Pro MCP Server
 
-[English](README.md)
+[English](../README.md)
 
 ควบคุม Adobe Premiere Pro ผ่าน MCP ด้วย Codex, Claude Code, Claude Desktop หรือ MCP client อื่น ๆ
 
@@ -24,4 +24,4 @@ npm run setup:mac
 
 ## เอกสารหลัก
 
-เอกสารฉบับเต็มและล่าสุดอยู่ที่ [README.md](README.md)
+เอกสารฉบับเต็มและล่าสุดอยู่ที่ [README.md](../README.md)

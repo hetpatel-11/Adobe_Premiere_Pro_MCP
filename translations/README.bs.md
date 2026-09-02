@@ -1,6 +1,6 @@
 # Adobe Premiere Pro MCP Server
 
-[English](README.md)
+[English](../README.md)
 
 Upravljajte Adobe Premiere Pro kroz MCP pomoću Codexa, Claude Codea, Claude Desktopa ili bilo kojeg drugog MCP klijenta.
 
@@ -24,4 +24,4 @@ npm run setup:mac
 
 ## Zvanična dokumentacija
 
-Potpuna i najnovija dokumentacija je u [README.md](README.md).
+Potpuna i najnovija dokumentacija je u [README.md](../README.md).

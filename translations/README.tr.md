@@ -1,6 +1,6 @@
 # Adobe Premiere Pro MCP Server
 
-[English](README.md)
+[English](../README.md)
 
 Adobe Premiere Pro'yu MCP üzerinden Codex, Claude Code, Claude Desktop veya başka bir MCP istemcisiyle kontrol edin.
 
@@ -24,4 +24,4 @@ npm run setup:mac
 
 ## Resmi belgeler
 
-Tam ve güncel belgeler [README.md](README.md) dosyasındadır.
+Tam ve güncel belgeler [README.md](../README.md) dosyasındadır.
