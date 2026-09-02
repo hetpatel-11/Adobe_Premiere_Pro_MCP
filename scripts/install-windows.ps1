@@ -199,10 +199,12 @@ Write-Host 'Installing Premiere CEP extension...'
 if (-not (Test-Path -LiteralPath $cepExtensionsDir)) {
     New-Item -ItemType Directory -Path $cepExtensionsDir -Force | Out-Null
 }
-if (Test-Path -LiteralPath $cepTargetDir) {
-    Remove-Item -LiteralPath $cepTargetDir -Recurse -Force
+if (-not (Test-Path -LiteralPath $cepTargetDir)) {
+    New-Item -ItemType Directory -Path $cepTargetDir -Force | Out-Null
 }
-Copy-Item -LiteralPath (Join-Path $repoRoot 'cep-plugin') -Destination $cepTargetDir -Recurse -Force
+# Copy over the live extension so a running panel is not deleted out from
+# under itself.
+Copy-Item -Path (Join-Path $repoRoot 'cep-plugin\*') -Destination $cepTargetDir -Recurse -Force
 
 Write-Host "Preparing bridge temp directory: $TempDir"
 if (-not (Test-Path -LiteralPath $TempDir)) {

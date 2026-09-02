@@ -4,6 +4,18 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-09-02
+
+- `move_clip_to_track` parks past the last clip on the destination, restores
+  source in/out and timeline `end`, slides into the occupancy-checked span, then
+  lifts the source. The 1.2.6 fallback called `overwriteClip` at the destination
+  using the project item's own duration, so a trimmed still could take out a
+  neighbour the guard never saw. Failures leave the source clip in place.
+- The CEP update banner copies
+  `npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep`
+  instead of spawning npm from Premiere. Adobe's CEP PATH preferred
+  `/usr/local/bin/npm`, which then failed with EACCES writing `/usr/local`.
+- `--install-cep` copies over the live extension instead of `rm -rf`.
 - Removed the GitHub Actions `Publish npm package` workflow. The repo `NPM_TOKEN`
   cannot publish `adobe-premiere-pro-mcp`; releases go up with a local
   `npm publish` after `npm login`.

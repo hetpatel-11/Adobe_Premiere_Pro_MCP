@@ -31,7 +31,7 @@ export interface LoadedPanel {
   /** Whatever the panel last handed to evalScript. */
   handedToEvalScript: () => string;
   /** The fs stub the panel closed over at load. */
-  fs: { writeFileSync: jest.Mock };
+  fs: { writeFileSync: jest.Mock; existsSync: jest.Mock };
 }
 
 /** Minimal stand-ins for what the panel pulls in at load time. */
@@ -40,11 +40,23 @@ function nodeStub(name: string, fsStub: Record<string, unknown>): unknown {
   if (name === 'path') {
     return {
       join: (...parts: string[]) => parts.join('/'),
-      basename: (value: string) => value,
-      dirname: (value: string) => value,
+      basename: (value: string) => value.replace(/^.*[/\\]/, ''),
+      dirname: (value: string) => {
+        const normalized = String(value).replace(/\\/g, '/');
+        const index = normalized.lastIndexOf('/');
+        return index <= 0 ? normalized : normalized.slice(0, index);
+      },
+      delimiter: ':',
     };
   }
-  if (name === 'os') return { tmpdir: () => '/tmp', homedir: () => '/tmp', platform: () => 'darwin' };
+  if (name === 'os') {
+    return {
+      tmpdir: () => '/tmp',
+      homedir: () => '/tmp',
+      platform: () => 'darwin',
+      arch: () => 'arm64',
+    };
+  }
   return {};
 }
 
@@ -52,7 +64,7 @@ export function loadPanel(): LoadedPanel {
   const source = realFs.readFileSync(PANEL_PATH, 'utf8');
   let handed = '';
   const fsStub = {
-    existsSync: () => false, mkdirSync: () => {}, readdirSync: () => [],
+    existsSync: jest.fn(() => false), mkdirSync: () => {}, readdirSync: () => [],
     readFileSync: () => '', writeFileSync: jest.fn(), unlinkSync: () => {},
     renameSync: () => {}, statSync: () => ({ isDirectory: () => false }),
   };

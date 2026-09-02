@@ -282,8 +282,10 @@
         if (versionEl && latest && current) versionEl.textContent = latest + ' available';
         var copyEl = document.getElementById('updateBannerCopy');
         if (copyEl && latest && current) {
-            copyEl.textContent = latest + ' is recommended. You have ' + current + '. Update now, or later.';
+            copyEl.textContent = latest + ' is recommended. You have ' + current + '. Copy this, run it in a terminal, then reload this panel.';
         }
+        var commandEl = document.getElementById('updateCommandInput');
+        if (commandEl) commandEl.value = this.updateInstallCommand();
     };
 
     MCPPremiereBridge.prototype.setUpdateBannerStatus = function(message) {
@@ -292,9 +294,9 @@
     };
 
     MCPPremiereBridge.prototype.setUpdateButtonsDisabled = function(disabled) {
-        var nowBtn = document.getElementById('updateNowButton');
+        var copyBtn = document.getElementById('updateCopyButton');
         var laterBtn = document.getElementById('updateLaterButton');
-        if (nowBtn) nowBtn.disabled = !!disabled;
+        if (copyBtn) copyBtn.disabled = !!disabled;
         if (laterBtn) laterBtn.disabled = !!disabled;
     };
 
@@ -343,55 +345,39 @@
         }
     };
 
-    MCPPremiereBridge.prototype.updateNow = function() {
-        var self = this;
-        var childProcess;
-        try { childProcess = require('child_process'); } catch (eCp) {
-            this.setUpdateBannerStatus('Could not start npm from this panel. Run: npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep');
-            return;
-        }
-        this.setUpdateButtonsDisabled(true);
-        this.setUpdateBannerStatus('Installing adobe-premiere-pro-mcp@latest…');
-        var env = {};
-        for (var key in process.env) {
-            if (Object.prototype.hasOwnProperty.call(process.env, key)) env[key] = process.env[key];
-        }
-        var extra = os.platform() === 'win32'
-            ? ''
-            : ['/usr/local/bin', '/opt/homebrew/bin'].join(path.delimiter || ':');
-        if (extra) env.PATH = extra + (path.delimiter || ':') + (env.PATH || '');
-        var npmCmd = os.platform() === 'win32' ? 'npm.cmd' : 'npm';
-        var npm = childProcess.spawn(npmCmd, ['install', '-g', 'adobe-premiere-pro-mcp@latest'], { env: env });
-        var npmErr = '';
-        npm.stderr.on('data', function(chunk) { npmErr += chunk; });
-        npm.on('error', function(err) {
-            self.setUpdateButtonsDisabled(false);
-            self.setUpdateBannerStatus('Could not run npm. Run: npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep');
-            self.log('Update now failed: ' + err.message, 'error');
-        });
-        npm.on('close', function(code) {
-            if (code !== 0) {
-                self.setUpdateButtonsDisabled(false);
-                self.setUpdateBannerStatus('npm install failed. Run: npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep');
-                self.log('Update now failed: ' + (npmErr || ('exit ' + code)), 'error');
-                return;
+    MCPPremiereBridge.prototype.updateInstallCommand = function() {
+        return 'npm install -g adobe-premiere-pro-mcp@latest && premiere-pro-mcp --install-cep';
+    };
+
+    MCPPremiereBridge.prototype.copyTextToClipboard = function(text) {
+        try {
+            var input = document.getElementById('updateCommandInput');
+            if (input) {
+                input.value = text;
+                input.focus();
+                input.select();
+                if (document.execCommand && document.execCommand('copy')) return true;
             }
-            var installer = os.platform() === 'win32' ? 'premiere-pro-mcp.cmd' : 'premiere-pro-mcp';
-            var cep = childProcess.spawn(installer, ['--install-cep'], { env: env });
-            cep.on('close', function(cepCode) {
-                self.setUpdateButtonsDisabled(false);
-                if (cepCode === 0) {
-                    self.setUpdateBannerStatus('Updated. Reload this panel, then restart your MCP client.');
-                    self.log('Updated MCP Bridge. Reload the panel and restart the MCP client.', 'info');
-                } else {
-                    self.setUpdateBannerStatus('Package installed. Reload this panel, restart the MCP client, and run premiere-pro-mcp --install-cep if the panel is still old.');
-                }
-            });
-            cep.on('error', function() {
-                self.setUpdateButtonsDisabled(false);
-                self.setUpdateBannerStatus('Package installed. Run premiere-pro-mcp --install-cep, reload this panel, then restart your MCP client.');
-            });
-        });
+        } catch (eSelect) {}
+        try {
+            if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (eClip) {}
+        return false;
+    };
+
+    MCPPremiereBridge.prototype.copyUpdateCommand = function() {
+        var command = this.updateInstallCommand();
+        if (this.copyTextToClipboard(command)) {
+            this.setUpdateBannerStatus('Copied. Paste it in a terminal, then reload this panel.');
+            this.log('Copied the update command', 'info');
+            return true;
+        }
+        this.setUpdateBannerStatus('Copy failed. Select the command and copy it yourself.');
+        this.log('Could not copy the update command', 'error');
+        return false;
     };
 
     function ensureDirectory(dirPath) {
@@ -1072,7 +1058,7 @@
     window.saveConfig = function() { if (window.bridge) window.bridge.saveConfig(); };
     window.saveTelemetryPreference = function() { if (window.bridge) window.bridge.saveTelemetryPreference(); };
     window.clearLog = function() { if (window.bridge) window.bridge.clearLog(); };
-    window.updateNow = function() { if (window.bridge) window.bridge.updateNow(); };
+    window.copyUpdateCommand = function() { if (window.bridge) window.bridge.copyUpdateCommand(); };
     window.updateLater = function() { if (window.bridge) window.bridge.updateLater(); };
     document.addEventListener('DOMContentLoaded', function() {
         window.bridge = new MCPPremiereBridge();

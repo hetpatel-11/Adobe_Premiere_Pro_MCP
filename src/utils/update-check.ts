@@ -120,7 +120,7 @@ function cachedLatest(homedirPath: string, now: number): string | undefined {
 function statusFor(current: string, latest: string | undefined, snoozed: boolean): UpdateStatus {
   const available = Boolean(latest && compareSemver(latest, current) > 0);
   const nextStep = available && !snoozed
-    ? `Update recommended: ${latest} is available (you have ${current}). Ask the user: Update now, or later. Update now: ${INSTALL_COMMAND}. Then reload Window > Extensions > MCP Bridge and restart the MCP client.`
+    ? `Update recommended: ${latest} is available (you have ${current}). Give the user this command, or later: ${INSTALL_COMMAND}. Then reload Window > Extensions > MCP Bridge and restart the MCP client.`
     : undefined;
   return {
     current,

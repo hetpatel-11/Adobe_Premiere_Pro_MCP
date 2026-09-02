@@ -64,7 +64,7 @@ describe('checkForUpdate', () => {
     expect(status.available).toBe(true);
     expect(status.latest).toBe('9.9.9');
     expect(status.snoozed).toBe(false);
-    expect(status.nextStep).toContain('Update now');
+    expect(status.nextStep).toContain(INSTALL_COMMAND);
     expect(status.nextStep).toContain('later');
     expect(status.installCommand).toBe(INSTALL_COMMAND);
     expect(JSON.parse(readFileSync(join(home, '.premiere-mcp-bridge', 'update-check.json'), 'utf8'))).toEqual({

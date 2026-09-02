@@ -53,7 +53,7 @@ export const discoveryTools: ToolModule[] = [
   },
   {
     name: 'get_capabilities',
-    description: 'Reports the local MCP runtime, installed bridge status, tool/resource/prompt catalog sizes, and supported versus experimental integration surfaces. Includes an npm update check: if update.available is true and not snoozed, ask the user Update now or Later before editing. Set checkConnection to true to run the read-only live Premiere connection check; otherwise no Premiere request is made.',
+    description: 'Reports the local MCP runtime, installed bridge status, tool/resource/prompt catalog sizes, and supported versus experimental integration surfaces. Includes an npm update check: if update.available is true and not snoozed, give the user update.installCommand (or Later) before editing. Set checkConnection to true to run the read-only live Premiere connection check; otherwise no Premiere request is made.',
     inputSchema: z.object({
       checkConnection: z.boolean().optional().describe('When true, run verify_premiere_connection and include its live result. Defaults to false so capability discovery is fast and non-invasive.')
     }),

@@ -59,8 +59,10 @@ defaults write com.adobe.CSXS.10 PlayerDebugMode 1
 
 echo "Installing Premiere CEP extension..."
 mkdir -p "$CEP_EXTENSIONS_DIR"
-rm -rf "$CEP_TARGET_DIR"
-cp -R "$REPO_ROOT/cep-plugin" "$CEP_TARGET_DIR"
+mkdir -p "$CEP_TARGET_DIR"
+# Copy over the live extension so a running panel is not deleted out from
+# under itself.
+cp -R "$REPO_ROOT/cep-plugin/." "$CEP_TARGET_DIR/"
 
 echo "Preparing bridge temp directory..."
 mkdir -p "$TEMP_DIR"
