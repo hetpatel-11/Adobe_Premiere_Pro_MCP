@@ -229,7 +229,7 @@ export function HomePage() {
         <Separator className="my-14" />
 
         <h2 className="text-2xl font-semibold tracking-tight">FAQ</h2>
-        <Accordion className="mt-4" multiple>
+        <Accordion className="mt-4" type="multiple">
           <AccordionItem value="pkg">
             <AccordionTrigger>
               Which npm package should I install?

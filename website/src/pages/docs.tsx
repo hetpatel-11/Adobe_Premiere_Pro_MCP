@@ -274,7 +274,7 @@ export function DocsPage() {
             <h2 className="text-2xl font-semibold tracking-tight">
               Troubleshooting
             </h2>
-            <Accordion className="mt-4" multiple>
+            <Accordion className="mt-4" type="multiple">
               <AccordionItem value="client-sees">
                 <AccordionTrigger>
                   The client sees the server but tool calls fail
