@@ -27,11 +27,13 @@ export function PrivacyPage() {
         Anonymous usage telemetry
       </h2>
       <p>
-        The MCP server sends anonymous usage telemetry by default. Each event
-        includes an anonymous install id, a session id, event type, tool name,
-        success, duration, a coarse error class, package version, OS, CPU
-        architecture, and Node.js version. It does not include project names,
-        media paths, file contents, tool arguments, tool results, or usernames.
+        The MCP server sends anonymous usage telemetry by default. It records
+        server starts (to count installs), failed tool calls, and at most one
+        successful call per tool per install per day. Events include an
+        anonymous install id, session id, tool name, success, duration, a
+        coarse error class, package version, OS, CPU architecture, and Node.js
+        version. They do not include project names, media paths, file
+        contents, tool arguments, tool results, or usernames.
       </p>
       <p>
         Opt out by unchecking Share anonymous usage data in the CEP panel,

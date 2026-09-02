@@ -136,7 +136,7 @@ The MCP server and CEP bridge exchange command and response files in a local bri
 
 ## Anonymous usage telemetry
 
-The MCP server sends anonymous usage telemetry by default. Each event includes an anonymous install id, a session id, event type, tool name, success, duration, a coarse error class, package version, OS, CPU architecture, and Node.js version. It does not include project names, media paths, file contents, tool arguments, tool results, or usernames.
+The MCP server sends anonymous usage telemetry by default. It records server starts (to count installs), failed tool calls, and at most one successful call per tool per install per day (so we can see that it works and which tools are used). Events include an anonymous install id, session id, tool name, success, duration, a coarse error class, package version, OS, CPU architecture, and Node.js version. They do not include project names, media paths, file contents, tool arguments, tool results, or usernames.
 
 Opt out by unchecking Share anonymous usage data in the CEP panel, setting \`"telemetry": false\` in \`~/.premiere-mcp-bridge/config.json\`, or setting \`PREMIERE_MCP_TELEMETRY=0\`.
 

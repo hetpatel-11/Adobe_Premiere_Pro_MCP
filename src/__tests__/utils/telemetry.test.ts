@@ -190,7 +190,7 @@ describe('Telemetry', () => {
   it('does not send when opted out, and does not create an install id', async () => {
     const telemetry = makeTelemetry({ PREMIERE_MCP_TELEMETRY: '0' });
     telemetry.trackServerStarted();
-    telemetry.trackToolCall({ tool: 'get_project_info', success: true, durationMs: 12 });
+    telemetry.trackToolCall({ tool: 'get_project_info', success: false, durationMs: 12 });
     await telemetry.flush();
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -202,7 +202,7 @@ describe('Telemetry', () => {
   it('does not send when config.json sets telemetry to false', async () => {
     writeConfig(home, false);
     const telemetry = makeTelemetry();
-    telemetry.trackToolCall({ tool: 'ping', success: true, durationMs: 4 });
+    telemetry.trackToolCall({ tool: 'ping', success: false, durationMs: 4 });
     await telemetry.flush();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -260,11 +260,26 @@ describe('Telemetry', () => {
     });
   });
 
+  it('sends a successful tool call once per tool per process', async () => {
+    const telemetry = makeTelemetry();
+    telemetry.trackToolCall({ tool: 'ping', success: true, durationMs: 4 });
+    telemetry.trackToolCall({ tool: 'ping', success: true, durationMs: 5 });
+    telemetry.trackToolCall({ tool: 'list_sequences', success: true, durationMs: 8 });
+    await telemetry.flush();
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toMatchObject({ event: 'tool_called', tool: 'ping', success: true });
+    expect(captured[1]).toMatchObject({
+      event: 'tool_called',
+      tool: 'list_sequences',
+      success: true,
+    });
+  });
+
   it('replaces illegal tool names instead of sending caller-supplied strings', async () => {
     const telemetry = makeTelemetry();
     telemetry.trackToolCall({
       tool: '../etc/passwd',
-      success: true,
+      success: false,
       durationMs: 1,
     });
     await telemetry.flush();
@@ -313,7 +328,7 @@ describe('Telemetry', () => {
       ingestUrl: 'https://example.test/v1/event',
     });
 
-    telemetry.trackToolCall({ tool: 'ping', success: true, durationMs: 2 });
+    telemetry.trackToolCall({ tool: 'ping', success: false, durationMs: 2 });
     await expect(telemetry.flush()).resolves.toBeUndefined();
     expect(failingFetch).toHaveBeenCalled();
   });

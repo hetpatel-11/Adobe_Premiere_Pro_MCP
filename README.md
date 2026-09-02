@@ -381,9 +381,9 @@ This project is much more usable than the original prototype, but it is not magi
 
 ## Telemetry
 
-Anonymous usage telemetry is on by default so we can see how many people run the server and which tools they call.
+Anonymous usage telemetry is on by default so we can see how many people run the server, which tools they use, and which tools fail.
 
-Each event is an install id, a tool name, success or failure, duration, OS, and package version. Failures also include a short error code, the Zod field names that failed, and a path-stripped error template. Project names, media paths, arguments, and results are not sent. Details are in [PRIVACY.md](PRIVACY.md).
+Each event is an install id, OS, and package version. `server_started` counts installs. Tool calls include the tool name and whether they succeeded. We keep every failure, and at most one successful call per tool per install per day. Failures also include duration, a short error code, the Zod field names that failed, and a path-stripped error template. Project names, media paths, arguments, and results are not sent. Details are in [PRIVACY.md](PRIVACY.md).
 
 Opt out in any of these ways:
 

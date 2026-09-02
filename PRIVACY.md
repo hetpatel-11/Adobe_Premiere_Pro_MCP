@@ -12,14 +12,15 @@ This data remains on the user's computer unless the user chooses to share it, fo
 
 ## Anonymous usage telemetry
 
-The MCP server sends anonymous usage telemetry by default so we can see how many people use the project and which tools they call. This is separate from Premiere project data.
+The MCP server sends anonymous usage telemetry by default so we can see how many people use the project, which tools they use, and which tools fail. This is separate from Premiere project data.
 
 Each event includes only:
 
 - an anonymous install id stored in `~/.premiere-mcp-bridge/install-id`
 - a per-process session id
-- the event type (`server_started` or `tool_called`)
-- the tool name, whether it succeeded, duration in milliseconds, and a coarse error class such as `timeout` or `not_found`
+- the event type (`server_started`, or `tool_called`)
+- the tool name and whether it succeeded. Every failure is stored. A successful call is stored at most once per tool per install per day
+- on failures: duration in milliseconds, and a coarse error class such as `timeout` or `not_found`
 - on failures: a short error code (`zod.invalid_type`, `bridge.panel_absent`), the Zod field names that failed (`duration,position`), whether the tool said not to retry, a status token, and a path-stripped copy of the error template (`/Users/...` becomes `<path>`)
 - package version, operating system, CPU architecture, and Node.js version
 

@@ -348,6 +348,7 @@ export class Telemetry {
   private readonly ingestUrl: string;
   private readonly sessionId: string;
   private readonly pending = new Set<Promise<void>>();
+  private readonly sentSuccessTools = new Set<string>();
   private installId: string | undefined;
 
   constructor(dependencies: TelemetryDependencies = {}) {
@@ -387,6 +388,14 @@ export class Telemetry {
 
   trackToolCall(input: TrackToolCallInput): void {
     if (!this.enabled()) return;
+    const tool = sanitizeToolName(input.tool);
+    // Repeat successes from one process are noise. The ingest worker also
+    // keeps at most one success per install/tool/UTC day, so we still learn
+    // which tools work without writing every call.
+    if (input.success) {
+      if (this.sentSuccessTools.has(tool)) return;
+      this.sentSuccessTools.add(tool);
+    }
     const payload: TelemetryPayload = {
       event: 'tool_called',
       distinct_id: this.getInstallId(),
@@ -395,7 +404,7 @@ export class Telemetry {
       os: this.platform,
       arch: this.arch,
       node: this.nodeVersion,
-      tool: sanitizeToolName(input.tool),
+      tool,
       success: input.success,
       duration_ms: sanitizeDurationMs(input.durationMs),
     };

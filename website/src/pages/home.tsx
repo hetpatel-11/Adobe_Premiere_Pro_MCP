@@ -249,8 +249,9 @@ export function HomePage() {
             </AccordionTrigger>
             <AccordionContent>
               <p>
-                Editing is local. Optional anonymous telemetry records tool
-                name, success, and duration only. Turn it off with{" "}
+                Editing is local. Optional anonymous telemetry records server
+                starts, failures, and at most one successful call per tool per
+                install per day. Turn it off with{" "}
                 <code>PREMIERE_MCP_TELEMETRY=0</code> or uncheck Share
                 anonymous usage data in the CEP panel. See{" "}
                 <a href={`${REPO}/blob/main/PRIVACY.md`}>PRIVACY.md</a>.
