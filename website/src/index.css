@@ -121,11 +121,14 @@
   * {
     @apply border-border outline-ring/50;
     }
+  /* The page background lives on html, never on body. ShaderBackdrop is fixed
+     at -z-10, and negative-z-index children paint before the backgrounds of
+     in-flow descendants -- so a background on body would cover the shader. */
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
     }
   html {
-    @apply font-sans;
+    @apply bg-background font-sans;
     }
   code {
     @apply rounded-md bg-muted px-1 py-0.5 font-mono text-[0.85em];
