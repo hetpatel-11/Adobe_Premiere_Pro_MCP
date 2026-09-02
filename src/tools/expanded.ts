@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { bridgeUnavailableResult, isBridgeUnavailableMessage } from '../bridge/errors.js';
-import type { MCPTool } from './index.js';
+import type { MCPTool } from './types.js';
 
 export const expandedToolNames = [
   'find_items_by_media_path',

@@ -9,6 +9,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PremiereProTools, evaluateTextInjectionResult } from '../../tools/index.js';
+import * as discovery from '../../tools/domains/discovery.js';
 import { PremiereProBridge } from '../../bridge/index.js';
 import { executeExpandedTool, expandedToolNames, unimplementedExpandedToolNames } from '../../tools/expanded.js';
 
@@ -2397,8 +2398,7 @@ describe('PremiereProTools', () => {
 
     it('resolves a unique presetName exactly and rejects ambiguous names', async () => {
       const { presetPath, outputPath } = await createTempPreset('Named Preset');
-      const toolsAny = tools as any;
-      jest.spyOn(toolsAny, 'getEncoderPresets').mockResolvedValue({
+      const presets = jest.spyOn(discovery, 'getEncoderPresets').mockResolvedValue({
         success: true,
         presets: [
           { name: 'Named Preset', path: presetPath, source: 'user', ameVersion: '26.0' },
@@ -2419,7 +2419,7 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(true);
       expect(result.presetPath).toBe(presetPath);
 
-      toolsAny.getEncoderPresets.mockResolvedValue({
+      presets.mockResolvedValue({
         success: true,
         presets: [
           { name: 'Duplicate', path: presetPath, source: 'user', ameVersion: '26.0' },
