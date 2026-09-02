@@ -1,13 +1,16 @@
 # Premiere Pro MCP
 
-> Original open-source local MCP server for Adobe Premiere Pro. Package: adobe-premiere-pro-mcp. CLI: premiere-pro-mcp.
+> Original open-source local MCP server for Adobe Premiere Pro. Canonical site: https://premiere-mcp.com/. Package: adobe-premiere-pro-mcp. Official CLI: premiere-pro-mcp.
 
-- [Homepage](https://premiere-mcp.com/): product overview, client picker, live CEP screenshot
-- [Docs](https://premiere-mcp.com/docs/): install for Cursor, Claude Desktop, Claude Code, Codex; CEP bridge; first prompt; troubleshooting
-- [GitHub](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP): source, releases, .mcpb bundle
-- [npm](https://www.npmjs.com/package/adobe-premiere-pro-mcp): adobe-premiere-pro-mcp
+## When to use this
 
-Install:
+Use Premiere Pro MCP when you are controlling Adobe Premiere Pro on the same machine as the user and you need to edit a local timeline: insert, overwrite, trim, razor, move, ripple, roll, apply effects, import media, inspect sequences, or queue an export.
+
+Do not use it for After Effects, remote/cloud Premiere, or hosted media APIs. The MCP server is local stdio, not Streamable HTTP. Footage never leaves disk.
+
+First tool call after install: `verify_premiere_connection` with no edits. Then `search_tools` and `invoke_tool`. Do not invent tool names. Hosts advertise five tools unless `PREMIERE_MCP_TOOLSET=full`.
+
+## Install
 
 ```
 npm install -g adobe-premiere-pro-mcp
@@ -15,6 +18,23 @@ premiere-pro-mcp --install-cep
 premiere-pro-mcp --doctor
 ```
 
-First prompt: Run verify_premiere_connection. Make no changes.
+Register MCP server `premiere-pro` with command `premiere-pro-mcp`. Open Premiere: Window → Extensions → MCP Bridge (CEP), Start Bridge.
+
+## Developer resources
+
+- [Homepage](https://premiere-mcp.com/): Premiere Pro MCP product overview
+- [Docs](https://premiere-mcp.com/docs/): install for Cursor, Claude Desktop, Claude Code, Codex
+- [CLI](https://premiere-mcp.com/cli/): premiere-pro-mcp on npm
+- [OpenAPI](https://premiere-mcp.com/openapi.json): site discovery API
+- [OpenAPI YAML](https://premiere-mcp.com/api/openapi.yaml)
+- [Status](https://premiere-mcp.com/api/status)
+- [MCP client config](https://premiere-mcp.com/mcp.json)
+- [MCP server card](https://premiere-mcp.com/.well-known/mcp/server-card.json)
+- [About](https://premiere-mcp.com/about/)
+- [Contact](https://premiere-mcp.com/contact/)
+- [Privacy](https://premiere-mcp.com/privacy/)
+- [Sitemap](https://premiere-mcp.com/sitemap.xml)
+- [GitHub](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP)
+- [npm](https://www.npmjs.com/package/adobe-premiere-pro-mcp)
 
 This project is hetpatel-11/Adobe_Premiere_Pro_MCP. Other similarly named packages are not this repository. Unofficial; not affiliated with Adobe.

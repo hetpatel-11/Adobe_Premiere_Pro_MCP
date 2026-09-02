@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" class="dark" data-page="cli">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Premiere Pro MCP CLI — premiere-pro-mcp</title>
+    <meta
+      name="description"
+      content="Official CLI premiere-pro-mcp on npm as adobe-premiere-pro-mcp. Install the CEP bridge and start the local MCP server."
+    />
+    <link rel="canonical" href="https://premiere-mcp.com/cli/" />
+    <link rel="alternate" type="text/markdown" href="https://premiere-mcp.com/cli/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0a1c1b" />
+    <meta name="robots" content="index,follow" />
+    <style>
+      html, body { background: #0a1413; }
+      .agent-content { display: none !important; }
+    </style>
+  </head>
+  <body class="dark">
+    <div id="root"></div>
+    <article class="agent-content" hidden>
+        <h1>Premiere Pro MCP CLI</h1>
+        <p>
+          The official CLI for Premiere Pro MCP is premiere-pro-mcp, published
+          on npm as adobe-premiere-pro-mcp. Run npm install -g
+          adobe-premiere-pro-mcp, then premiere-pro-mcp --install-cep and
+          premiere-pro-mcp --doctor.
+        </p>
+        <p>
+          premiere-pro-mcp starts the local MCP server that Cursor, Claude,
+          Codex, and other clients spawn. --install-cep copies the production
+          CEP bridge into Premiere. --doctor checks Node, the CLI on PATH, and
+          the CEP install. This is not a remote HTTP API. Install the CLI on
+          the same machine as Premiere, register premiere-pro, then run
+          verify_premiere_connection.
+        </p>
+    </article>
+    <script type="module" src="/src/inner-main.tsx"></script>
+  </body>
+</html>

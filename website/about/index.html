@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" class="dark" data-page="about">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>About Premiere Pro MCP</title>
+    <meta
+      name="description"
+      content="Premiere Pro MCP is independent open-source software that lets AI agents edit Adobe Premiere Pro locally via MCP."
+    />
+    <link rel="canonical" href="https://premiere-mcp.com/about/" />
+    <link rel="alternate" type="text/markdown" href="https://premiere-mcp.com/about/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0a1c1b" />
+    <meta name="robots" content="index,follow" />
+    <style>
+      html, body { background: #0a1413; }
+      .agent-content { display: none !important; }
+    </style>
+  </head>
+  <body class="dark">
+    <div id="root"></div>
+    <article class="agent-content" hidden>
+        <h1>About Premiere Pro MCP</h1>
+        <p>
+          Premiere Pro MCP is independent open-source software that lets AI
+          agents edit Adobe Premiere Pro on the same computer. The canonical
+          site is premiere-mcp.com. The repository is
+          hetpatel-11/Adobe_Premiere_Pro_MCP. The published package is
+          adobe-premiere-pro-mcp. The official CLI is premiere-pro-mcp.
+        </p>
+        <p>
+          An MCP client talks to the premiere-pro-mcp process. That process
+          writes ExtendScript into a private temp directory. The MCP Bridge
+          CEP panel inside Premiere evaluates the script and writes JSON back.
+          Green on the panel means both sides are ready. Footage stays on disk.
+        </p>
+        <p>
+          The catalog is 283 tools covering timeline edits, effects and color,
+          media and bins, audio and captions, export, and discovery. CEP is
+          production. MIT licensed. Unofficial. Not affiliated with Adobe.
+        </p>
+    </article>
+    <script type="module" src="/src/inner-main.tsx"></script>
+  </body>
+</html>

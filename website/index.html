@@ -9,6 +9,8 @@
       content="Premiere Pro MCP is the original open-source local MCP server for Adobe Premiere Pro. 283 tools, CEP file bridge, npm package adobe-premiere-pro-mcp. Works with Cursor, Claude, Codex, and Claude Code."
     />
     <link rel="canonical" href="https://premiere-mcp.com/" />
+    <link rel="alternate" type="text/markdown" href="https://premiere-mcp.com/" />
+    <link rel="describedby" href="https://premiere-mcp.com/openapi.json" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#0a1c1b" />
@@ -35,27 +37,95 @@
           {
             "@type": "SoftwareApplication",
             "name": "Premiere Pro MCP",
-            "alternateName": "adobe-premiere-pro-mcp",
+            "alternateName": ["adobe-premiere-pro-mcp", "premiere-pro-mcp"],
+            "description": "Original open-source local MCP server for Adobe Premiere Pro. 283 tools talk to Premiere through a CEP file bridge. Official CLI premiere-pro-mcp, npm package adobe-premiere-pro-mcp. Canonical site premiere-mcp.com.",
             "applicationCategory": "DeveloperApplication",
             "operatingSystem": "macOS, Windows",
             "softwareVersion": "1.2.7",
             "license": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/blob/main/LICENSE.md",
             "url": "https://premiere-mcp.com/",
             "downloadUrl": "https://www.npmjs.com/package/adobe-premiere-pro-mcp",
+            "installUrl": "https://premiere-mcp.com/docs/",
             "codeRepository": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+            "sameAs": [
+              "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+              "https://www.npmjs.com/package/adobe-premiere-pro-mcp"
+            ],
+            "author": { "@id": "https://premiere-mcp.com/#organization" },
+            "publisher": { "@id": "https://premiere-mcp.com/#organization" },
             "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://premiere-mcp.com/#organization",
+            "name": "Premiere Pro MCP",
+            "url": "https://premiere-mcp.com/",
+            "sameAs": [
+              "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP",
+              "https://www.npmjs.com/package/adobe-premiere-pro-mcp"
+            ],
+            "contactPoint": {
+              "@type": "ContactPoint",
+              "contactType": "customer support",
+              "url": "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/issues",
+              "availableLanguage": "English"
+            }
           },
           {
             "@type": "WebSite",
             "name": "Premiere Pro MCP",
-            "url": "https://premiere-mcp.com/"
+            "url": "https://premiere-mcp.com/",
+            "description": "Product site for Premiere Pro MCP, the local MCP server for Adobe Premiere Pro.",
+            "publisher": { "@id": "https://premiere-mcp.com/#organization" }
           }
         ]
       }
     </script>
+    <style>
+      html, body { background: #0a1413; }
+      .agent-content { display: none !important; }
+    </style>
   </head>
   <body class="dark">
     <div id="root"></div>
+    <article class="agent-content" hidden>
+        <h1>Premiere Pro MCP</h1>
+        <p>
+          Premiere Pro MCP is the original open-source local MCP server for
+          Adobe Premiere Pro. The canonical site is premiere-mcp.com. The npm
+          package is adobe-premiere-pro-mcp. The official CLI is
+          premiere-pro-mcp. 283 tools talk to Premiere through a CEP file
+          bridge on the same machine. Cursor, Claude, Codex, and Claude Code
+          stay local. Footage never leaves disk.
+        </p>
+        <h2>When to use Premiere Pro MCP</h2>
+        <p>
+          Use it when an agent needs to edit a local Premiere Pro timeline:
+          insert or overwrite clips, trim, razor, move, apply effects, import
+          media, or queue an export. Do not use it for remote Premiere, After
+          Effects, or hosted media APIs.
+        </p>
+        <h2>Install</h2>
+        <p>
+          npm install -g adobe-premiere-pro-mcp then premiere-pro-mcp
+          --install-cep and premiere-pro-mcp --doctor. Register an MCP server
+          named premiere-pro with command premiere-pro-mcp. First prompt: Run
+          verify_premiere_connection. Make no changes.
+        </p>
+        <h2>Docs and machine-readable files</h2>
+        <p>
+          <a href="/docs/">Install docs</a> ·
+          <a href="/cli/">CLI</a> ·
+          <a href="/about/">About</a> ·
+          <a href="/contact/">Contact</a> ·
+          <a href="/privacy/">Privacy</a> ·
+          <a href="/openapi.json">OpenAPI</a> ·
+          <a href="/llms.txt">llms.txt</a> ·
+          <a href="/mcp.json">mcp.json</a> ·
+          <a href="https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP">GitHub</a> ·
+          <a href="https://www.npmjs.com/package/adobe-premiere-pro-mcp">npm</a>
+        </p>
+    </article>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

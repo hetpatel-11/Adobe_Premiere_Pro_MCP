@@ -18,3 +18,4 @@ Allow: /
 
 Host: https://premiere-mcp.com
 Sitemap: https://premiere-mcp.com/sitemap.xml
+# Agent files: https://premiere-mcp.com/llms.txt https://premiere-mcp.com/openapi.json

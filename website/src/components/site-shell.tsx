@@ -5,6 +5,14 @@ import { ShaderBackdrop } from "@/components/shader-backdrop"
 import { Button } from "@/components/ui/button"
 import { NPM, REPO } from "@/lib/snippets"
 
+export type SitePage =
+  | "home"
+  | "docs"
+  | "about"
+  | "contact"
+  | "privacy"
+  | "cli"
+
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
@@ -16,7 +24,7 @@ export function SiteShell({
   page,
   children,
 }: {
-  page: "home" | "docs"
+  page: SitePage
   children: ReactNode
 }) {
   useEffect(() => {
@@ -85,29 +93,44 @@ export function SiteShell({
             Adobe. This site is not affiliated with Adobe.
           </p>
           <p className="mt-3 flex flex-wrap gap-3">
-            <a className="hover:text-foreground" href={REPO}>
-              Source
-            </a>
-            <a className="hover:text-foreground" href="/docs/">
+            <a
+              className={page === "docs" ? "text-foreground" : "hover:text-foreground"}
+              href="/docs/"
+            >
               Docs
             </a>
             <a
-              className="hover:text-foreground"
-              href={`${REPO}/blob/main/LICENSE.md`}
+              className={page === "cli" ? "text-foreground" : "hover:text-foreground"}
+              href="/cli/"
             >
-              MIT
+              CLI
             </a>
             <a
-              className="hover:text-foreground"
-              href={`${REPO}/blob/main/PRIVACY.md`}
+              className={page === "about" ? "text-foreground" : "hover:text-foreground"}
+              href="/about/"
+            >
+              About
+            </a>
+            <a
+              className={page === "contact" ? "text-foreground" : "hover:text-foreground"}
+              href="/contact/"
+            >
+              Contact
+            </a>
+            <a
+              className={page === "privacy" ? "text-foreground" : "hover:text-foreground"}
+              href="/privacy/"
             >
               Privacy
             </a>
-            <a
-              className="hover:text-foreground"
-              href={`${REPO}/blob/main/TERMS.md`}
-            >
-              Terms
+            <a className="hover:text-foreground" href="/openapi.json">
+              OpenAPI
+            </a>
+            <a className="hover:text-foreground" href="/llms.txt">
+              llms.txt
+            </a>
+            <a className="hover:text-foreground" href={REPO}>
+              GitHub
             </a>
           </p>
         </div>

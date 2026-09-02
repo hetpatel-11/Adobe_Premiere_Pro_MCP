@@ -21,6 +21,10 @@ export default defineConfig({
       input: {
         main: path.resolve(import.meta.dirname, 'index.html'),
         docs: path.resolve(import.meta.dirname, 'docs/index.html'),
+        about: path.resolve(import.meta.dirname, 'about/index.html'),
+        contact: path.resolve(import.meta.dirname, 'contact/index.html'),
+        privacy: path.resolve(import.meta.dirname, 'privacy/index.html'),
+        cli: path.resolve(import.meta.dirname, 'cli/index.html'),
       },
     },
   },

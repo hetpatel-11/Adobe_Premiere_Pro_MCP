@@ -9,6 +9,7 @@
       content="Install adobe-premiere-pro-mcp for Cursor, Claude Desktop, Claude Code, and Codex. CEP bridge setup, first prompt, catalog, and troubleshooting."
     />
     <link rel="canonical" href="https://premiere-mcp.com/docs/" />
+    <link rel="alternate" type="text/markdown" href="https://premiere-mcp.com/docs/" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#0a1c1b" />
@@ -28,9 +29,47 @@
       content="Cursor, Claude Desktop, Claude Code, and Codex setup for adobe-premiere-pro-mcp."
     />
     <meta name="twitter:image" content="https://premiere-mcp.com/mcp-bridge-cep.png" />
+    <style>
+      html, body { background: #0a1413; }
+      .agent-content { display: none !important; }
+    </style>
   </head>
   <body class="dark">
     <div id="root"></div>
+    <article class="agent-content" hidden>
+        <h1>Install Premiere Pro MCP</h1>
+        <p>
+          Premiere Pro MCP is the original local MCP server for Adobe Premiere
+          Pro. The npm package is adobe-premiere-pro-mcp. The CLI is
+          premiere-pro-mcp. This page is the install and compatibility guide
+          for premiere-mcp.com. You need Node.js 20+ and Premiere Pro 2020+ on
+          the same computer as the MCP client.
+        </p>
+        <h2>Install from npm</h2>
+        <p>
+          npm install -g adobe-premiere-pro-mcp. Then premiere-pro-mcp
+          --install-cep and premiere-pro-mcp --doctor. Register an MCP server
+          named premiere-pro with command premiere-pro-mcp. Restart the client
+          if it only reads config at launch.
+        </p>
+        <h2>Start the CEP bridge</h2>
+        <p>
+          Restart Premiere. Open Window → Extensions → MCP Bridge (CEP). Set
+          the temp directory the installer printed. Start Bridge and wait until
+          the panel is green.
+        </p>
+        <h2>First prompt</h2>
+        <p>
+          Run verify_premiere_connection. Make no changes. Then use
+          search_tools and invoke_tool. Do not invent tool names.
+        </p>
+        <p>
+          <a href="/">Premiere Pro MCP home</a> ·
+          <a href="/cli/">CLI</a> ·
+          <a href="/openapi.json">OpenAPI</a> ·
+          <a href="/llms.txt">llms.txt</a>
+        </p>
+    </article>
     <script type="module" src="/src/docs-main.tsx"></script>
   </body>
 </html>

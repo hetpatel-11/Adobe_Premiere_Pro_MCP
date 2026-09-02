@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" class="dark" data-page="privacy">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy — Premiere Pro MCP</title>
+    <meta
+      name="description"
+      content="Premiere Pro MCP privacy policy. Editing is local. Optional anonymous telemetry can be turned off."
+    />
+    <link rel="canonical" href="https://premiere-mcp.com/privacy/" />
+    <link rel="alternate" type="text/markdown" href="https://premiere-mcp.com/privacy/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0a1c1b" />
+    <meta name="robots" content="index,follow" />
+    <style>
+      html, body { background: #0a1413; }
+      .agent-content { display: none !important; }
+    </style>
+  </head>
+  <body class="dark">
+    <div id="root"></div>
+    <article class="agent-content" hidden>
+        <h1>Privacy — Premiere Pro MCP</h1>
+        <p>
+          Premiere Pro MCP is local software. It does not operate a hosted
+          editing service and does not send Premiere project data, media, MCP
+          request arguments, or tool results to the project maintainers.
+        </p>
+        <p>
+          The MCP server and CEP bridge exchange command and response files in
+          a local bridge directory you choose. That data stays on your computer
+          unless you share it. Optional anonymous telemetry records tool name,
+          success, and duration only. It does not include project names, media
+          paths, or usernames. Turn it off with PREMIERE_MCP_TELEMETRY=0 or
+          uncheck Share anonymous usage data in the CEP panel. Privacy
+          questions go to GitHub issues.
+        </p>
+    </article>
+    <script type="module" src="/src/inner-main.tsx"></script>
+  </body>
+</html>

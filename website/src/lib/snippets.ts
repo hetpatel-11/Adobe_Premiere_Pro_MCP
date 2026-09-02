@@ -38,6 +38,7 @@ export const CLAUDE_CODE_PLUGIN = `/plugin marketplace add .
 export const RELEASES =
   "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/releases"
 export const REPO = "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP"
+export const ISSUES = `${REPO}/issues`
 export const NPM = "https://www.npmjs.com/package/adobe-premiere-pro-mcp"
 export const MCPB =
   "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/releases/latest"
