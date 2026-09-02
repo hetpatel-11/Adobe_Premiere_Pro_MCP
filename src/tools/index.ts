@@ -464,7 +464,7 @@ export class PremiereProTools {
       },
       {
         name: 'move_clip',
-        description: 'Moves a clip to a different position on the timeline. The result is verified against the clip\'s actual post-move position; if Premiere rejects or clamps the move (e.g. a timeline collision), success is false. When newTrackIndex differs from the clip\'s current track, Premiere has to recreate the clip on the new track (via remove + re-insert), so its clipId changes — the response returns the new id (also check clipIdChanged). Re-inserting on the new track initially uses the source\'s full in/out range; if the clip had been trimmed, the tool re-applies the original trim afterward and reports it under restoredTrimAfterMove — success is false (errorCode MOVE_TRIM_NOT_RESTORED) if that re-apply did not verifiably match the original trim.',
+        description: 'Moves a clip to a different position on the timeline. The result is verified against the clip\'s actual post-move position; if Premiere rejects or clamps the move (e.g. a timeline collision), success is false. When newTrackIndex differs from the clip\'s current track, Premiere has to recreate the clip on the new track (via remove + re-insert), so its clipId changes — the response returns the new id (also check clipIdChanged). Re-inserting on the new track initially uses the source\'s full in/out range; if the clip had been trimmed, the tool re-applies the original trim afterward and reports it under restoredTrimAfterMove — success is false (errorCode MOVE_TRIM_NOT_RESTORED) if that re-apply did not verifiably match the original trim. Note: a cross-track move performs multiple separate Premiere DOM operations (remove, re-insert, then trim re-apply); Premiere Pro\'s scripting API has no undo-group/transaction primitive to collapse these into one undo-stack entry, so a single `undo` call after a cross-track move_clip may only unwind the last of those steps — call `undo` more than once (checking state between calls) to fully revert. Cross-track re-insertion also mirrors the clip\'s prior audio-link state: if the clip had no linked audio at its old position (e.g. a video-with-audio source that was previously cut into unlinked, audio-deleted pieces), a linked audio counterpart that Premiere auto-creates at the new position is automatically stripped afterward, so the move stays video-only — matching a manual drag in the Premiere UI rather than adding a fresh linked clip. Count of any such removed counterpart is reported under unlinkedAudioRemoved.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip to move'),
           newTime: z.number().describe('The new time position in seconds'),
@@ -3202,6 +3202,16 @@ export class PremiereProTools {
           return null;
         }
         function secondsToTicks(seconds) { return String(Math.round(Number(seconds || 0) * 254016000000)); }
+        function timeFromSeconds(seconds) {
+          // Time's constructor takes a ticks string (or nothing), NOT a "<n>s"-style
+          // string — \`new Time(53.96 + "s")\` silently produces a bogus/zero time
+          // rather than throwing, which was why restored inPoint/outPoint kept
+          // collapsing to 0 below. Build via the empty constructor + .seconds setter,
+          // the same pattern used successfully elsewhere (see trimClip).
+          var t = new Time();
+          t.seconds = Number(seconds);
+          return t;
+        }
         function frameDurationOf(seq) {
           try {
             if (seq && seq.timebase !== undefined) {
@@ -3219,6 +3229,7 @@ export class PremiereProTools {
         var requestedTrackIndex = ${newTrackIndex !== undefined ? Number(newTrackIndex) : 'null'};
         var newClipId = null;
         var restoredTrimAfterMove = null;
+        var unlinkedAudioRemoved = 0;
 
         if (crossTrack && requestedTrackIndex !== oldTrackIndex) {
           // TrackItem.move() only shifts a clip within its own track — it cannot change
@@ -3245,10 +3256,42 @@ export class PremiereProTools {
           var projectItemNodeId = projectItem.nodeId;
           var originalInPointSeconds = secondsOf(clip.inPoint);
           var originalOutPointSeconds = secondsOf(clip.outPoint);
+          // Sequence.overwriteClip() re-derives the placed item from the project item's
+          // full media, not from this specific timeline instance — so if this clip's
+          // audio had previously been unlinked/deleted on the timeline (a common B-roll
+          // workflow: cut a video-with-audio source into silent, audio-unlinked pieces),
+          // Premiere will auto-create a fresh linked audio counterpart on the next
+          // available audio track after the re-insert below, even though none existed
+          // at the clip's old position. Record whether one existed BEFORE the move so
+          // we know whether to strip that auto-created one afterward — this is what
+          // makes a cross-track move behave like Premiere's own manual clip drag
+          // (video only) instead of like adding a brand-new clip (video + audio).
+          var hadLinkedAudioBefore = false;
+          if (oldTrackType === "video") {
+            for (var hat = 0; hat < sequence.audioTracks.numTracks && !hadLinkedAudioBefore; hat++) {
+              var priorAudioTrack = sequence.audioTracks[hat];
+              for (var hai = 0; hai < priorAudioTrack.clips.numItems; hai++) {
+                var priorAudioClip = priorAudioTrack.clips[hai];
+                if (priorAudioClip && priorAudioClip.projectItem &&
+                    priorAudioClip.projectItem.nodeId === projectItemNodeId &&
+                    Math.abs(secondsOf(priorAudioClip.start) - oldTime) < 0.1) {
+                  hadLinkedAudioBefore = true;
+                  break;
+                }
+              }
+            }
+          }
           var beforeTargetCount = tracksList[requestedTrackIndex].clips.numItems;
           clip.remove(false, true);
-          if (oldTrackType === "video") sequence.overwriteClip(projectItem, secondsToTicks(${newTime}), requestedTrackIndex, 0);
-          else sequence.overwriteClip(projectItem, secondsToTicks(${newTime}), 0, requestedTrackIndex);
+          // Call overwriteClip on the target TRACK object, not on the Sequence object.
+          // Sequence.overwriteClip(item, time, videoTrackIndex, audioTrackIndex) writes
+          // to BOTH a video and an audio track index — passing 0 as a "no audio" sentinel
+          // actually targets real Audio Track 1, so if that track already holds unrelated
+          // content (e.g. background score), Premiere overwrites/splits it for real (data
+          // loss, confirmed live on 2026-09-02: background music track was cut and shifted
+          // by a video-only cross-track move). Track.overwriteClip(item, time) is scoped
+          // to that single track and cannot touch any other track.
+          tracksList[requestedTrackIndex].overwriteClip(projectItem, secondsToTicks(${newTime}));
           var afterTargetCount = tracksList[requestedTrackIndex].clips.numItems;
           if (afterTargetCount <= beforeTargetCount) {
             return JSON.stringify({ success: false, error: "Move to target track did not create a clip there", errorCode: "MOVE_TRACK_FAILED", beforeTargetCount: beforeTargetCount, afterTargetCount: afterTargetCount });
@@ -3277,26 +3320,76 @@ export class PremiereProTools {
           }
           clip = bestMatch;
           newClipId = clip.nodeId;
+          // Strip any audio counterpart Premiere auto-created at the new position —
+          // mirrors add_to_timeline's linkAudio=false cleanup — but only when this
+          // clip had no linked audio at its OLD position either, so a clip that
+          // genuinely was audio-linked keeps that state undisturbed.
+          if (oldTrackType === "video" && !hadLinkedAudioBefore) {
+            var newVideoStart = secondsOf(clip.start);
+            for (var rat = 0; rat < sequence.audioTracks.numTracks; rat++) {
+              var postAudioTrack = sequence.audioTracks[rat];
+              for (var rai = postAudioTrack.clips.numItems - 1; rai >= 0; rai--) {
+                var postAudioClip = postAudioTrack.clips[rai];
+                if (postAudioClip && postAudioClip.projectItem &&
+                    postAudioClip.projectItem.nodeId === projectItemNodeId &&
+                    Math.abs(secondsOf(postAudioClip.start) - newVideoStart) < 0.1) {
+                  try {
+                    postAudioClip.remove(false, false); // ripple=false, alignToVideo=false
+                    unlinkedAudioRemoved++;
+                  } catch (rmAudioErr) {}
+                }
+              }
+            }
+          }
           // Re-apply the original trim (source in/out) that overwriteClip discarded.
           if (originalInPointSeconds !== null && originalOutPointSeconds !== null) {
+            var speedFactor = 1;
+            try {
+              var rawSpeed = Number(clip.getSpeed());
+              // See trimClip for why this heuristic (fractional vs percentage) is needed.
+              if (isFinite(rawSpeed) && rawSpeed !== 0) {
+                speedFactor = rawSpeed <= 10 ? rawSpeed : rawSpeed / 100;
+              }
+            } catch (speedError) {}
             var placedInPoint = secondsOf(clip.inPoint);
             var placedOutPoint = secondsOf(clip.outPoint);
             var needsInFix = Math.abs(placedInPoint - originalInPointSeconds) > 0.000001;
             var needsOutFix = Math.abs(placedOutPoint - originalOutPointSeconds) > 0.000001;
             restoredTrimAfterMove = { attempted: needsInFix || needsOutFix, inPointError: null, outPointError: null };
             if (needsInFix) {
-              try { clip.inPoint = new Time(originalInPointSeconds + "s"); }
+              try { clip.inPoint = timeFromSeconds(originalInPointSeconds); }
               catch (inFixError) { restoredTrimAfterMove.inPointError = inFixError.toString(); }
             }
             if (needsOutFix) {
-              try { clip.outPoint = new Time(originalOutPointSeconds + "s"); }
+              try { clip.outPoint = timeFromSeconds(originalOutPointSeconds); }
               catch (outFixError) { restoredTrimAfterMove.outPointError = outFixError.toString(); }
+            }
+            // Setting inPoint/outPoint restores the SOURCE trim, but Premiere does not
+            // reliably recompute the TIMELINE extent (clip.end) to match — observed
+            // concretely on a still image re-inserted by overwriteClip at Premiere's
+            // default still-image duration (5s): after writing inPoint/outPoint back to
+            // a 1.28s source range, clip.end was left at its post-insert value instead
+            // of shrinking to start+1.28s, leaving a clip whose timeline slot no longer
+            // matched its trim. Explicitly re-sync end to the expected timeline
+            // duration — the same defensive pattern trimClip uses in the opposite
+            // direction (end -> outPoint) — instead of trusting an implicit recompute.
+            var expectedTimelineDuration = (originalOutPointSeconds - originalInPointSeconds) / speedFactor;
+            var currentTimelineDuration = secondsOf(clip.end) - secondsOf(clip.start);
+            if (Math.abs(currentTimelineDuration - expectedTimelineDuration) > (frameDurationSeconds / 2) + 0.000001) {
+              try { clip.end = timeFromSeconds(secondsOf(clip.start) + expectedTimelineDuration); }
+              catch (endFixError) { restoredTrimAfterMove.endError = endFixError.toString(); }
             }
             restoredTrimAfterMove.finalInPoint = secondsOf(clip.inPoint);
             restoredTrimAfterMove.finalOutPoint = secondsOf(clip.outPoint);
+            restoredTrimAfterMove.finalDuration = secondsOf(clip.end) - secondsOf(clip.start);
+            // matchesOriginal must also verify the actual timeline duration, not just
+            // inPoint/outPoint — a clip can have perfectly correct source trim values
+            // while its on-timeline end is still desynced (exactly the bug above), and
+            // checking in/out alone silently reported success on a corrupted clip.
             restoredTrimAfterMove.matchesOriginal =
               Math.abs(restoredTrimAfterMove.finalInPoint - originalInPointSeconds) <= (frameDurationSeconds / 2) + 0.000001 &&
-              Math.abs(restoredTrimAfterMove.finalOutPoint - originalOutPointSeconds) <= (frameDurationSeconds / 2) + 0.000001;
+              Math.abs(restoredTrimAfterMove.finalOutPoint - originalOutPointSeconds) <= (frameDurationSeconds / 2) + 0.000001 &&
+              Math.abs(restoredTrimAfterMove.finalDuration - expectedTimelineDuration) <= (frameDurationSeconds / 2) + 0.000001;
           }
         } else {
           var shiftAmount = ${newTime} - oldTime;
@@ -3354,7 +3447,8 @@ export class PremiereProTools {
           oldTrackIndex: oldTrackIndex,
           trackIndex: newClipId !== null ? requestedTrackIndex : oldTrackIndex,
           trackType: oldTrackType,
-          restoredTrimAfterMove: restoredTrimAfterMove
+          restoredTrimAfterMove: restoredTrimAfterMove,
+          unlinkedAudioRemoved: unlinkedAudioRemoved
         });
       } catch (e) {
         return JSON.stringify({

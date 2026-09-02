@@ -987,13 +987,16 @@ describe('PremiereProTools', () => {
         items.forEach((item, i) => { collection[i] = item; });
         return collection;
       }
-      const targetTrack = { get clips() { return clipsCollection(targetTrackItems); } };
-      const videoTracks: any = { numTracks: 2, 0: {}, 1: targetTrack };
-      const sequence: any = {
-        videoTracks,
+      const targetTrack: any = {
+        get clips() { return clipsCollection(targetTrackItems); },
         overwriteClip: jest.fn(() => {
           targetTrackItems.push({ start: { seconds: 10 }, nodeId: 'clip-456', projectItem });
         })
+      };
+      const videoTracks: any = { numTracks: 2, 0: {}, 1: targetTrack };
+      const sequence: any = {
+        videoTracks,
+        audioTracks: { numTracks: 0 }
       };
       const info = {
         clip: oldClip,
@@ -1006,12 +1009,408 @@ describe('PremiereProTools', () => {
       const parsed = JSON.parse(runScript(() => info));
 
       expect(oldClip.remove).toHaveBeenCalledWith(false, true);
-      expect(sequence.overwriteClip).toHaveBeenCalledWith(projectItem, expect.any(String), 1, 0);
+      expect(targetTrack.overwriteClip).toHaveBeenCalledWith(projectItem, expect.any(String));
       expect(parsed.success).toBe(true);
       expect(parsed.clipId).toBe('clip-456');
       expect(parsed.originalClipId).toBe('clip-123');
       expect(parsed.clipIdChanged).toBe(true);
       expect(parsed.trackIndex).toBe(1);
+    });
+
+    it('restores the original trim (inPoint/outPoint) after a cross-track move for a trimmed video clip', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: '000f47ef', newTime: 145.56, newTrackIndex: 3 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time: any = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+
+      const projectItem = { nodeId: 'proj-europe' };
+      const oldClip: any = {
+        start: at(278.44),
+        nodeId: '000f47ef',
+        inPoint: at(53.96),
+        outPoint: at(54.56),
+        projectItem,
+        remove: jest.fn()
+      };
+
+      let targetTrackItems: any[] = [];
+      function clipsCollection(items: any[]) {
+        const collection: any = { numItems: items.length };
+        items.forEach((item, i) => { collection[i] = item; });
+        return collection;
+      }
+      const targetTrack: any = {
+        get clips() { return clipsCollection(targetTrackItems); },
+        overwriteClip: jest.fn(() => {
+          // Simulates Premiere's real behavior: overwriteClip() always
+          // re-inserts the FULL untrimmed source range, discarding the original
+          // clip's trim — the tool is expected to re-apply it afterward. `end` is a
+          // plain mutable field that does NOT auto-follow inPoint/outPoint writes —
+          // matching the real, observed Premiere behavior where setting outPoint
+          // alone left the timeline extent stale (see the still-image test below).
+          const placed: any = { start: at(145.56), nodeId: 'clip-new', projectItem, getSpeed: () => 1 };
+          let placedIn: any = at(0);
+          let placedOut: any = at(300);
+          let placedEnd: any = at(145.56 + 300);
+          Object.defineProperty(placed, 'inPoint', {
+            get: () => placedIn,
+            set: (value: any) => { placedIn = value; }
+          });
+          Object.defineProperty(placed, 'outPoint', {
+            get: () => placedOut,
+            set: (value: any) => { placedOut = value; }
+          });
+          Object.defineProperty(placed, 'end', {
+            get: () => placedEnd,
+            set: (value: any) => { placedEnd = value; }
+          });
+          targetTrackItems.push(placed);
+        })
+      };
+      const videoTracks: any = { numTracks: 4, 0: {}, 1: {}, 2: {}, 3: targetTrack };
+
+      const sequence: any = {
+        videoTracks,
+        audioTracks: { numTracks: 0 },
+        timebase: String(Math.round(ticksPerSecond * 1001 / 30000))
+      };
+
+      const info = { clip: oldClip, sequence, trackIndex: 1, trackType: 'video', sequenceId: 'seq-1' };
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(() => info, FakeTime));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.restoredTrimAfterMove.matchesOriginal).toBe(true);
+      expect(parsed.restoredTrimAfterMove.finalInPoint).toBeCloseTo(53.96, 5);
+      expect(parsed.restoredTrimAfterMove.finalOutPoint).toBeCloseTo(54.56, 5);
+      expect(parsed.restoredTrimAfterMove.finalDuration).toBeCloseTo(0.6, 5);
+    });
+
+    it('restores the original outPoint after a cross-track move for a still-image clip whose inPoint already matches', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: '000f4787', newTime: 999, newTrackIndex: 3 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time: any = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+
+      const projectItem = { nodeId: 'proj-hilton-terrace' };
+      const oldClip: any = {
+        start: at(500),
+        nodeId: '000f4787',
+        inPoint: at(3600),
+        outPoint: at(3601.28),
+        projectItem,
+        remove: jest.fn()
+      };
+
+      let targetTrackItems: any[] = [];
+      function clipsCollection(items: any[]) {
+        const collection: any = { numItems: items.length };
+        items.forEach((item, i) => { collection[i] = item; });
+        return collection;
+      }
+      const targetTrack: any = {
+        get clips() { return clipsCollection(targetTrackItems); },
+        overwriteClip: jest.fn(() => {
+          // Still images get re-inserted at Premiere's default still duration
+          // (here 5s), anchored at the same ~3600s offset the original clip
+          // already used for inPoint — only outPoint needs restoring. `end` is a
+          // plain mutable field that does NOT auto-follow the outPoint write below,
+          // reproducing a real corruption seen live: after restoring outPoint on a
+          // still image, Premiere left the timeline extent at the 5s default instead
+          // of shrinking it to the restored 1.28s trim — a clip whose in/out looked
+          // correct while its actual on-timeline duration was still 5s.
+          const placed: any = { start: at(999), nodeId: 'clip-new', projectItem, getSpeed: () => 1 };
+          let placedIn: any = at(3600);
+          let placedOut: any = at(3605);
+          let placedEnd: any = at(999 + 5);
+          Object.defineProperty(placed, 'inPoint', {
+            get: () => placedIn,
+            set: (value: any) => { placedIn = value; }
+          });
+          Object.defineProperty(placed, 'outPoint', {
+            get: () => placedOut,
+            set: (value: any) => { placedOut = value; }
+          });
+          Object.defineProperty(placed, 'end', {
+            get: () => placedEnd,
+            set: (value: any) => { placedEnd = value; }
+          });
+          targetTrackItems.push(placed);
+        })
+      };
+      const videoTracks: any = { numTracks: 4, 0: {}, 1: {}, 2: {}, 3: targetTrack };
+
+      const sequence: any = {
+        videoTracks,
+        audioTracks: { numTracks: 0 },
+        timebase: String(Math.round(ticksPerSecond * 1001 / 30000))
+      };
+
+      const info = { clip: oldClip, sequence, trackIndex: 1, trackType: 'video', sequenceId: 'seq-1' };
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(() => info, FakeTime));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.restoredTrimAfterMove.matchesOriginal).toBe(true);
+      expect(parsed.restoredTrimAfterMove.finalInPoint).toBeCloseTo(3600, 5);
+      expect(parsed.restoredTrimAfterMove.finalOutPoint).toBeCloseTo(3601.28, 5);
+      expect(parsed.restoredTrimAfterMove.finalDuration).toBeCloseTo(1.28, 5);
+    });
+
+    it('strips an auto-linked audio counterpart Premiere creates on a cross-track move when the clip had no linked audio at its old position (a video-with-audio source previously cut into unlinked, audio-deleted timeline pieces)', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: '000f47d0', newTime: 29.32, newTrackIndex: 1 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time: any = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+
+      const projectItem = { nodeId: 'proj-europe-mp4' };
+      const oldClip: any = {
+        start: at(257.04),
+        nodeId: '000f47d0',
+        inPoint: at(21.84),
+        outPoint: at(22.36),
+        projectItem,
+        remove: jest.fn()
+      };
+
+      function clipsCollection(items: any[]) {
+        const collection: any = { numItems: items.length };
+        items.forEach((item, i) => { collection[i] = item; });
+        return collection;
+      }
+
+      let targetTrackItems: any[] = [];
+      // No audio clip sits at the old position (257.04s) — this clip's audio was
+      // already unlinked/deleted on the timeline before this move.
+      let audioTrackItems: any[] = [];
+      const targetTrack: any = {
+        get clips() { return clipsCollection(targetTrackItems); },
+        overwriteClip: jest.fn(() => {
+          const placedVideo: any = {
+            start: at(29.32), end: at(29.84), nodeId: 'clip-video-new', projectItem,
+            getSpeed: () => 1, inPoint: at(21.84), outPoint: at(22.36)
+          };
+          targetTrackItems.push(placedVideo);
+          // Simulates Premiere auto-linking the source's embedded audio onto an
+          // audio track when overwriteClip re-inserts from the full project item.
+          const autoAudio: any = {
+            start: at(29.32), nodeId: 'clip-audio-auto', projectItem,
+            remove: jest.fn(() => {
+              const idx = audioTrackItems.indexOf(autoAudio);
+              if (idx >= 0) audioTrackItems.splice(idx, 1);
+            })
+          };
+          audioTrackItems.push(autoAudio);
+        })
+      };
+      const videoTracks: any = { numTracks: 2, 0: {}, 1: targetTrack };
+
+      const audioTrack0 = { get clips() { return clipsCollection(audioTrackItems); } };
+      const audioTracks: any = { numTracks: 1, 0: audioTrack0 };
+
+      const sequence: any = {
+        videoTracks,
+        audioTracks
+      };
+
+      const info = { clip: oldClip, sequence, trackIndex: 0, trackType: 'video', sequenceId: 'seq-1' };
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(() => info, FakeTime));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.unlinkedAudioRemoved).toBe(1);
+      expect(audioTrackItems.length).toBe(0);
+    });
+
+    it('leaves an auto-linked audio counterpart alone on a cross-track move when the clip already had linked audio at its old position', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: '000f47d0', newTime: 29.32, newTrackIndex: 1 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time: any = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+
+      const projectItem = { nodeId: 'proj-europe-mp4' };
+      const oldClip: any = {
+        start: at(257.04),
+        nodeId: '000f47d0',
+        inPoint: at(21.84),
+        outPoint: at(22.36),
+        projectItem,
+        remove: jest.fn()
+      };
+
+      function clipsCollection(items: any[]) {
+        const collection: any = { numItems: items.length };
+        items.forEach((item, i) => { collection[i] = item; });
+        return collection;
+      }
+
+      let targetTrackItems: any[] = [];
+      // A linked audio clip already sits at the old position (257.04s) — the clip
+      // genuinely had linked audio before this move.
+      let audioTrackItems: any[] = [
+        { start: at(257.04), nodeId: 'clip-audio-prior', projectItem, remove: jest.fn() }
+      ];
+      const targetTrack: any = {
+        get clips() { return clipsCollection(targetTrackItems); },
+        overwriteClip: jest.fn(() => {
+          const placedVideo: any = {
+            start: at(29.32), end: at(29.84), nodeId: 'clip-video-new', projectItem,
+            getSpeed: () => 1, inPoint: at(21.84), outPoint: at(22.36)
+          };
+          targetTrackItems.push(placedVideo);
+          const autoAudio: any = { start: at(29.32), nodeId: 'clip-audio-auto', projectItem, remove: jest.fn() };
+          audioTrackItems.push(autoAudio);
+        })
+      };
+      const videoTracks: any = { numTracks: 2, 0: {}, 1: targetTrack };
+
+      const audioTrack0 = { get clips() { return clipsCollection(audioTrackItems); } };
+      const audioTracks: any = { numTracks: 1, 0: audioTrack0 };
+
+      const sequence: any = {
+        videoTracks,
+        audioTracks
+      };
+
+      const info = { clip: oldClip, sequence, trackIndex: 0, trackType: 'video', sequenceId: 'seq-1' };
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(() => info, FakeTime));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.unlinkedAudioRemoved).toBe(0);
+      expect(audioTrackItems.length).toBe(2);
+    });
+
+    it('fixes a desynced timeline duration after a cross-track move even when inPoint and outPoint already match the original (the exact corruption seen live: correct trim, stale 5s still-image timeline slot)', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+      await tools.executeTool('move_clip', { clipId: '000f4787', newTime: 26.76, newTrackIndex: 1 });
+      const script = mockBridge.executeScript.mock.calls[0][0];
+
+      const ticksPerSecond = 254016000000;
+      class FakeTime {
+        private value = 0;
+        get seconds() { return this.value; }
+        set seconds(value: number) { this.value = value; }
+        get ticks() { return String(Math.round(this.value * ticksPerSecond)); }
+        set ticks(value: string) { this.value = Number(value) / ticksPerSecond; }
+      }
+      const at = (seconds: number) => {
+        const time: any = new FakeTime();
+        time.seconds = seconds;
+        return time;
+      };
+
+      const projectItem = { nodeId: 'proj-hilton-terrace' };
+      const oldClip: any = {
+        start: at(145.56),
+        nodeId: '000f4787',
+        inPoint: at(3600),
+        outPoint: at(3601.28),
+        projectItem,
+        remove: jest.fn()
+      };
+
+      let targetTrackItems: any[] = [];
+      function clipsCollection(items: any[]) {
+        const collection: any = { numItems: items.length };
+        items.forEach((item, i) => { collection[i] = item; });
+        return collection;
+      }
+      const targetTrack: any = {
+        get clips() { return clipsCollection(targetTrackItems); },
+        overwriteClip: jest.fn(() => {
+          // overwriteClip happens to place inPoint/outPoint at values that already
+          // match the original (e.g. Premiere re-anchoring at the same ~3600s still
+          // offset with a coincidentally matching out point), so needsInFix and
+          // needsOutFix are both false and the old code never touched inPoint/
+          // outPoint or end at all — yet end is still stuck at the 5s default,
+          // silently corrupting the clip's timeline slot.
+          const placed: any = { start: at(26.76), nodeId: 'clip-new', projectItem, getSpeed: () => 1 };
+          let placedIn: any = at(3600);
+          let placedOut: any = at(3601.28);
+          let placedEnd: any = at(26.76 + 5);
+          Object.defineProperty(placed, 'inPoint', {
+            get: () => placedIn,
+            set: (value: any) => { placedIn = value; }
+          });
+          Object.defineProperty(placed, 'outPoint', {
+            get: () => placedOut,
+            set: (value: any) => { placedOut = value; }
+          });
+          Object.defineProperty(placed, 'end', {
+            get: () => placedEnd,
+            set: (value: any) => { placedEnd = value; }
+          });
+          targetTrackItems.push(placed);
+        })
+      };
+      const videoTracks: any = { numTracks: 4, 0: {}, 1: targetTrack };
+
+      const sequence: any = {
+        videoTracks,
+        audioTracks: { numTracks: 0 },
+        timebase: String(Math.round(ticksPerSecond * 1001 / 30000))
+      };
+
+      const info = { clip: oldClip, sequence, trackIndex: 0, trackType: 'video', sequenceId: 'seq-1' };
+      const runScript = new Function('__findClip', 'Time', script);
+      const parsed = JSON.parse(runScript(() => info, FakeTime));
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.restoredTrimAfterMove.finalDuration).toBeCloseTo(1.28, 5);
+      expect(parsed.restoredTrimAfterMove.matchesOriginal).toBe(true);
     });
 
     it('accepts a duration that Premiere quantizes to the nearest frame', async () => {

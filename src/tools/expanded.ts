@@ -1479,8 +1479,13 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (moveTrackClip.trackType === "audio" && moveTargetIndex >= moveTrackClip.sequence.audioTracks.numTracks) return fail("Target audio track out of range");
           var beforeTargetCount = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex].clips.numItems : moveTrackClip.sequence.audioTracks[moveTargetIndex].clips.numItems;
           moveTrackClip.clip.remove(false, true);
-          if (moveTrackClip.trackType === "video") moveTrackClip.sequence.overwriteClip(moveItem, secondsToTicks(moveStart), moveTargetIndex, 0);
-          else moveTrackClip.sequence.overwriteClip(moveItem, secondsToTicks(moveStart), 0, moveTargetIndex);
+          // Call overwriteClip on the target TRACK object, not the Sequence object —
+          // Sequence.overwriteClip(item, time, videoTrackIndex, audioTrackIndex) writes to
+          // BOTH indices; a 0 "placeholder" for the unused axis actually targets real
+          // Audio/Video Track 1 and can overwrite unrelated content sitting there. See
+          // move_clip's cross-track branch for the confirmed live corruption this caused.
+          var moveTargetTrack = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex] : moveTrackClip.sequence.audioTracks[moveTargetIndex];
+          moveTargetTrack.overwriteClip(moveItem, secondsToTicks(moveStart));
           var afterTargetCount = moveTrackClip.trackType === "video" ? moveTrackClip.sequence.videoTracks[moveTargetIndex].clips.numItems : moveTrackClip.sequence.audioTracks[moveTargetIndex].clips.numItems;
           if (afterTargetCount <= beforeTargetCount) return fail("Move fallback did not create a clip on the target track", { beforeTargetCount: beforeTargetCount, afterTargetCount: afterTargetCount });
           return ok({ moved: true, trackIndex: moveTargetIndex, method: "remove+overwriteClip", start: moveStart, beforeTargetCount: beforeTargetCount, afterTargetCount: afterTargetCount });
