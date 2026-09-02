@@ -16,3 +16,6 @@ release-artifacts/
 
 # Worktrees
 .worktrees/
+
+# Cloudflare
+.wrangler/

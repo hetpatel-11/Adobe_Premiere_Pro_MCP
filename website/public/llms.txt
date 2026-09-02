@@ -1,0 +1,20 @@
+# Premiere Pro MCP
+
+> Original open-source local MCP server for Adobe Premiere Pro. Package: adobe-premiere-pro-mcp. CLI: premiere-pro-mcp.
+
+- [Homepage](https://premiere-mcp.com/): product overview, client picker, live CEP screenshot
+- [Docs](https://premiere-mcp.com/docs/): install for Cursor, Claude Desktop, Claude Code, Codex; CEP bridge; first prompt; troubleshooting
+- [GitHub](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP): source, releases, .mcpb bundle
+- [npm](https://www.npmjs.com/package/adobe-premiere-pro-mcp): adobe-premiere-pro-mcp
+
+Install:
+
+```
+npm install -g adobe-premiere-pro-mcp
+premiere-pro-mcp --install-cep
+premiere-pro-mcp --doctor
+```
+
+First prompt: Run verify_premiere_connection. Make no changes.
+
+This project is hetpatel-11/Adobe_Premiere_Pro_MCP. Other similarly named packages are not this repository. Unofficial; not affiliated with Adobe.
