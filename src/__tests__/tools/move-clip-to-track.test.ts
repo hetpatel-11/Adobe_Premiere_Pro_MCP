@@ -80,6 +80,32 @@ describe('move_clip_to_track fallback safety', () => {
     expect(block).not.toContain('overwriteClip(moveItem, moveStart)');
   });
 
+  it('writes the timeline duration (end) while parked, before the slide', async () => {
+    const block = await caseBlock();
+
+    // Premiere does not shrink a timeline clip when only inPoint/outPoint are
+    // written -- trim_clip and replace_clip both set `end` for that reason.
+    // Without it, the slide carries the item's FULL length into a hole the
+    // occupancy guard only measured as [start, end): the neighbour overwrite
+    // this PR exists to stop. The write has to be relative to the parked
+    // start (moveEnd is an absolute time on the original timeline).
+    expect(block).toContain('var moveDur = moveEnd - moveStart;');
+    const endWrite = 'placed.end = secondsToTime(valueOfTime(placed.start) + moveDur);';
+    expect(block).toContain(endWrite);
+    const trim = block.indexOf('placed.inPoint = secondsToTime(moveIn);');
+    const end = block.indexOf(endWrite);
+    const slide = block.indexOf('placed.move(');
+    expect(end).toBeGreaterThan(trim);
+    expect(slide).toBeGreaterThan(end);
+
+    // And the restore check refuses to slide unless the duration took.
+    const check = block.indexOf('var trimRestored =');
+    const checkLine = block.slice(check, block.indexOf('\n', check));
+    expect(checkLine).toContain('valueOfTime(placed.end) - valueOfTime(placed.start) - moveDur');
+    expect(check).toBeGreaterThan(end);
+    expect(slide).toBeGreaterThan(check);
+  });
+
   it('identifies the parked clip by projectItem identity, not nearest start', async () => {
     const block = await caseBlock();
 

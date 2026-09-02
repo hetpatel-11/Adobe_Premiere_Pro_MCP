@@ -1714,6 +1714,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           var allowOverwrite = Boolean(args.overwrite);
           var moveStart = valueOfTime(moveTrackClip.clip.start);
           var moveEnd = valueOfTime(moveTrackClip.clip.end);
+          var moveDur = moveEnd - moveStart;
           var moveIn = valueOfTime(moveTrackClip.clip.inPoint);
           var moveOut = valueOfTime(moveTrackClip.clip.outPoint);
           var moveDisabled = false;
@@ -1800,13 +1801,22 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
               placed.inPoint = secondsToTime(moveIn);
             }
           } catch (eTrim) {}
+          // In/out alone do not shrink the timeline clip (trim_clip and
+          // replace_clip both write end for the same reason). Set the
+          // duration relative to the PARKED start -- moveEnd is an absolute
+          // time on the original timeline and would be wrong here.
+          try { placed.end = secondsToTime(valueOfTime(placed.start) + moveDur); } catch (eEnd) {}
           try { placed.disabled = moveDisabled; } catch (eEn) {}
-          var trimRestored = Math.abs(valueOfTime(placed.inPoint) - moveIn) < 0.05 && Math.abs(valueOfTime(placed.outPoint) - moveOut) < 0.05;
+          // Refuse to slide unless in, out AND duration all took: a full-length
+          // item slid into the span is exactly the neighbour overwrite the
+          // occupancy guard cannot see, since it only measured [start, end).
+          var trimRestored = Math.abs(valueOfTime(placed.inPoint) - moveIn) < 0.05 && Math.abs(valueOfTime(placed.outPoint) - moveOut) < 0.05 && Math.abs(valueOfTime(placed.end) - valueOfTime(placed.start) - moveDur) < 0.05;
           if (!trimRestored) {
             var placedIn = valueOfTime(placed.inPoint);
             var placedOut = valueOfTime(placed.outPoint);
+            var placedDur = valueOfTime(placed.end) - valueOfTime(placed.start);
             moveCleanupParked(placed);
-            return fail("Source in/out could not be restored on the target track; the source clip was left in place.", { requestedIn: moveIn, requestedOut: moveOut, actualIn: placedIn, actualOut: placedOut });
+            return fail("Source trim could not be restored on the target track; the source clip was left in place.", { requestedIn: moveIn, requestedOut: moveOut, requestedDuration: moveDur, actualIn: placedIn, actualOut: placedOut, actualDuration: placedDur });
           }
           placed.move(moveStart - valueOfTime(placed.start));
           if (Math.abs(valueOfTime(placed.start) - moveStart) > 0.05) {
