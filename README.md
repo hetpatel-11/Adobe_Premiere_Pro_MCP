@@ -13,13 +13,15 @@
 [![CEP](https://img.shields.io/badge/CEP-production-2ea44f.svg)](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)
 [![UXP](https://img.shields.io/badge/UXP-experimental-f2c14e.svg)](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)
 
+**Website:** [premiere-mcp.com](https://premiere-mcp.com/)
+
 </div>
 
 **Languages:** English | [日本語](translations/README.ja.md) | [Tiếng Việt](translations/README.vi.md) | [简体中文](translations/README.zh-CN.md) | [繁體中文](translations/README.zh-TW.md) | [한국어](translations/README.ko.md) | [Deutsch](translations/README.de.md) | [Español](translations/README.es.md) | [Français](translations/README.fr.md) | [Italiano](translations/README.it.md) | [Dansk](translations/README.da.md) | [Polski](translations/README.pl.md) | [Русский](translations/README.ru.md) | [Bosanski](translations/README.bs.md) | [العربية](translations/README.ar.md) | [Norsk](translations/README.no.md) | [Português (Brasil)](translations/README.pt-BR.md) | [ไทย](translations/README.th.md) | [Türkçe](translations/README.tr.md) | [ភាសាខ្មែរ](translations/README.km.md)
 
 **Start here:** install the local bridge, open it in Premiere, then run `verify_premiere_connection` before editing. MCP hosts see a small always-on set; call `search_tools` then `invoke_tool` for the rest.
 
-[Install](#install) | [Codex plugin](#codex-plugin) | [Claude Code plugin](#claude-code-plugin) | [Verify](#verify-the-install) | [Telemetry](#telemetry) | [Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
+[Website](https://premiere-mcp.com/) | [Install](#install) | [Codex plugin](#codex-plugin) | [Claude Code plugin](#claude-code-plugin) | [Verify](#verify-the-install) | [Telemetry](#telemetry) | [Privacy Policy](PRIVACY.md) | [Terms of Service](TERMS.md) | [Security](SECURITY.md)
 
 ## Install
 
