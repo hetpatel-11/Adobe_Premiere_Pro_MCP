@@ -161,7 +161,7 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
           return false;
         }
 
-        function childBin(parent, wanted) {
+        function __binByName(parent, wanted) {
           // children[name] does not resolve: Premiere's ProjectItemCollection is
           // index-only, so a string key returns undefined even when a child of that
           // name exists. Verified against 26.0.2. Walk and compare instead.
@@ -174,7 +174,7 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
         }
 
         function findBinDeep(parent, wanted) {
-          var direct = childBin(parent, wanted);
+          var direct = __binByName(parent, wanted);
           if (direct) return direct;
           if (!parent || !parent.children) return null;
           for (var i = 0; i < parent.children.numItems; i++) {
@@ -195,7 +195,7 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
           for (var i = 0; i < parts.length; i++) {
             var part = parts[i];
             if (part === "") continue;
-            node = (i === 0) ? findBinDeep(app.project.rootItem, part) : childBin(node, part);
+            node = (i === 0) ? findBinDeep(app.project.rootItem, part) : __binByName(node, part);
             if (!node) return null;
           }
           return node;
@@ -241,7 +241,7 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
 
           for (var k = 0; k < subdirs.length; k++) {
             var sub = subdirs[k];
-            var subBin = childBin(targetBin, sub.name);
+            var subBin = __binByName(targetBin, sub.name);
             if (!subBin) subBin = targetBin.createBin(sub.name);
             importDir(sub, subBin);
           }
@@ -262,7 +262,7 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
         if (${recursive}) {
           // Mirror the source folder itself, the way dragging a folder into the project
           // panel does, so two days of footage do not merge into one flat bin.
-          rootBin = childBin(targetBin, folder.name);
+          rootBin = __binByName(targetBin, folder.name);
           if (!rootBin) rootBin = targetBin.createBin(folder.name);
         }
 
