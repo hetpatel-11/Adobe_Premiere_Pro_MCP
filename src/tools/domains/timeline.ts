@@ -45,9 +45,11 @@ export const timelineTools: ToolModule[] = [
     inputSchema: z.object({
       clipId: z.string().describe('The ID of the clip on the timeline to remove'),
       sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
-      deleteMode: z.enum(['ripple', 'lift']).optional().describe('Whether to ripple delete (close gap) or lift (leave gap)')
+      deleteMode: z.enum(['ripple', 'lift']).optional().describe('Whether to ripple delete (close gap) or lift (leave gap)'),
+      includeLinked: z.boolean().optional().describe('Ripple mode only: also remove the clip linked audio/video partners (default true)'),
+      rippleScope: z.enum(['all', 'affected']).optional().describe('Ripple mode only: "all" shifts every track like Premiere sync lock (tracks with a clip spanning the gap are skipped and reported); "affected" shifts only the tracks the removed clips were on. Default "all".')
     }),
-    run: (ctx, args) => removeFromTimeline(ctx, args.clipId, args.sequenceId, args.deleteMode),
+    run: (ctx, args) => removeFromTimeline(ctx, args.clipId, args.sequenceId, args.deleteMode, args.includeLinked, args.rippleScope),
   },
   {
     name: 'move_clip',
@@ -298,7 +300,7 @@ export async function addToTimeline(ctx: ToolContext, sequenceId: string, projec
   }
 }
 
-async function removeFromTimeline(ctx: ToolContext, clipId: string, sequenceId?: string, deleteMode = 'ripple'): Promise<any> {
+async function removeFromTimeline(ctx: ToolContext, clipId: string, sequenceId?: string, deleteMode = 'ripple', includeLinked = true, rippleScope: 'all' | 'affected' = 'all'): Promise<any> {
   const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)}, ${sequenceId ? JSON.stringify(sequenceId) : 'null'});
@@ -306,15 +308,23 @@ async function removeFromTimeline(ctx: ToolContext, clipId: string, sequenceId?:
         var clip = info.clip;
         var clipName = clip.name;
         var isRipple = ${JSON.stringify(deleteMode)} === "ripple";
-        clip.remove(isRipple, true);
+        var ripple = null;
+        if (isRipple) {
+          ripple = __rippleRemoveClip(info, ${includeLinked !== false}, ${JSON.stringify(rippleScope)});
+        } else {
+          clip.remove(false, true);
+        }
         return JSON.stringify({
-          success: true,
-          message: "Clip removed from timeline",
+          success: !ripple || ripple.failedMoves.length === 0,
+          message: ripple
+            ? (ripple.failedMoves.length ? "Clip removed but some later clips could not be shifted" : "Clip ripple-deleted, gap closed")
+            : "Clip removed from timeline",
           clipId: ${JSON.stringify(clipId)},
           clipName: clipName,
           sequenceId: info.sequenceId,
           sequenceName: info.sequenceName,
-          deleteMode: ${JSON.stringify(deleteMode)}
+          deleteMode: ${JSON.stringify(deleteMode)},
+          ripple: ripple
         });
       } catch (e) {
         return JSON.stringify({

@@ -788,6 +788,139 @@ function __findQeNamed(kind, name) {
   }
   return null;
 }
+function __shiftClipTicks(clip, deltaTicks) {
+  // Shift by an exact tick count. A float-seconds move can land one tick off on
+  // non-integer frame durations and leave hairline gaps, so try a Time first and
+  // correct with seconds only if Premiere did not land exactly where asked.
+  var want = Number(clip.start.ticks) + deltaTicks;
+  try {
+    var t = new Time();
+    t.ticks = String(deltaTicks);
+    clip.move(t);
+  } catch (eTime) {}
+  var now = Number(clip.start.ticks);
+  if (now !== want) {
+    try { clip.move((want - now) / 254016000000); } catch (eSec) {}
+    now = Number(clip.start.ticks);
+  }
+  return Math.abs(now - want) < 2;
+}
+function __rippleRemoveClip(info, includeLinked, scope) {
+  // TrackItem.remove(true, ...) ignores its ripple flag in Premiere 26.x: the
+  // clip is lifted, the gap stays and the linked audio/video is left behind.
+  // Do it by hand: lift the clip (and its linked partners), then pull every
+  // later clip left by the gap length, track by track.
+  var seq = info.sequence;
+  var clip = info.clip;
+  var targets = [{ clip: clip, trackType: info.trackType, trackIndex: info.trackIndex }];
+  function locate(item) {
+    var kinds = [["video", seq.videoTracks], ["audio", seq.audioTracks]];
+    for (var k = 0; k < kinds.length; k++) {
+      for (var t = 0; t < kinds[k][1].numTracks; t++) {
+        var tr = kinds[k][1][t];
+        for (var c = 0; c < tr.clips.numItems; c++) {
+          if (__idsMatch(tr.clips[c].nodeId, item.nodeId)) return { clip: tr.clips[c], trackType: kinds[k][0], trackIndex: t };
+        }
+      }
+    }
+    return null;
+  }
+  function alreadyTargeted(item) {
+    for (var i = 0; i < targets.length; i++) if (__idsMatch(targets[i].clip.nodeId, item.nodeId)) return true;
+    return false;
+  }
+  if (includeLinked !== false) {
+    var linked = null;
+    try { linked = clip.getLinkedItems ? clip.getLinkedItems() : null; } catch (eLinked) {}
+    if (linked && linked.numItems) {
+      for (var li = 0; li < linked.numItems; li++) {
+        if (alreadyTargeted(linked[li])) continue;
+        var found = locate(linked[li]);
+        if (found) targets.push(found);
+      }
+    } else {
+      // No getLinkedItems: treat same-source clips with identical extents on the
+      // other track type as linked partners.
+      var otherType = info.trackType === "video" ? "audio" : "video";
+      var otherTracks = otherType === "video" ? seq.videoTracks : seq.audioTracks;
+      var srcId = null;
+      try { srcId = clip.projectItem ? clip.projectItem.nodeId : null; } catch (eSrc) {}
+      if (srcId) {
+        for (var ot = 0; ot < otherTracks.numTracks; ot++) {
+          var otr = otherTracks[ot];
+          for (var oc = 0; oc < otr.clips.numItems; oc++) {
+            var cand = otr.clips[oc];
+            try {
+              if (cand.projectItem && __idsMatch(cand.projectItem.nodeId, srcId) &&
+                  cand.start.ticks === clip.start.ticks && cand.end.ticks === clip.end.ticks) {
+                targets.push({ clip: cand, trackType: otherType, trackIndex: ot });
+              }
+            } catch (eCand) {}
+          }
+        }
+      }
+    }
+  }
+  var gapStart = Number(clip.start.ticks);
+  var gapEnd = Number(clip.end.ticks);
+  var removed = [];
+  var touched = {};
+  for (var r = 0; r < targets.length; r++) {
+    var s = Number(targets[r].clip.start.ticks);
+    var e = Number(targets[r].clip.end.ticks);
+    if (s < gapStart) gapStart = s;
+    if (e > gapEnd) gapEnd = e;
+    touched[targets[r].trackType + ":" + targets[r].trackIndex] = true;
+    removed.push({ id: targets[r].clip.nodeId, name: targets[r].clip.name, trackType: targets[r].trackType, trackIndex: targets[r].trackIndex });
+  }
+  for (var x = 0; x < targets.length; x++) targets[x].clip.remove(false, true);
+  var gapTicks = gapEnd - gapStart;
+  var shiftedTracks = [];
+  var skippedTracks = [];
+  var movedClips = 0;
+  var failedMoves = [];
+  var groups = [["video", seq.videoTracks], ["audio", seq.audioTracks]];
+  for (var g = 0; g < groups.length; g++) {
+    for (var ti = 0; ti < groups[g][1].numTracks; ti++) {
+      var track = groups[g][1][ti];
+      var key = groups[g][0] + ":" + ti;
+      if (scope === "affected" && !touched[key]) continue;
+      var later = [];
+      var blocked = false;
+      for (var ci = 0; ci < track.clips.numItems; ci++) {
+        var tc = track.clips[ci];
+        var cs = Number(tc.start.ticks);
+        var ce = Number(tc.end.ticks);
+        if (cs >= gapEnd - 1) later.push(tc);
+        else if (ce > gapStart + 1) blocked = true;
+      }
+      if (!later.length) continue;
+      var locked = false;
+      try { locked = track.isLocked && track.isLocked(); } catch (eLock) {}
+      if (blocked || locked) {
+        skippedTracks.push({ trackType: groups[g][0], trackIndex: ti, reason: locked ? "track is locked" : "a clip on this track spans the removed range" });
+        continue;
+      }
+      later.sort(function(a, b) { return Number(a.start.ticks) - Number(b.start.ticks); });
+      for (var m = 0; m < later.length; m++) {
+        if (__shiftClipTicks(later[m], -gapTicks)) movedClips++;
+        else failedMoves.push({ id: later[m].nodeId, trackType: groups[g][0], trackIndex: ti });
+      }
+      shiftedTracks.push({ trackType: groups[g][0], trackIndex: ti, clips: later.length });
+    }
+  }
+  return {
+    removed: removed,
+    gapStart: gapStart / 254016000000,
+    gapEnd: gapEnd / 254016000000,
+    gapSeconds: gapTicks / 254016000000,
+    scope: scope === "affected" ? "affected" : "all",
+    shiftedTracks: shiftedTracks,
+    skippedTracks: skippedTracks,
+    movedClips: movedClips,
+    failedMoves: failedMoves
+  };
+}
 `;
 
 /** Function names the prelude actually defines. Tests must derive the host-global allowlist from this, not a parallel handwritten list. */
