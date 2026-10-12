@@ -4,6 +4,22 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-09-15
+
+- A command that runs longer than the 2.5s heartbeat window no longer returns
+  `bridge_unavailable`. The panel writes its heartbeat from the thread blocked
+  inside `evalScript`, so long batches silenced it and the server gave up on a
+  command Premiere went on to apply; a retry then stacked a second script on the
+  first and wedged the panel. A heartbeat seen live after the command was
+  published and then gone quiet now means the panel is busy, and the server
+  waits for the real timeout. A heartbeat that was never live still fails fast.
+- Without `PREMIERE_TEMP_DIR` the server now uses the same directory as the CEP
+  panel: the `tempDirectory` saved in `~/.premiere-mcp-bridge/config.json`, else
+  `%TEMP%\premiere-mcp-bridge` (`/tmp/premiere-mcp-bridge` on macOS). It used to
+  fall back to a per-session `premiere-bridge-<uuid>` directory the panel never
+  polls, so the Claude Code plugin, which sets no env, reported
+  `bridge_unavailable` with the panel open and started.
+
 ## [1.2.8] - 2026-09-02
 
 - `move_clip_to_track` parks past the last clip on the destination, restores

@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'fs';
 import { extname, join, posix as pathPosix, win32 as pathWin32 } from 'path';
-import { createSecureTempDir, validateFilePath } from '../utils/security.js';
+import { resolveBridgeTempDir, validateFilePath } from '../utils/security.js';
 import type { EnsureHostOptions, EnsureHostResult, PremiereProTransport } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -856,21 +856,16 @@ export class PremiereProBridge implements PremiereProTransport {
   private logger: Logger;
   private communicationMethod: 'uxp' | 'extendscript' | 'file';
   private tempDir: string;
-  private readonly usesExternalTempDir: boolean;
   private uxpProcess?: ChildProcess;
   private isInitialized = false;
-  private sessionId: string;
   private premiereInstallPath: string | null = null;
   private premiereLaunchPath: string | null = null;
 
   constructor() {
     this.logger = new Logger('PremiereProBridge');
     this.communicationMethod = 'file'; // Default to file-based communication
-    this.sessionId = randomUUID();
-    // Use PREMIERE_TEMP_DIR if set (same path as UXP plugin "Temp Directory"), else session-specific
-    const envDir = process.env.PREMIERE_TEMP_DIR;
-    this.usesExternalTempDir = Boolean(envDir);
-    this.tempDir = envDir ? envDir.replace(/\/$/, '') : createSecureTempDir(this.sessionId);
+    // Same directory the CEP panel polls, so the two meet without extra config.
+    this.tempDir = resolveBridgeTempDir();
   }
 
   async initialize(): Promise<void> {
@@ -1236,6 +1231,11 @@ export class PremiereProBridge implements PremiereProTransport {
     let lastParseError: Error | null = null;
     let lastRawResponse = '';
     let parseAttempts = 0;
+    // The panel writes its heartbeat from the same JS thread that waits on evalScript, so
+    // the heartbeat stops while Premiere runs a long script. A heartbeat that was live
+    // after this command was published and then went quiet means the panel took the
+    // command and is busy with it, not that it went away.
+    let sawLiveHeartbeat = false;
 
     while (Date.now() - startTime < timeout) {
       let raw: string | undefined;
@@ -1261,14 +1261,18 @@ export class PremiereProBridge implements PremiereProTransport {
       // missing or stale after a couple of seconds, Premiere is not listening —
       // waiting the remaining minute just makes the caller sit on a dead socket.
       // A fresh heartbeat with started:true means the panel has the command and
-      // we should wait out the real timeout (evalScript can be slow).
+      // we should wait out the real timeout (evalScript can be slow). Once seen, a
+      // stale heartbeat is the panel blocked inside evalScript: failing then reported
+      // a command that was still running, and a retry stacked a second script on it.
       if (Date.now() - startTime >= BRIDGE_PANEL_ABSENT_MS) {
         const beat = await this.readHeartbeat();
-        if (!beat) {
+        if (beat) {
+          if (!beat.started) {
+            throw new Error(BRIDGE_NOT_STARTED);
+          }
+          sawLiveHeartbeat = true;
+        } else if (!sawLiveHeartbeat) {
           throw new Error(BRIDGE_PANEL_NOT_RUNNING);
-        }
-        if (!beat.started) {
-          throw new Error(BRIDGE_NOT_STARTED);
         }
       }
 
@@ -2210,17 +2214,8 @@ export class PremiereProBridge implements PremiereProTransport {
     if (this.uxpProcess) {
       this.uxpProcess.kill();
     }
-    
-    // Only remove temp dirs created by this server. The shared bridge directory is
-    // configured externally and should persist across restarts.
-    try {
-      if (!this.usesExternalTempDir) {
-        await fs.rm(this.tempDir, { recursive: true });
-      }
-    } catch (error) {
-      this.logger.warn('Failed to clean up temp directory:', error);
-    }
-    
+
+    // The temp directory is shared with the CEP panel and persists across restarts.
     this.logger.info('Adobe Premiere Pro bridge cleaned up');
   }
 } 

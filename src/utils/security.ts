@@ -19,7 +19,9 @@
  * where the response is built.
  */
 
-import { normalize, isAbsolute, resolve } from 'path';
+import { readFileSync } from 'fs';
+import { homedir } from 'os';
+import { normalize, isAbsolute, join, resolve } from 'path';
 
 /**
  * Validates file paths to prevent path traversal attacks
@@ -78,15 +80,31 @@ export function validateFilePath(filePath: string, allowedDirs?: string[]): { va
 }
 
 /**
- * Creates a safe temp directory with proper permissions
+ * Resolves the directory shared with the CEP panel, mirroring the panel's own
+ * lookup in cep-plugin/bridge-cep.js: PREMIERE_TEMP_DIR, then the directory the
+ * panel saved to ~/.premiere-mcp-bridge/config.json, then its platform default.
+ *
+ * This used to fall back to a per-session premiere-bridge-<uuid> directory, which
+ * the panel never polls, so any client that did not set PREMIERE_TEMP_DIR (the
+ * Claude Code plugin among them) reported bridge_unavailable with the panel open.
  */
-export function createSecureTempDir(sessionId: string): string {
+export function resolveBridgeTempDir(
+  env: NodeJS.ProcessEnv = process.env,
+  homedirPath: string = homedir(),
+): string {
+  if (env.PREMIERE_TEMP_DIR) return env.PREMIERE_TEMP_DIR.replace(/[\\/]+$/, '');
+
+  try {
+    const config = JSON.parse(readFileSync(join(homedirPath, '.premiere-mcp-bridge', 'config.json'), 'utf8'));
+    if (typeof config?.tempDirectory === 'string' && config.tempDirectory.trim()) {
+      return config.tempDirectory.trim().replace(/[\\/]+$/, '');
+    }
+  } catch {
+    // No saved panel config yet; use the panel's default below.
+  }
+
   const tempBase = process.platform === 'win32'
-    ? process.env.TEMP || 'C:\\Temp'
+    ? env.TEMP || env.TMP || 'C:\\Temp'
     : '/tmp';
-
-  // Use session-specific directory
-  const secureDir = normalize(`${tempBase}/premiere-bridge-${sessionId}`);
-
-  return secureDir;
+  return join(tempBase, 'premiere-mcp-bridge');
 }

@@ -204,5 +204,44 @@ describe('bridge file-queue protocol', () => {
       await expect(bridge.executeScript('return 1;', 700)).rejects.toThrow(/timeout/i);
       expect(Date.now() - started).toBeGreaterThanOrEqual(700);
     });
+
+    it('keeps waiting when the heartbeat goes quiet while the panel runs the command', async () => {
+      // The panel writes its heartbeat from the thread that is blocked inside evalScript,
+      // so a long batch silences it. Reporting "not running" there returned an error for a
+      // command Premiere went on to apply, and the retry stacked a second script on it.
+      const started = Date.now();
+      let beats = 0;
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) {
+          beats++;
+          const t = beats === 1 ? Date.now() : started - 60000;
+          return JSON.stringify({ t, started: true });
+        }
+        if (String(file) === responsePath && Date.now() - started >= 3000) {
+          return JSON.stringify({ result: { placed: 21 } });
+        }
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+
+      await expect(bridge.executeScript('return 1;', 20000)).resolves.toEqual({ placed: 21 });
+      expect(beats).toBeGreaterThan(1);
+    }, 10000);
+
+    it('still fails fast when the heartbeat was already stale before the command', async () => {
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) {
+          return JSON.stringify({ t: Date.now() - 60000, started: true });
+        }
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+      const started = Date.now();
+
+      await expect(bridge.executeScript('return 1;', 20000)).rejects.toThrow(
+        /MCP Bridge is not running/,
+      );
+      expect(Date.now() - started).toBeLessThan(5000);
+    });
   });
 });

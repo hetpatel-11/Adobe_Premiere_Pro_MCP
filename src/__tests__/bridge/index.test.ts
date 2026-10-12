@@ -355,7 +355,11 @@ describe('PremiereProBridge', () => {
     expect(commandPayload.script).not.toContain('success: true, placed: placed, total: specs.length');
   });
 
-  it('does not delete externally managed temp directories during cleanup', async () => {
+  it.each([
+    ['configured', true],
+    ['defaulted', false],
+  ])('does not delete the %s shared temp directory during cleanup', async (_label, configured) => {
+    if (!configured) delete process.env.PREMIERE_TEMP_DIR;
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
     mockFs.access.mockRejectedValue(new Error('Not found'));
@@ -366,19 +370,15 @@ describe('PremiereProBridge', () => {
     expect(mockFs.rm).not.toHaveBeenCalled();
   });
 
-  it('deletes generated temp directories when no external temp dir is configured', async () => {
+  it('defaults to the directory the CEP panel polls, not a per-session one', async () => {
     delete process.env.PREMIERE_TEMP_DIR;
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
     mockFs.access.mockRejectedValue(new Error('Not found'));
-    mockFs.rm.mockResolvedValue(undefined);
 
     await bridge.initialize();
-    await bridge.cleanup();
 
-    const generatedTempDir = process.platform === 'win32'
-      ? path.join(process.env.TEMP || 'C:\\Temp', 'premiere-bridge-test-uuid-1234')
-      : '/tmp/premiere-bridge-test-uuid-1234';
-    expect(mockFs.rm).toHaveBeenCalledWith(generatedTempDir, { recursive: true });
+    const mkdirPath = String(mockFs.mkdir.mock.calls[0][0]);
+    expect(path.basename(mkdirPath)).toBe('premiere-mcp-bridge');
   });
 });
