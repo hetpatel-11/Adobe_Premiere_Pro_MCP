@@ -2128,8 +2128,24 @@ export class PremiereProBridge implements PremiereProTransport {
       const applications = '/Applications';
       try {
         const entries = await fs.readdir(applications);
-        const found = entries.some((entry) => /^Adobe Media Encoder(?: \d+)?\.app$/i.test(entry));
-        return { available: found, searchedPaths: [applications] };
+        const appPattern = /^Adobe Media Encoder(?: \d+)?\.app$/i;
+        if (entries.some((entry) => appPattern.test(entry))) {
+          return { available: true, searchedPaths: [applications] };
+        }
+        // Creative Cloud installs one level down: /Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app
+        const searchedPaths = [applications];
+        for (const folder of entries.filter((entry) => /^Adobe Media Encoder(?: \d+)?$/i.test(entry))) {
+          const folderPath = join(applications, folder);
+          searchedPaths.push(folderPath);
+          try {
+            if ((await fs.readdir(folderPath)).some((entry) => appPattern.test(entry))) {
+              return { available: true, searchedPaths };
+            }
+          } catch {
+            // Not a readable directory; keep looking.
+          }
+        }
+        return { available: false, searchedPaths };
       } catch {
         return { available: true, searchedPaths: [applications] };
       }

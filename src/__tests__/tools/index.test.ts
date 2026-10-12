@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 import { z } from 'zod';
 import { spawn } from 'child_process';
 import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PremiereProTools, evaluateTextInjectionResult } from '../../tools/index.js';
@@ -15,6 +16,10 @@ import { executeExpandedTool, expandedToolNames, unimplementedExpandedToolNames 
 
 jest.mock('../../bridge/index.js');
 jest.mock('child_process');
+jest.mock('node:os', () => {
+  const actual = jest.requireActual('node:os');
+  return { ...actual, homedir: jest.fn(actual.homedir) };
+});
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
@@ -2247,6 +2252,28 @@ describe('PremiereProTools', () => {
           supported: false,
         },
       });
+    });
+
+    // Presets saved from AME land under ~/Documents/Adobe/Adobe Media Encoder/<version>/Presets.
+    it('discovers user presets from the Documents AME folder by default', async () => {
+      const home = await fs.mkdtemp(join(tmpdir(), 'premiere-home-test-'));
+      const presetDir = join(home, 'Documents', 'Adobe', 'Adobe Media Encoder', '26.0', 'Presets');
+      await fs.mkdir(presetDir, { recursive: true });
+      const presetPath = join(presetDir, 'CR - SAS mp4.epr');
+      await fs.writeFile(presetPath, '<Preset><PresetName>CR - SAS mp4</PresetName></Preset>', 'utf8');
+
+      const homedir = jest.mocked(os.homedir);
+      homedir.mockReturnValue(home);
+      try {
+        const result = await tools.executeTool('get_encoder_presets', {});
+
+        expect(result.searchedDirectories).toContain(presetDir);
+        expect(result.presets).toEqual([
+          expect.objectContaining({ name: 'CR - SAS mp4', path: presetPath, ameVersion: '26.0' }),
+        ]);
+      } finally {
+        homedir.mockImplementation(jest.requireActual('node:os').homedir);
+      }
     });
 
     it('returns an empty list for missing preset directories', async () => {

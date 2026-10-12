@@ -165,6 +165,56 @@ describe('PremiereProBridge', () => {
     }
   });
 
+  // The Creative Cloud installer puts the app one level down:
+  // /Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app
+  it('finds Media Encoder inside its versioned Creative Cloud install folder', async () => {
+    const bridge = new PremiereProBridge();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: true }));
+    mockFs.unlink.mockResolvedValue(undefined);
+    mockFs.readdir.mockImplementation((async (dir: string) => {
+      if (dir === '/Applications') return ['Adobe Media Encoder 2026', 'Adobe Premiere Pro 2026'];
+      if (dir === path.join('/Applications', 'Adobe Media Encoder 2026')) return ['Adobe Media Encoder 2026.app', 'Uninstall'];
+      return [];
+    }) as any);
+
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      await bridge.initialize();
+      const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr');
+
+      expect(result.code).not.toBe('MEDIA_ENCODER_NOT_INSTALLED');
+      expect(mockFs.writeFile).toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  });
+
+  it('treats a versioned install folder without the app as not installed', async () => {
+    const bridge = new PremiereProBridge();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.readdir.mockImplementation((async (dir: string) => {
+      if (dir === '/Applications') return ['Adobe Media Encoder 2026'];
+      return ['Uninstall'];
+    }) as any);
+
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      await bridge.initialize();
+      const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr');
+
+      expect(result.code).toBe('MEDIA_ENCODER_NOT_INSTALLED');
+      expect(mockFs.writeFile).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  });
+
   it('blocks modal-prone unsupported subtitle imports before writing a command', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);
