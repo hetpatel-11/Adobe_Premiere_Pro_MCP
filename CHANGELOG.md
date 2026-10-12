@@ -4,6 +4,16 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-10-12
+
+- `export_sequence` finds Adobe Media Encoder inside the Creative Cloud folder
+  (`/Applications/Adobe Media Encoder 2026/Adobe Media Encoder 2026.app`). The
+  1.2.8 check only matched an `.app` directly under `/Applications`, so a normal
+  macOS install always returned `MEDIA_ENCODER_NOT_INSTALLED`.
+- `get_encoder_presets` also looks in `~/Documents/Adobe/Adobe Media Encoder/<version>/Presets`,
+  which is where Media Encoder saves user presets. The Application Support path
+  is still searched.
+
 ## [1.2.8] - 2026-09-02
 
 - `move_clip_to_track` parks past the last clip on the destination, restores
