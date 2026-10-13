@@ -35,9 +35,13 @@ export const exportTools: ToolModule[] = [
       sequenceId: z.string().describe('The ID of the sequence'),
       time: z.number().describe('The time in seconds to export the frame from'),
       outputPath: z.string().describe('The absolute path where the image file will be saved'),
-      format: z.enum(['png', 'jpg', 'tiff']).optional().describe('The image format')
+      format: z.enum(['png', 'jpg', 'tiff']).optional().describe('The image format'),
+      bitDepth: z.union([z.literal(8), z.literal(16)]).optional().describe('PNG bit depth. 16 renders through Premiere\'s exporter instead of the 8-bit frame grab. Defaults to 8.'),
+      colorSpace: z.enum(['rec709', 'rec2020', 'hlg', 'pq']).optional().describe('Output color space for the PNG. hlg/pq write a real HDR still (16-bit, BT.2020, HLG or PQ transfer) instead of the SDR conversion the 8-bit frame grab produces from an HDR sequence. Defaults to rec709.')
     }),
-    run: (ctx, args) => exportFrame(ctx, args.sequenceId, args.time, args.outputPath, args.format),
+    run: (ctx, args) => (args.bitDepth === 16 || (args.colorSpace !== undefined && args.colorSpace !== 'rec709'))
+      ? exportFrameRendered(ctx, args.sequenceId, args.time, args.outputPath, args.format, args.bitDepth ?? 16, args.colorSpace ?? 'rec709')
+      : exportFrame(ctx, args.sequenceId, args.time, args.outputPath, args.format),
   },
   {
     name: 'add_to_render_queue',
@@ -463,6 +467,121 @@ async function exportFrame(ctx: ToolContext, sequenceId: string, time: number, o
           outputPath: actualPath,
           requestedPath: requestedPath,
           format: ${JSON.stringify(format)}
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+  return await ctx.bridge.executeScript(script);
+}
+
+// ADBEExportColorSpace values, read from Premiere's own Match Source presets (26.x):
+// "03 - Match Source - 2020/HLG/PQ.epr" carry 1/2/3; Rec.709 presets leave it at 0.
+const EXPORT_COLOR_SPACE: Record<string, number> = { rec709: 0, rec2020: 1, hlg: 2, pq: 3 };
+
+/**
+ * Frame export through Premiere's exporter rather than the QE frame grab.
+ *
+ * QE exportFramePNG always writes an 8-bit Rec.709 conversion, so on an HLG or
+ * PQ sequence it cannot report HDR levels: highlights above reference white are
+ * tone-mapped away. Here the installed "PNG Sequence (Match Source)" system
+ * preset is copied with 16-bit depth, deep-color rendering and the requested
+ * color space, and the sequence is exported for one frame of in/out range.
+ * The sequence's own in/out points are restored afterwards.
+ */
+async function exportFrameRendered(ctx: ToolContext, sequenceId: string, time: number, outputPath: string,
+  format = 'png', bitDepth = 16, colorSpace = 'rec709'): Promise<any> {
+  if (format !== 'png') {
+    return { success: false, error: `bitDepth/colorSpace frame export supports png only, not ${format}` };
+  }
+  const colorSpaceValue = EXPORT_COLOR_SPACE[colorSpace];
+  const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(sequenceId)});
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: " + ${JSON.stringify(sequenceId)} });
+
+        var appPath = String(app.path).replace(/[\\\\\\/]+$/, "");
+        var presetRelative = "MediaIO/systempresets/3F3F3F3F_504E4720/PNG Sequence (Match Source).epr";
+        var systemPreset = null;
+        var presetCandidates = [appPath + "/Contents/" + presetRelative, appPath + "/" + presetRelative];
+        for (var c = 0; c < presetCandidates.length; c++) {
+          var candidate = new File(presetCandidates[c]);
+          if (candidate.exists) { systemPreset = candidate; break; }
+        }
+        if (!systemPreset) {
+          return JSON.stringify({ success: false, error: "PNG system preset not found under " + appPath });
+        }
+        systemPreset.encoding = "UTF-8";
+        if (!systemPreset.open("r")) return JSON.stringify({ success: false, error: "Could not read " + systemPreset.fsName });
+        var presetXml = systemPreset.read();
+        systemPreset.close();
+
+        // Give one ExporterParam a value, replacing any it already has.
+        function setParam(xml, identifier, value) {
+          var marker = "<ParamIdentifier>" + identifier + "</ParamIdentifier>";
+          var at = xml.indexOf(marker);
+          if (at < 0) return null;
+          var open = xml.lastIndexOf("<ExporterParam ", at);
+          var openEnd = xml.indexOf(">", open) + 1;
+          var body = xml.substring(openEnd, at).replace(/\\s*<ParamValue>[^<]*<\\/ParamValue>/, "");
+          return xml.substring(0, openEnd) + "\\n\\t\\t<ParamValue>" + value + "</ParamValue>" + body + xml.substring(at);
+        }
+        var settings = [["ADBERenderDeepColor", "true"], ["ADBEExportColorSpace", "${colorSpaceValue}"], ["ADBEVideoBitDepth", "${bitDepth}"]];
+        for (var s = 0; s < settings.length; s++) {
+          var patched = setParam(presetXml, settings[s][0], settings[s][1]);
+          if (patched === null) return JSON.stringify({ success: false, error: "PNG preset has no " + settings[s][0] + " parameter" });
+          presetXml = patched;
+        }
+        var preset = new File(Folder.temp.fsName + "/premiere-mcp-frame-" + new Date().getTime() + ".epr");
+        preset.encoding = "UTF-8";
+        preset.open("w"); preset.write(presetXml); preset.close();
+
+        // Premiere names still-sequence output "<stem><frame number>.png", so
+        // export next to the target under a unique stem and move the result.
+        var requestedPath = ${JSON.stringify(outputPath)};
+        var target = new File(requestedPath);
+        var stem = target.parent.fsName + "/premiere-mcp-frame-" + new Date().getTime();
+
+        var frameTicks = Number(sequence.timebase);
+        var start = new Time(); start.seconds = ${time};
+        var startTicks = Math.floor(Number(start.ticks) / frameTicks) * frameTicks;
+        var savedIn = sequence.getInPointAsTime().ticks;
+        var savedOut = sequence.getOutPointAsTime().ticks;
+        var exportResult;
+        try {
+          sequence.setInPoint(String(startTicks));
+          sequence.setOutPoint(String(startTicks + frameTicks));
+          exportResult = sequence.exportAsMediaDirect(stem + ".png", preset.fsName, 1);
+        } finally {
+          sequence.setInPoint(savedIn);
+          sequence.setOutPoint(savedOut);
+          preset.remove();
+        }
+
+        var written = null;
+        var siblings = target.parent.getFiles(function (f) {
+          return f instanceof File && f.name.indexOf(new File(stem).name) === 0 && /\\.png$/i.test(f.name);
+        });
+        if (siblings.length) written = siblings[0];
+        if (!written) {
+          return JSON.stringify({ success: false, error: "Export returned '" + exportResult + "' but wrote no PNG" });
+        }
+        if (target.exists) target.remove();
+        if (!written.rename(target.name)) {
+          return JSON.stringify({ success: false, error: "Rendered " + written.fsName + " but could not rename it to " + requestedPath });
+        }
+
+        return JSON.stringify({
+          success: true,
+          message: "Frame rendered through the exporter",
+          sequenceId: ${JSON.stringify(sequenceId)},
+          sequenceName: sequence.name,
+          time: startTicks / 254016000000,
+          outputPath: requestedPath,
+          format: "png",
+          bitDepth: ${bitDepth},
+          colorSpace: ${JSON.stringify(colorSpace)}
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
