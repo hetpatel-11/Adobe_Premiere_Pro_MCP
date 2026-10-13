@@ -249,6 +249,7 @@ All `283` catalog tools have an implementation. `tools/list` advertises a small 
 | `get_timeline_summary` / `get_timeline_gaps` / `get_used_media_report` | Summarize the edit, detect gaps, and report media in use. |
 | `get_offline_media` / `check_offline_media` / `get_unused_media` / `get_duplicate_media` | Find missing, unused, or duplicated media before an edit or export. |
 | `get_clip_properties` / `get_clip_speed` / `get_clip_at_position` / `get_clip_at_playhead` | Inspect clip framing, speed, and timeline position. |
+| `write_speed_ramps` | Write eased Time Remapping speed ramps into a copy of a saved .prproj, rippling later clips and transitions on the track. Close the original and open the copy. Time Remapping has no scripting API, so this edits the project file. |
 | `get_premiere_state` / `get_version_info` / `ping` | Read a broad host state, Premiere version, or bridge health. |
 
 ### Projects, media, and bins

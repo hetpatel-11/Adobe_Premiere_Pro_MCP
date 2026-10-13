@@ -4,6 +4,16 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+- New `write_speed_ramps` tool writes real Time Remapping speed ramps into a copy of a saved
+  project: one eased keyframe pair per speed change, Optical Flow, and later clips rippled with
+  linked transitions kept on their cuts. Time Remapping is not exposed to ExtendScript, QE, UXP or
+  FCP XML import, so the tool edits the gzipped project data instead of calling Premiere. It refuses
+  to overwrite any file or to ramp a clip that already has Time Remapping. The format follows a
+  ramp drawn and trimmed by hand in Premiere 26.5:
+  - UpperBound is native frames / source fps.
+  - The remapped clip has no `<PlaybackSpeed>`.
+  - Linked transitions move with their cut. Left behind, the incoming clip renders black.
+
 ## [1.2.9] - 2026-10-12
 
 - `export_sequence` finds Adobe Media Encoder inside the Creative Cloud folder
