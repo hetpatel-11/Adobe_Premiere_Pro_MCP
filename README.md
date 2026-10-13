@@ -276,6 +276,7 @@ All `283` catalog tools have an implementation. `tools/list` advertises a small 
 | `delete_sequence` / `close_sequence` / `set_active_sequence` | Manage which sequence is open or active. |
 | `get_sequence_structure` / `get_sequence_count` | Inspect a sequence layout or count project sequences. |
 | `set_sequence_settings` / `set_sequence_frame_rate` / `set_sequence_resolution` | Change supported sequence settings. Verify results because Premiere can quantize or reject changes. |
+| `get_color_management` / `set_project_color_management` / `set_sequence_color_settings` | Read and set log color management, graphics white, LUT interpolation, the sequence working color space (Rec. 709 / Rec. 2100 HLG / PQ / ACEScct), linear compositing and auto tone mapping. Settings are read back after they are applied. |
 | `set_sequence_audio_settings` / `set_sequence_pixel_aspect_ratio` / `set_sequence_field_type` | Adjust supported audio, pixel-aspect, and field settings. |
 | `add_track` / `add_tracks` / `delete_track` / `rename_track` | Create, remove, and name audio/video tracks. Caption-track deletion returns an explicit unsupported result. |
 | `lock_track` / `toggle_track_visibility` / `set_target_track` / `set_all_tracks_targeted` | Control edit protection, visibility, and track targeting. |
