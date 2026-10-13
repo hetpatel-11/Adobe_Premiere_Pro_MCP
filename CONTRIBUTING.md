@@ -108,7 +108,7 @@ The live sweep is intentionally mutating. Use a disposable project because it cr
 
 The CEP code is loaded directly by Premiere and has no build step.
 
-If you change [bridge-cep.js](/Users/hetpatel/Desktop/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP/Adobe_Premiere_Pro_MCP/cep-plugin/bridge-cep.js):
+If you change [bridge-cep.js](cep-plugin/bridge-cep.js):
 
 1. Re-run `npm run setup:mac`, or manually copy the updated file into the installed extension.
 2. Right-click the Premiere panel and choose `Reload`, or restart Premiere Pro.
