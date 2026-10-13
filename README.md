@@ -344,7 +344,7 @@ All `283` catalog tools have an implementation. `tools/list` advertises a small 
 | `validate_project_for_export` / `get_encoder_presets` / `get_export_file_extension` | Validate a delivery, discover readable user `.epr` presets, and resolve output extensions. |
 | `export_sequence` / `add_to_render_queue` | Queue a sequence through Adobe Media Encoder using a real preset path or exact preset name. |
 | `get_render_queue_status` / `start_batch_encode` | Report queue-monitoring availability or start supported batch encoding. |
-| `export_frame` / `capture_frame` | Write a still image from a sequence or capture a frame. |
+| `export_frame` / `capture_frame` | Write a still image from a sequence or capture a frame. `export_frame` with `colorSpace: "hlg"`/`"pq"` or `bitDepth: 16` renders a 16-bit PNG through the exporter, so HDR sequences keep their highlight levels. |
 | `export_as_fcp_xml` / `export_aaf` / `export_omf` | Export supported interchange formats. |
 | `encode_project_item` / `encode_file` / `export_as_project` | Encode a source item/file or export a project representation. |
 | `manage_proxies` / `has_proxy` / `detach_proxy` | Inspect, attach, or detach proxies. |

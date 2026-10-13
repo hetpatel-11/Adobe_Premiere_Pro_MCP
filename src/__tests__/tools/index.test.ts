@@ -518,6 +518,51 @@ describe('PremiereProTools', () => {
         expect(script).toContain(JSON.stringify(path));
         expect(script).not.toContain('= "' + path + '"');
       });
+
+      it('keeps the 8-bit QE frame grab when no bit depth or color space is asked for', async () => {
+        const script = await scriptFor({ sequenceId: 'seq-guid', time: 1, outputPath: '/tmp/shot.png', colorSpace: 'rec709' });
+
+        expect(script).toContain('exportFramePNG');
+        expect(script).not.toContain('exportAsMediaDirect');
+      });
+
+      it('renders an HLG still through the exporter instead of the SDR frame grab', async () => {
+        // Proven live against 26.5.2: QE exportFramePNG of an HLG sequence wrote an
+        // 8-bit bt709 conversion; this path wrote rgb48be, arib-std-b67, bt2020
+        // whose levels matched an HLG video render of the same frame.
+        const script = await scriptFor({ sequenceId: 'seq-guid', time: 30.5, outputPath: '/tmp/hdr.png', colorSpace: 'hlg' });
+
+        expect(script).toContain('exportAsMediaDirect(stem + ".png", preset.fsName, 1)');
+        expect(script).toContain('["ADBEExportColorSpace", "2"]');
+        expect(script).toContain('["ADBEVideoBitDepth", "16"]');
+        expect(script).toContain('["ADBERenderDeepColor", "true"]');
+        expect(script).not.toContain('exportFramePNG');
+      });
+
+      it('maps pq and rec2020 to Premiere\'s export color space values', async () => {
+        const pq = await scriptFor({ sequenceId: 'seq-guid', time: 1, outputPath: '/tmp/p.png', colorSpace: 'pq' });
+        expect(pq).toContain('["ADBEExportColorSpace", "3"]');
+        mockBridge.executeScript.mockClear();
+        const wide = await scriptFor({ sequenceId: 'seq-guid', time: 1, outputPath: '/tmp/w.png', colorSpace: 'rec2020' });
+        expect(wide).toContain('["ADBEExportColorSpace", "1"]');
+      });
+
+      it('restores the sequence in/out points after the one-frame render', async () => {
+        const script = await scriptFor({ sequenceId: 'seq-guid', time: 1, outputPath: '/tmp/p.png', bitDepth: 16 });
+
+        expect(script).toContain('var savedIn = sequence.getInPointAsTime().ticks;');
+        expect(script).toMatch(/finally \{\s*sequence\.setInPoint\(savedIn\);\s*sequence\.setOutPoint\(savedOut\);/);
+      });
+
+      it('refuses HDR frame export for formats other than png', async () => {
+        mockBridge.executeScript.mockClear();
+        const result = await tools.executeTool('export_frame', {
+          sequenceId: 'seq-guid', time: 1, outputPath: '/tmp/p.jpg', format: 'jpg', colorSpace: 'hlg',
+        });
+
+        expect(result.success).toBe(false);
+        expect(mockBridge.executeScript).not.toHaveBeenCalled();
+      });
     });
 
     describe('sequence targeting hardening', () => {
