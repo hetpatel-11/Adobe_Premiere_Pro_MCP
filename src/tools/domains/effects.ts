@@ -20,6 +20,16 @@ export const effectsTools: ToolModule[] = [
     run: (ctx, args) => applyEffect(ctx, args.clipId, args.effectName, args.parameters),
   },
   {
+    name: 'remove_effect',
+    description: 'Removes one effect (e.g. "Warp Stabilizer", "Lumetri Color") from a timeline clip, leaving its other effects in place. Intrinsic components (Motion, Opacity, Time Remapping, Volume, Channel Volume, Panner) cannot be removed. The removal is verified by re-reading the clip\'s components.',
+    inputSchema: z.object({
+      clipId: z.string().describe('The ID of the timeline clip'),
+      effectName: z.string().describe('Display name of the effect to remove, as listed by get_effect_properties / list_clip_effects'),
+      occurrence: z.number().int().min(0).optional().describe('Which match to remove when the clip carries the effect more than once, 0-based in stack order. Defaults to 0.')
+    }),
+    run: (ctx, args) => removeEffect(ctx, args.clipId, args.effectName, args.occurrence ?? 0),
+  },
+  {
     name: 'crop_clip',
     description: 'Crops a timeline clip using Premiere Pro\'s built-in Crop video effect. Reuses an existing Crop effect on the clip when present; otherwise adds one. Omitted parameters keep their current/default values.',
     inputSchema: z.object({
@@ -950,6 +960,61 @@ export async function addKeyframe(ctx: ToolContext, clipId: string, componentNam
           time: ${time},
           value: ${JSON.stringify(value)}
         });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+  return await ctx.bridge.executeScript(script);
+}
+
+async function removeEffect(ctx: ToolContext, clipId: string, effectName: string, occurrence = 0): Promise<any> {
+  const script = `
+      try {
+        var info = __findClip(${JSON.stringify(clipId)});
+        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
+        var wanted = ${JSON.stringify(effectName)};
+        var intrinsic = { "Motion": 1, "Opacity": 1, "Time Remapping": 1, "Volume": 1, "Channel Volume": 1, "Panner": 1 };
+        if (intrinsic[wanted]) return JSON.stringify({ success: false, error: wanted + " is an intrinsic component and cannot be removed" });
+
+        function domNames() {
+          var names = [];
+          for (var d = 0; d < info.clip.components.numItems; d++) names.push(info.clip.components[d].displayName);
+          return names;
+        }
+        var before = domNames();
+        var domIndex = -1, seen = 0;
+        for (var b = 0; b < before.length; b++) {
+          if (before[b] === wanted) {
+            if (seen === ${occurrence}) { domIndex = b; break; }
+            seen++;
+          }
+        }
+        if (domIndex < 0) return JSON.stringify({ success: false, error: "Effect '" + wanted + "' (occurrence ${occurrence}) not on clip", available: before });
+
+        // The DOM component list has no remove(); QE components do. Both lists
+        // carry the clip's stack in the same order, which is checked by name
+        // before anything is removed.
+        var qeSeq = __qeSequenceFor(info.sequence);
+        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
+        var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
+        var qeItem = __findQeClipByDomClip(qeTrack, info.clip);
+        if (!qeItem) return JSON.stringify({ success: false, error: "Could not find the clip in the QE track" });
+        if (domIndex >= qeItem.numComponents) return JSON.stringify({ success: false, error: "QE component list is shorter than the DOM list" });
+        var qeComponent = qeItem.getComponentAt(domIndex);
+        if (!qeComponent || qeComponent.name !== wanted) {
+          return JSON.stringify({ success: false, error: "QE component " + domIndex + " is '" + (qeComponent ? qeComponent.name : "none") + "', not '" + wanted + "'; nothing removed" });
+        }
+        qeComponent.remove();
+
+        // QE keeps reporting the old stack after a removal, so verify through the DOM.
+        var after = domNames();
+        var countBefore = 0, countAfter = 0;
+        for (var x = 0; x < before.length; x++) if (before[x] === wanted) countBefore++;
+        for (var y = 0; y < after.length; y++) if (after[y] === wanted) countAfter++;
+        if (countAfter !== countBefore - 1 || after.length !== before.length - 1) {
+          return JSON.stringify({ success: false, error: "Removal did not take effect", before: before, after: after });
+        }
+        return JSON.stringify({ success: true, message: "Effect removed", clipId: ${JSON.stringify(clipId)}, removed: wanted, components: after });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
