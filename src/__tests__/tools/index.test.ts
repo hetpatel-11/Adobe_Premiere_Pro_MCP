@@ -91,7 +91,7 @@ describe('PremiereProTools', () => {
       expect(toolNames).toContain('get_tool_schema');
       expect(toolNames).toContain('invoke_tool');
       expect(toolNames).not.toContain('import_ae_comps');
-      expect(availableTools).toHaveLength(283);
+      expect(availableTools).toHaveLength(284);
       expect(unimplementedExpandedToolNames).toEqual([]);
       for (const name of expandedToolNames) {
         expect(toolNames).toContain(name);
@@ -451,6 +451,45 @@ describe('PremiereProTools', () => {
       });
     });
 
+    describe('remove_effect', () => {
+      const scriptFor = async (args: Record<string, unknown>): Promise<string> => {
+        mockBridge.executeScript.mockResolvedValue({ success: true });
+        await tools.executeTool('remove_effect', args);
+        return mockBridge.executeScript.mock.calls[0][0] as string;
+      };
+
+      it('removes through the QE component only after its name matches the DOM entry', async () => {
+        const script = await scriptFor({ clipId: 'clip-1', effectName: 'Warp Stabilizer' });
+
+        expect(script).toContain('var qeComponent = qeItem.getComponentAt(domIndex);');
+        expect(script).toContain("qeComponent.name !== wanted");
+        expect(script).toContain('qeComponent.remove();');
+      });
+
+      it('verifies through the DOM because QE keeps the stale stack', async () => {
+        // Proven live against 26.5.2: after QE remove() the QE list still showed
+        // Warp Stabilizer while TrackItem.components no longer did.
+        const script = await scriptFor({ clipId: 'clip-1', effectName: 'Warp Stabilizer' });
+
+        expect(script).toContain('var after = domNames();');
+        expect(script).toContain('Removal did not take effect');
+      });
+
+      it('refuses intrinsic components', async () => {
+        const script = await scriptFor({ clipId: 'clip-1', effectName: 'Motion' });
+
+        expect(script).toContain('"Motion": 1');
+        expect(script).toContain('is an intrinsic component and cannot be removed');
+      });
+
+      it('targets the requested occurrence of a repeated effect', async () => {
+        const script = await scriptFor({ clipId: 'clip-1', effectName: 'Lumetri Color', occurrence: 1 });
+
+        expect(script).toContain('if (seen === 1)');
+        expect(script).toContain(JSON.stringify('Lumetri Color'));
+      });
+    });
+
     describe('export_frame', () => {
       const scriptFor = async (args: Record<string, unknown>): Promise<string> => {
         mockBridge.executeScript.mockResolvedValue({ success: true });
@@ -594,7 +633,7 @@ describe('PremiereProTools', () => {
 
         expect(result.success).toBe(true);
         expect(result.catalog).toEqual({
-          tools: 283,
+          tools: 284,
           advertised: 5,
           toolset: 'search',
           search: 'search_tools',

@@ -4,6 +4,13 @@ All notable changes are documented here. Releases use semantic versioning.
 
 ## [Unreleased]
 
+- New `remove_effect` tool removes one effect from a timeline clip by display name, with an optional
+  `occurrence` when the effect appears more than once, and leaves the clip's other effects in place.
+  The DOM component collection has no `remove()`, so the tool removes the matching QE component.
+  It first checks that the QE entry at that index has the same name as the DOM entry, then confirms
+  the removal by re-reading `TrackItem.components`, because QE keeps reporting the old stack.
+  Intrinsic components (Motion, Opacity, Time Remapping, Volume, Channel Volume, Panner) are refused.
+
 ## [1.2.9] - 2026-10-12
 
 - `export_sequence` finds Adobe Media Encoder inside the Creative Cloud folder
