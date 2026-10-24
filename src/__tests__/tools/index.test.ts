@@ -937,7 +937,7 @@ describe('PremiereProTools', () => {
       expect(result.success).toBe(false);
       expect(result.errorCode).toBe('ffmpeg.not_found');
       expect(result.retry).toBe(false);
-      expect(result.nextStep).toMatch(/brew install ffmpeg|winget install --id Gyan\.FFmpeg/);
+      expect(result.nextStep).toMatch(/brew install ffmpeg|winget install --id Gyan\.FFmpeg|apt-get install/);
       expect(result.installCommand).toMatch(/ffmpeg/);
       // Only the version-check spawn should have happened -- never attempted the real analysis.
       expect(mockSpawn).toHaveBeenCalledTimes(1);

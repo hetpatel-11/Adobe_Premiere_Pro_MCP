@@ -158,7 +158,7 @@ function ffmpegInstallHint(): { command: string; nextStep: string } {
   return {
     command: 'sudo apt-get install -y ffmpeg',
     nextStep:
-      'ffmpeg is not installed. Install ffmpeg with your package manager, then retry detect_silence once.',
+      'ffmpeg is not installed. Run this in a terminal on this machine, then retry detect_silence once: sudo apt-get install -y ffmpeg',
   };
 }
 
