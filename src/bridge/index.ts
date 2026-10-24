@@ -1214,13 +1214,16 @@ export class PremiereProBridge implements PremiereProTransport {
     }
   }
 
-  private async readHeartbeat(): Promise<{ t: number; started: boolean } | null> {
+  private async readHeartbeat(): Promise<{ t: number; started: boolean; scriptOkAt: number | null } | null> {
     try {
       const raw = await fs.readFile(join(this.tempDir, BRIDGE_HEARTBEAT_FILE), 'utf8');
-      const parsed = JSON.parse(raw) as { t?: unknown; started?: unknown };
+      const parsed = JSON.parse(raw) as { t?: unknown; started?: unknown; scriptOkAt?: unknown };
       if (typeof parsed?.t !== 'number' || !Number.isFinite(parsed.t)) return null;
       if (Date.now() - parsed.t > BRIDGE_HEARTBEAT_STALE_MS) return null;
-      return { t: parsed.t, started: parsed.started === true };
+      const scriptOkAt = typeof parsed.scriptOkAt === 'number' && Number.isFinite(parsed.scriptOkAt) && parsed.scriptOkAt > 0
+        ? parsed.scriptOkAt
+        : null;
+      return { t: parsed.t, started: parsed.started === true, scriptOkAt };
     } catch {
       return null;
     }
@@ -1283,10 +1286,19 @@ export class PremiereProBridge implements PremiereProTransport {
       );
     }
 
-    throw new Error(
-      'Bridge response timeout. Ensure Premiere Pro is open, MCP Bridge (CEP or UXP) panel is open, ' +
-      'Temp Directory is set to ' + this.tempDir + ', and Start Bridge is clicked. Do not retry until the panel says Connected.'
-    );
+    throw new Error(await this.timeoutMessage());
+  }
+
+  private async timeoutMessage(): Promise<string> {
+    const beat = await this.readHeartbeat();
+    const base = 'Bridge response timeout. Ensure Premiere Pro is open, MCP Bridge (CEP or UXP) panel is open, ' +
+      'Temp Directory is set to ' + this.tempDir + ', and Start Bridge is clicked. Do not retry until the panel says Connected.';
+    if (!beat?.started || beat.scriptOkAt == null) return base;
+    const scriptAgeSec = Math.round((Date.now() - beat.scriptOkAt) / 1000);
+    if (scriptAgeSec < 5) return base;
+    return 'Bridge response timeout. The CEP panel heartbeat is fresh, but Premiere has not finished an ExtendScript call in ' +
+      scriptAgeSec + 's. The panel process can stay alive while Premiere\'s scripting thread is stuck. ' +
+      'Quit Premiere to recover; an in-flight ExtendScript call cannot be cancelled.';
   }
 
   // Project Management
@@ -1393,7 +1405,7 @@ export class PremiereProBridge implements PremiereProTransport {
     await this.executeScript(script);
   }
 
-  async importMedia(filePath: string): Promise<PremiereProProjectItem> {
+  async importMedia(filePath: string, binName?: string): Promise<PremiereProProjectItem> {
     // Validate file path for security
     const pathValidation = validateFilePath(filePath);
     if (!pathValidation.valid) {
@@ -1435,6 +1447,29 @@ export class PremiereProBridge implements PremiereProTransport {
         var existingItems = [];
         __walkItems(app.project.rootItem, existingItems);
 
+        var targetBin = app.project.rootItem;
+        var requestedBin = ${JSON.stringify(binName || '')};
+        if (requestedBin) {
+          var resolvedBin = null;
+          for (var bi = 0; bi < app.project.rootItem.children.numItems; bi++) {
+            var binChild = app.project.rootItem.children[bi];
+            if (!binChild || String(binChild.name) !== requestedBin) continue;
+            try {
+              if (binChild.type !== ProjectItemType.BIN) continue;
+            } catch (eBinType) {}
+            resolvedBin = binChild;
+            break;
+          }
+          if (!resolvedBin) {
+            return JSON.stringify({
+              success: false,
+              error: "Destination bin not found: " + requestedBin + ". Nothing was imported. Omit binName to import to the project root.",
+              binName: requestedBin
+            });
+          }
+          targetBin = resolvedBin;
+        }
+
         // Premiere returns true when asked to import media already in the
         // project, but it does not add another project item. Reuse that item
         // instead of reporting a fabricated import failure.
@@ -1442,19 +1477,32 @@ export class PremiereProBridge implements PremiereProTransport {
           var existingItem = existingItems[existingIndex];
           try {
             if (existingItem.getMediaPath && existingItem.getMediaPath() === file.fsName) {
+              if (requestedBin) {
+                var existingParent = "";
+                try {
+                  var existingTree = String(existingItem.treePath || "");
+                  var binMarker = String.fromCharCode(92) + requestedBin + String.fromCharCode(92);
+                  if (existingTree.indexOf(binMarker) !== -1) existingParent = requestedBin;
+                } catch (eTree) {}
+                if (!existingParent) {
+                  try { existingParent = existingItem.parent ? String(existingItem.parent.name) : ""; } catch (eParent) {}
+                }
+                if (existingParent !== requestedBin) existingItem.moveBin(targetBin);
+              }
               return JSON.stringify({
                 success: true,
                 id: existingItem.nodeId,
                 name: existingItem.name,
                 type: existingItem.type.toString(),
                 mediaPath: file.fsName,
-                alreadyImported: true
+                alreadyImported: true,
+                binName: requestedBin || "Root"
               });
             }
           } catch (e) {}
         }
 
-        var importResult = app.project.importFiles([file.fsName], true, app.project.rootItem, false);
+        var importResult = app.project.importFiles([file.fsName], true, targetBin, false);
         if (!importResult) {
           return JSON.stringify({
             success: false,
@@ -1501,7 +1549,8 @@ export class PremiereProBridge implements PremiereProTransport {
           id: importedItem.nodeId,
           name: importedItem.name,
           type: importedItem.type.toString(),
-          mediaPath: importedItem.getMediaPath ? importedItem.getMediaPath() : file.fsName
+          mediaPath: importedItem.getMediaPath ? importedItem.getMediaPath() : file.fsName,
+          binName: requestedBin || "Root"
         });
       } catch (e) {
         return JSON.stringify({

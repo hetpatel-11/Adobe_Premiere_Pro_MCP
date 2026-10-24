@@ -53,9 +53,12 @@ if [[ ! -f "$DIST_ENTRY" ]]; then
 fi
 
 echo "Enabling Adobe CEP debug mode..."
-defaults write com.adobe.CSXS.12 PlayerDebugMode 1
-defaults write com.adobe.CSXS.11 PlayerDebugMode 1
-defaults write com.adobe.CSXS.10 PlayerDebugMode 1
+# Premiere 24 uses CEP 11, Premiere 25 and 26 use CEP 12, and 26.5 still
+# checks the neighboring CSXS keys. A missing key for the host's CEP version
+# is logged as "Signature verification failed" and the panel never opens.
+for csxs_version in 9 10 11 12 13 14 15; do
+  defaults write "com.adobe.CSXS.$csxs_version" PlayerDebugMode 1
+done
 
 echo "Installing Premiere CEP extension..."
 mkdir -p "$CEP_EXTENSIONS_DIR"

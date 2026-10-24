@@ -339,6 +339,15 @@ async function verifyPremiereConnection(ctx: ToolContext, launchIfNeeded = true)
       try {
         var project = app.project;
         var sequence = project ? project.activeSequence : null;
+        var readOnly = null;
+        var readOnlySource = null;
+        if (project && project.path) {
+          var projectFile = new File(project.path);
+          if (projectFile.exists) {
+            readOnly = projectFile.readonly === true;
+            readOnlySource = "project file readonly attribute";
+          }
+        }
         return JSON.stringify({
           success: true,
           status: 'connected',
@@ -356,7 +365,8 @@ async function verifyPremiereConnection(ctx: ToolContext, launchIfNeeded = true)
             id: sequence.sequenceID,
             name: sequence.name
           } : null,
-          readOnly: true
+          readOnly: readOnly,
+          readOnlySource: readOnlySource
         });
       } catch (e) {
         return JSON.stringify({

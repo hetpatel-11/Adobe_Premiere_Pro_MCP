@@ -119,6 +119,25 @@ describe('PremiereProBridge', () => {
     expect(command).toContain('existingItem.getMediaPath() === file.fsName');
   });
 
+  it('fails importMedia when binName does not resolve instead of importing to the root', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: false, error: 'Destination bin not found: 01_Clips' }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.importMedia('/path/to/video.mp4', '01_Clips');
+
+    const command = mockFs.writeFile.mock.calls.find(([filePath]: [string]) => filePath.endsWith('.json'))?.[1] as string;
+    expect(command).toContain('01_Clips');
+    expect(command).toContain('Destination bin not found');
+    expect(command).toContain('importFiles([file.fsName], true, targetBin, false)');
+    expect(command).toContain('existingItem.treePath');
+    expect(command).toContain('existingItem.moveBin(targetBin)');
+  });
+
   it('generates renderSequence JSX that selects the requested source range constant', async () => {
     const bridge = new PremiereProBridge();
     mockFs.mkdir.mockResolvedValue(undefined);

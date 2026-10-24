@@ -56,20 +56,20 @@ export const mediaTools: ToolModule[] = [
 
 export async function importMedia(ctx: ToolContext, filePath: string, binName?: string): Promise<any> {
   try {
-    const result: any = await ctx.bridge.importMedia(filePath);
+    const result: any = await ctx.bridge.importMedia(filePath, binName);
     if (!result.success) {
       return {
         ...result,
         filePath: filePath,
-        binName: binName || 'Root'
+        binName: binName || result.binName
       };
     }
     return {
       success: true,
       message: `Media imported successfully`,
       filePath: filePath,
-      binName: binName || 'Root',
-      ...result
+      ...result,
+      binName: result.binName || binName || 'Root',
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

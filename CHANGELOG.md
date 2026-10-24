@@ -2,6 +2,16 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [Unreleased]
+
+- `import_media` puts the file in `binName` when that bin exists, and returns failure when it does not. The previous call imported to the project root and echoed the bin name anyway.
+- `move_clip_to_track` parks past every track and removes the extra audio clip Premiere creates for the parked copy. The original linked audio stays where it was.
+- `ripple_delete` removes the clip and its linked audio, closes the gap, and reports `ripple: true` only after the later clips have moved.
+- `add_adjustment_layer` places an adjustment layer that is already in the project across the requested range. It no longer imports a transparent PNG, which does not pass effects through.
+- `verify_premiere_connection` reports `readOnly` from the project file's readonly attribute. It was a hardcoded `true`.
+- The CEP heartbeat records the last time Premiere finished an ExtendScript call. A timeout while that timestamp is stale says the scripting thread is stuck, instead of treating a fresh panel heartbeat as a healthy host.
+- The CEP manifest names Premiere as the dispatch host, and the macOS installer enables PlayerDebugMode for CSXS 9 through 15. Windows doctor fails when that value is a DWORD, which CEP ignores, and when the CEP log shows the panel's signature was rejected.
+
 ## [1.2.10] - 2026-10-24
 
 - `apply_lut` stores the `.cube` or `.3dl` on Lumetri's Input LUT path and selects that custom LUT. The previous call wrote the path onto the numeric LUT menu, swallowed the type error, and still returned success. A missing file, or a path Premiere does not keep, is now a failure. The second Input LUT menu on the same effect is left alone, because writing it clears the first. `apply_effect` uses the same path when Lumetri's `Input LUT` parameter is a file path.

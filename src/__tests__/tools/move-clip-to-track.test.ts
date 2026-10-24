@@ -69,8 +69,8 @@ describe('move_clip_to_track fallback safety', () => {
     // Parked on guaranteed-empty space first: overwriteClip writes the item
     // at its own full duration, which can reach past [start, end) and take
     // out a neighbour the occupancy guard never looked at.
-    expect(block).toContain('var moveParkTime = moveLastEnd + 1.0;');
-    const park = block.indexOf('var moveParkTime = moveLastEnd + 1.0;');
+    expect(block).toContain('var moveParkTime = moveGlobalEnd + 1.0;');
+    const park = block.indexOf('var moveParkTime = moveGlobalEnd + 1.0;');
     const trim = block.indexOf('placed.inPoint = secondsToTime(moveIn);');
     const slide = block.indexOf('placed.move(');
     expect(trim).toBeGreaterThan(park);
@@ -78,6 +78,8 @@ describe('move_clip_to_track fallback safety', () => {
 
     // And the destination is never written at its own coordinates.
     expect(block).not.toContain('overwriteClip(moveItem, moveStart)');
+    expect(block).toContain('__removeNewCompanions(companionIdsBefore)');
+    expect(block).toContain('audioCompanionsRemoved');
   });
 
   it('writes the timeline duration (end) while parked, before the slide', async () => {

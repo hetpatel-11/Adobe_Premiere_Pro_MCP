@@ -204,5 +204,17 @@ describe('bridge file-queue protocol', () => {
       await expect(bridge.executeScript('return 1;', 700)).rejects.toThrow(/timeout/i);
       expect(Date.now() - started).toBeGreaterThanOrEqual(700);
     });
+
+    it('says the scripting thread is stuck when the panel heartbeat is fresh but ExtendScript has not returned', async () => {
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) {
+          return JSON.stringify({ t: Date.now(), started: true, scriptOkAt: Date.now() - 20000 });
+        }
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+
+      await expect(bridge.executeScript('return 1;', 700)).rejects.toThrow(/scripting thread is stuck/i);
+    });
   });
 });

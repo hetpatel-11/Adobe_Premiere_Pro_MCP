@@ -28,6 +28,10 @@ info() {
   echo "[info] $1"
 }
 
+warn() {
+  echo "[warn] $1"
+}
+
 if command -v node >/dev/null 2>&1; then
   NODE_VERSION="$(node -v)"
   NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
@@ -68,6 +72,14 @@ for csxs_version in 12 11 10; do
     pass "Adobe CEP debug mode enabled for CSXS.$csxs_version"
   else
     fail "Adobe CEP debug mode not enabled for CSXS.$csxs_version"
+  fi
+done
+for csxs_version in 15 14 13 9; do
+  VALUE="$(defaults read "com.adobe.CSXS.$csxs_version" PlayerDebugMode 2>/dev/null || true)"
+  if [[ "$VALUE" == "1" ]]; then
+    pass "Adobe CEP debug mode enabled for CSXS.$csxs_version"
+  else
+    warn "Adobe CEP debug mode not enabled for CSXS.$csxs_version. Premiere 26.5 can reject the panel as an unsigned extension until this is 1. Re-run setup:mac."
   fi
 done
 

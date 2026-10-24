@@ -433,6 +433,7 @@
         this.isProcessing = false;
         this.evalScriptBusy = false;
         this.evalScriptQueue = [];
+        this.lastScriptOkAt = 0;
         this.telemetryEnabled = true;
         this.csInterface = new CSInterface();
         this.init();
@@ -666,6 +667,7 @@
             }, timeoutMs);
 
             this.csInterface.evalScript(fullScript, function(result) {
+                self.lastScriptOkAt = Date.now();
                 clearTimeout(timeoutId);
                 // Defer result handling and lock release off the evalScript stack so
                 // mixed-context Node I/O cannot block PlugPlug's handshake.
@@ -720,15 +722,34 @@
             if (!tempPath) return;
             fs.writeFileSync(path.join(tempPath, 'bridge-heartbeat.json'), JSON.stringify({
                 t: Date.now(),
-                started: !!this.isConnected
+                started: !!this.isConnected,
+                scriptOkAt: this.lastScriptOkAt || null
             }));
         } catch (e) {}
     };
 
+    MCPPremiereBridge.prototype.pingHost = function() {
+        var self = this;
+        if (this.evalScriptBusy || !this.isConnected || !this.csInterface) return;
+        this.evalScriptBusy = true;
+        this.csInterface.evalScript('app.version', function(result) {
+            self.evalScriptBusy = false;
+            if (result && result !== 'EvalScript error.' && result !== 'EvalScript error') {
+                self.lastScriptOkAt = Date.now();
+            }
+        });
+    };
+
     MCPPremiereBridge.prototype.startCommandPolling = function() {
         var self = this;
+        this.lastPingAt = 0;
         setInterval(function() {
             self.writeHeartbeat();
+            var now = Date.now();
+            if (!self.isProcessing && !self.evalScriptBusy && self.isConnected && now - self.lastPingAt >= 2000) {
+                self.lastPingAt = now;
+                self.pingHost();
+            }
             if (!self.isProcessing && !self.evalScriptBusy && self.isConnected) {
                 var tempPath = self.getTempDirectory();
                 if (tempPath) self.watchDirectory(tempPath);

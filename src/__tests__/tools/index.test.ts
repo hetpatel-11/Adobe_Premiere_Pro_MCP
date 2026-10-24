@@ -690,7 +690,8 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript.mock.calls[0][1]).toBe(8000);
       const script = mockBridge.executeScript.mock.calls[0][0] as string;
       expect(script).toContain("status: 'connected'");
-      expect(script).toContain('readOnly: true');
+      expect(script).toContain('projectFile.readonly');
+      expect(script).not.toContain('readOnly: true');
       expect(script).not.toContain('save()');
       expect(script).not.toContain('create');
     });
@@ -848,7 +849,7 @@ describe('PremiereProTools', () => {
         filePath: '/path/to/video.mp4'
       });
 
-      expect(mockBridge.importMedia).toHaveBeenCalledWith('/path/to/video.mp4');
+      expect(mockBridge.importMedia).toHaveBeenCalledWith('/path/to/video.mp4', undefined);
       expect(result.success).toBe(true);
       expect(result.id).toBe('item-123');
     });

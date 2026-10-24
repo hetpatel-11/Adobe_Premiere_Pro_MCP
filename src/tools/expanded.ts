@@ -263,10 +263,6 @@ export async function executeExpandedTool(
       return await createGeneratedBarsAndTone(bridge, args);
     }
 
-    if (name === 'add_adjustment_layer') {
-      return await createGeneratedAdjustmentLayer(bridge, args);
-    }
-
     if (name === 'consolidate_and_transfer') {
       return await consolidateAndTransfer(bridge, args);
     }
@@ -389,30 +385,6 @@ async function createGeneratedBarsAndTone(bridge: PremiereProTransport, args: Re
       width,
       height,
       toneGenerated: false
-    }
-  };
-}
-
-async function createGeneratedAdjustmentLayer(bridge: PremiereProTransport, args: Record<string, any>): Promise<any> {
-  const width = Number(args.width || 1920);
-  const height = Number(args.height || 1080);
-  const filePath = await writeGeneratedPng(`adjustment-layer-${Date.now()}.png`, width, height, () => [0, 0, 0, 0]);
-  const imported = await bridge.importMedia(filePath);
-  let placement = null;
-  if (args.sequenceId) {
-    placement = await bridge.addToTimeline(String(args.sequenceId), imported.id, Number(args.trackIndex || 1), Number(args.time || args.start || 0), false);
-  }
-  return {
-    success: true,
-    tool: 'add_adjustment_layer',
-    data: {
-      created: true,
-      mediaType: 'generated_transparent_png',
-      item: imported,
-      placement,
-      path: filePath,
-      width,
-      height
     }
   };
 }
@@ -1671,8 +1643,84 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("ripple_delete requires clipId.");
           var rippleClip = findClip(args.clipId || args.node_id || args.nodeId);
           if (!rippleClip) return fail(pendingSequenceError || "Clip not found");
-          rippleClip.clip.remove(true, true);
-          return ok({ removed: true, ripple: true, clipId: args.clipId || args.node_id || args.nodeId });
+          var rippleStart = valueOfTime(rippleClip.clip.start);
+          var rippleEnd = valueOfTime(rippleClip.clip.end);
+          var rippleGap = rippleEnd - rippleStart;
+          if (!(rippleGap > 0)) return fail("Clip has no duration to ripple");
+          var rippleId = String(rippleClip.clip.nodeId);
+          function __rippleLater(track, skipId) {
+            var later = [];
+            if (!track || !track.clips) return later;
+            for (var ri = 0; ri < track.clips.numItems; ri++) {
+              var laterClip = track.clips[ri];
+              if (!laterClip) continue;
+              var laterId = "";
+              try { laterId = String(laterClip.nodeId); } catch (eLaterId) {}
+              if (laterId === skipId) continue;
+              var laterStart = valueOfTime(laterClip.start);
+              if (laterStart + 0.01 < rippleEnd) continue;
+              later.push({ id: laterId, start: laterStart });
+            }
+            return later;
+          }
+          var rippleDownstream = __rippleLater(rippleClip.track, rippleId);
+          var rippleLinked = [];
+          var rippleOtherTracks = rippleClip.trackType === "video" ? rippleClip.sequence.audioTracks : rippleClip.sequence.videoTracks;
+          var rippleOtherCount = rippleOtherTracks ? rippleOtherTracks.numTracks : 0;
+          var rippleItemId = rippleClip.clip.projectItem ? rippleClip.clip.projectItem.nodeId : null;
+          for (var lt = 0; lt < rippleOtherCount; lt++) {
+            var linkedTrack = rippleOtherTracks[lt];
+            if (!linkedTrack || !linkedTrack.clips) continue;
+            for (var lc = 0; lc < linkedTrack.clips.numItems; lc++) {
+              var linkedClip = linkedTrack.clips[lc];
+              if (!linkedClip) continue;
+              var linkedStart = valueOfTime(linkedClip.start);
+              var linkedEnd = valueOfTime(linkedClip.end);
+              var sameItem = rippleItemId && linkedClip.projectItem && __idsMatch(linkedClip.projectItem.nodeId, rippleItemId);
+              if (Math.abs(linkedStart - rippleStart) < 0.05 && Math.abs(linkedEnd - rippleEnd) < 0.05 && sameItem) {
+                rippleLinked.push({ id: String(linkedClip.nodeId), track: linkedTrack, clip: linkedClip });
+              }
+            }
+          }
+          var linkedDownstream = [];
+          for (var ldi = 0; ldi < rippleLinked.length; ldi++) {
+            var linkedLater = __rippleLater(rippleLinked[ldi].track, rippleLinked[ldi].id);
+            for (var ldj = 0; ldj < linkedLater.length; ldj++) linkedDownstream.push(linkedLater[ldj]);
+          }
+          try { rippleClip.clip.remove(false, true); }
+          catch (eRippleRemove) { return fail("Could not remove the clip: " + eRippleRemove.toString()); }
+          for (var lr = 0; lr < rippleLinked.length; lr++) {
+            try { rippleLinked[lr].clip.remove(false, true); } catch (eLinkedRemove) {}
+          }
+          function __shiftLater(entries) {
+            var shifted = 0;
+            for (var si = 0; si < entries.length; si++) {
+              var shiftInfo = findClip(entries[si].id);
+              if (!shiftInfo) continue;
+              try { shiftInfo.clip.move(-rippleGap); shifted++; } catch (eShift) {}
+            }
+            return shifted;
+          }
+          __shiftLater(rippleDownstream);
+          __shiftLater(linkedDownstream);
+          if (findClip(rippleId)) return fail("Clip is still on the timeline", { ripple: false, clipId: rippleId });
+          for (var lv = 0; lv < rippleLinked.length; lv++) {
+            if (findClip(rippleLinked[lv].id)) return fail("Linked audio is still on the timeline", { ripple: false, clipId: rippleLinked[lv].id });
+          }
+          var rippleMissed = [];
+          function __checkShift(entries) {
+            for (var ci = 0; ci < entries.length; ci++) {
+              var afterInfo = findClip(entries[ci].id);
+              if (!afterInfo) { rippleMissed.push(entries[ci].id); continue; }
+              if (Math.abs(valueOfTime(afterInfo.clip.start) - (entries[ci].start - rippleGap)) > 0.08) rippleMissed.push(entries[ci].id);
+            }
+          }
+          __checkShift(rippleDownstream);
+          __checkShift(linkedDownstream);
+          if (rippleMissed.length) {
+            return fail("The clip was removed but later clips did not ripple", { ripple: false, clipId: rippleId, unmovedClipIds: rippleMissed });
+          }
+          return ok({ removed: true, ripple: true, verified: true, clipId: rippleId, gapSeconds: rippleGap, linkedRemoved: rippleLinked.length, downstreamMoved: rippleDownstream.length + linkedDownstream.length });
 
         case "roll_edit":
         case "slide_edit":
@@ -1754,21 +1802,78 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (occupants.length) {
             for (var ori = occupants.length - 1; ori >= 0; ori--) occupants[ori].remove(false, true);
           }
+          var moveSeq = moveTrackClip.sequence;
+          var moveVideoCount = moveSeq.videoTracks ? moveSeq.videoTracks.numTracks : 0;
+          var moveAudioCount = moveSeq.audioTracks ? moveSeq.audioTracks.numTracks : 0;
+          function __trackEnd(track) {
+            var end = 0;
+            if (!track || !track.clips) return 0;
+            for (var tei = 0; tei < track.clips.numItems; tei++) {
+              try {
+                var te = valueOfTime(track.clips[tei].end);
+                if (te > end) end = te;
+              } catch (eTe) {}
+            }
+            return end;
+          }
+          var moveGlobalEnd = moveLastEnd;
+          for (var ve = 0; ve < moveVideoCount; ve++) {
+            var veEnd = __trackEnd(moveSeq.videoTracks[ve]);
+            if (veEnd > moveGlobalEnd) moveGlobalEnd = veEnd;
+          }
+          for (var ae = 0; ae < moveAudioCount; ae++) {
+            var aeEnd = __trackEnd(moveSeq.audioTracks[ae]);
+            if (aeEnd > moveGlobalEnd) moveGlobalEnd = aeEnd;
+          }
+          function __oppositeClipIds() {
+            var ids = [];
+            var count = moveTrackClip.trackType === "video" ? moveAudioCount : moveVideoCount;
+            for (var oi2 = 0; oi2 < count; oi2++) {
+              var otrack = moveTrackClip.trackType === "video" ? moveSeq.audioTracks[oi2] : moveSeq.videoTracks[oi2];
+              if (!otrack || !otrack.clips) continue;
+              for (var oc = 0; oc < otrack.clips.numItems; oc++) {
+                try { ids.push(String(otrack.clips[oc].nodeId)); } catch (eId) {}
+              }
+            }
+            return ids;
+          }
+          var audioCompanionsRemoved = 0;
+          function __removeNewCompanions(beforeIds) {
+            var count = moveTrackClip.trackType === "video" ? moveAudioCount : moveVideoCount;
+            for (var ri = 0; ri < count; ri++) {
+              var rtrack = moveTrackClip.trackType === "video" ? moveSeq.audioTracks[ri] : moveSeq.videoTracks[ri];
+              if (!rtrack || !rtrack.clips) continue;
+              for (var rc = rtrack.clips.numItems - 1; rc >= 0; rc--) {
+                var rclip = rtrack.clips[rc];
+                if (!rclip || !rclip.projectItem || !__idsMatch(rclip.projectItem.nodeId, moveItem.nodeId)) continue;
+                var rid = "";
+                try { rid = String(rclip.nodeId); } catch (eRid) {}
+                var known = false;
+                for (var bi = 0; bi < beforeIds.length; bi++) if (beforeIds[bi] === rid) known = true;
+                if (known) continue;
+                try { rclip.remove(false, true); audioCompanionsRemoved++; } catch (eRem) {}
+              }
+            }
+          }
+          var companionIdsBefore = __oppositeClipIds();
           var nativeMove = tryCall(moveTrackClip.clip, ["moveToTrack", "setTrack"], [moveTargetIndex]);
           if (nativeMove.called) {
-            return ok({ moved: true, trackIndex: moveTargetIndex, method: nativeMove.method, clipId: moveTrackClip.clip.nodeId });
+            __removeNewCompanions(companionIdsBefore);
+            return ok({ moved: true, trackIndex: moveTargetIndex, method: nativeMove.method, clipId: moveTrackClip.clip.nodeId, audioCompanionsRemoved: audioCompanionsRemoved });
           }
           // The fallback reinserts from the projectItem, and overwriteClip lays the
           // item down at its OWN duration -- not the trimmed length of the timeline
           // clip -- so writing straight at the destination can reach past
           // [start, end) and destroy a neighbour the occupancy guard never looked
-          // at. Park past the last clip on the target track instead (guaranteed
-          // empty), trim there, then slide into the span the guard verified.
-          var moveParkTime = moveLastEnd + 1.0;
+          // at. Park past the last clip on EVERY track: overwriteClip also creates
+          // the item's linked audio on whichever audio track Premiere picks, at the
+          // park time and at the item's full length.
+          var moveParkTime = moveGlobalEnd + 1.0;
           var moveCleanupParked = function (parkedClip) {
             // Remove the parked copy so no failure path strands a full-length
             // clip on the target track. Without a reference, sweep the park zone:
             // it was empty before, so anything past the old last end is ours.
+            __removeNewCompanions(companionIdsBefore);
             try {
               if (parkedClip) { parkedClip.remove(false, true); return; }
             } catch (eClean) {}
@@ -1778,6 +1883,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
             }
           };
           destTrack.overwriteClip(moveItem, moveParkTime);
+          __removeNewCompanions(companionIdsBefore);
           var placed = null;
           for (var pi = 0; pi < destTrack.clips.numItems; pi++) {
             var candidate = destTrack.clips[pi];
@@ -1827,7 +1933,7 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           // Only now, with the copy verified at the destination, lift the original
           // (ripple = false), so the source track's other clips keep their timing.
           moveTrackClip.clip.remove(false, true);
-          return ok({ moved: true, trackIndex: moveTargetIndex, method: "park+trim+slide", start: moveStart, clipId: placed.nodeId, oldClipId: args.clipId || args.node_id || args.nodeId, trimRestored: true });
+          return ok({ moved: true, trackIndex: moveTargetIndex, method: "park+trim+slide", start: moveStart, clipId: placed.nodeId, oldClipId: args.clipId || args.node_id || args.nodeId, trimRestored: true, audioCompanionsRemoved: audioCompanionsRemoved });
 
         case "set_clip_speed_qe":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("set_clip_speed_qe requires clipId.");
@@ -2281,13 +2387,85 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           return ok({ destination: destBin.name, results: moveResults });
 
         case "add_adjustment_layer":
-          var seqErr = sequenceRequestError();
-          if (seqErr) return fail(seqErr);
+          var adjSeqErr = sequenceRequestError();
+          if (adjSeqErr) return fail(adjSeqErr);
           var adjustmentSeq = targetSequence();
           if (!adjustmentSeq) return fail("No active sequence");
-          var adjustmentResult = tryCall(app.project, ["createAdjustmentLayer"], [Number(args.width || adjustmentSeq.frameSizeHorizontal || 1920), Number(args.height || adjustmentSeq.frameSizeVertical || 1080), Number(args.duration || 5)]);
-          if (!adjustmentResult.called) return fail(adjustmentResult.error, { available: false });
-          return ok({ created: true, method: adjustmentResult.method, result: String(adjustmentResult.result) });
+          var adjTrackIndex = args.trackIndex === undefined || args.trackIndex === null ? 1 : Number(args.trackIndex);
+          var adjTrack = adjustmentSeq.videoTracks[adjTrackIndex];
+          if (!adjTrack) return fail("Video track not found at index " + adjTrackIndex);
+          var adjStart = Number(args.startTime != null ? args.startTime : (args.time != null ? args.time : (args.start != null ? args.start : 0)));
+          var adjEnd = args.endTime != null ? Number(args.endTime) : (args.duration != null ? adjStart + Number(args.duration) : null);
+          if (adjEnd == null) return fail("add_adjustment_layer requires endTime or duration");
+          if (!(adjEnd > adjStart)) return fail("Adjustment layer endTime must be after startTime");
+          function __isRealAdjustment(item) {
+            if (!item) return false;
+            try { if (item.type === ProjectItemType.BIN) return false; } catch (eBin) {}
+            try { if (item.isSequence && item.isSequence()) return false; } catch (eSeq) {}
+            var adjMediaPath = "";
+            try { adjMediaPath = item.getMediaPath ? String(item.getMediaPath() || "") : ""; } catch (ePath) {}
+            return adjMediaPath === "";
+          }
+          var adjItem = null;
+          if (args.projectItemId || args.itemId) {
+            adjItem = findItem(args.projectItemId || args.itemId);
+            if (!adjItem || !__isRealAdjustment(adjItem)) return fail("projectItemId is not an adjustment layer. Adjustment layers have no media path and are not sequences.");
+          } else {
+            var adjWanted = String(args.name || "Adjustment Layer");
+            var adjFallback = null;
+            walkItems(app.project.rootItem, function(item) {
+              if (adjItem || !__isRealAdjustment(item)) return;
+              if (String(item.name) === adjWanted) adjItem = item;
+              else if (!adjFallback) adjFallback = item;
+            });
+            if (!adjItem) adjItem = adjFallback;
+          }
+          if (!adjItem) return fail("No adjustment layer in this project. Create one with File > New > Adjustment Layer, then run add_adjustment_layer again. A transparent PNG is not an adjustment layer.");
+          var savedInSec = null;
+          var savedOutSec = null;
+          var hadSavedRange = false;
+          try {
+            savedInSec = valueOfTime(adjItem.getInPoint());
+            savedOutSec = valueOfTime(adjItem.getOutPoint());
+            hadSavedRange = true;
+          } catch (eSaved) {}
+          var adjDuration = adjEnd - adjStart;
+          try {
+            adjItem.setOutPoint(86400, 4);
+            adjItem.setInPoint(0, 4);
+            adjItem.setOutPoint(adjDuration, 4);
+          } catch (eIo) {
+            return fail("Could not set the adjustment layer source range: " + eIo.toString());
+          }
+          try { adjTrack.overwriteClip(adjItem, adjStart); }
+          catch (ePlace) {
+            try {
+              if (hadSavedRange) {
+                adjItem.setInPoint(savedInSec, 4);
+                adjItem.setOutPoint(savedOutSec, 4);
+              }
+            } catch (eRestore) {}
+            return fail("Could not place the adjustment layer: " + ePlace.toString());
+          }
+          try {
+            if (hadSavedRange) {
+              adjItem.setInPoint(savedInSec, 4);
+              adjItem.setOutPoint(savedOutSec, 4);
+            }
+          } catch (eRestore2) {}
+          var placedAdj = null;
+          for (var ai = 0; ai < adjTrack.clips.numItems; ai++) {
+            var adjClip = adjTrack.clips[ai];
+            if (!adjClip || !adjClip.projectItem || !__idsMatch(adjClip.projectItem.nodeId, adjItem.nodeId)) continue;
+            if (Math.abs(valueOfTime(adjClip.start) - adjStart) < 0.05) { placedAdj = adjClip; break; }
+          }
+          if (!placedAdj) return fail("Adjustment layer did not appear on the timeline at the requested time", { projectItemId: adjItem.nodeId, startTime: adjStart, endTime: adjEnd });
+          var placedStart = valueOfTime(placedAdj.start);
+          var placedEnd = valueOfTime(placedAdj.end);
+          if (Math.abs(placedEnd - placedStart - adjDuration) > 0.08) {
+            return fail("Adjustment layer duration did not match the request", { start: placedStart, end: placedEnd, requestedStart: adjStart, requestedEnd: adjEnd });
+          }
+          return ok({ created: false, reusedExisting: true, mediaType: "adjustment_layer", projectItemId: adjItem.nodeId, name: String(adjItem.name), clipId: placedAdj.nodeId, trackIndex: adjTrackIndex, startTime: placedStart, endTime: placedEnd });
 
         case "freeze_frame":
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("freeze_frame requires clipId.");

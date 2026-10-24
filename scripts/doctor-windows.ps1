@@ -113,14 +113,26 @@ foreach ($version in 9..15) {
     $key = "HKCU:\Software\Adobe\CSXS.$version"
     if (Test-Path -LiteralPath $key) {
         $value = (Get-ItemProperty -Path $key -Name 'PlayerDebugMode' -ErrorAction SilentlyContinue).PlayerDebugMode
-        if ("$value" -eq '1') {
+        $kind = $null
+        try { $kind = (Get-Item -LiteralPath $key).GetValueKind('PlayerDebugMode') } catch { $kind = $null }
+        if ("$value" -eq '1' -and "$kind" -eq 'String') {
             $debugModeFound = $true
-            Pass "CSXS.$version PlayerDebugMode=1"
+            Pass "CSXS.$version PlayerDebugMode=1 (String)"
+        } elseif ("$value" -eq '1' -and $kind) {
+            Fail "CSXS.$version PlayerDebugMode is $kind. CEP only honors a String value of 1; a DWORD of 1 still logs Signature verification failed. Re-run setup:win."
         }
     }
 }
 if (-not $debugModeFound) {
     Warn 'PlayerDebugMode=1 not found under CSXS.9 through CSXS.15'
+}
+
+$cepLog = Join-Path $env:APPDATA 'Adobe\CEP\logs\CEP12-PPRO.log'
+if (Test-Path -LiteralPath $cepLog) {
+    $signatureHit = Select-String -LiteralPath $cepLog -Pattern 'Signature verification failed for extension com.mcp.premiere.cepbridge.panel' -SimpleMatch -ErrorAction SilentlyContinue | Select-Object -Last 1
+    if ($signatureHit) {
+        Fail 'CEP rejected the unsigned MCP Bridge panel (Signature verification failed). Quit Premiere completely, re-run setup:win, then relaunch Premiere before opening Window > Extensions > MCP Bridge.'
+    }
 }
 
 Write-Host 'GitHub Copilot VS Code MCP config'

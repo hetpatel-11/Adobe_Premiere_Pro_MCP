@@ -84,5 +84,9 @@ describe('CEP panel heartbeat', () => {
       '/tmp/premiere-mcp-bridge/bridge-heartbeat.json',
       expect.stringMatching(/"started":true/),
     );
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/tmp/premiere-mcp-bridge/bridge-heartbeat.json',
+      expect.stringMatching(/"scriptOkAt":/),
+    );
   });
 });

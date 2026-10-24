@@ -16,7 +16,7 @@
   </ExecutionEnvironment>
   <DispatchInfoList>
     <Extension Id="com.mcp.premiere.cepbridge.panel">
-      <DispatchInfo>
+      <DispatchInfo Host="PPRO">
         <Resources>
           <MainPath>./index.html</MainPath>
           <CEFCommandLine>
