@@ -32,7 +32,8 @@ import { listPreludeHelperNames } from '../../bridge/index.js';
 // functions: the generated scripts were legal against the list, and Premiere
 // threw ReferenceError on every call.
 const HOST_GLOBALS = new Set([
-  'app', 'qe', 'JSON', 'Sequence', 'File', 'Folder', 'Time', 'String', 'Number', 'Boolean',
+  'app', 'qe', 'JSON', 'Sequence', 'File', 'Folder', 'Time', 'ProjectItemType',
+  'String', 'Number', 'Boolean',
   'Math', 'Date', 'Array', 'Object', 'RegExp', 'Error', 'parseInt', 'parseFloat',
   'isFinite', 'isNaN', 'undefined', 'NaN', 'Infinity', '$', 'XMPMeta', 'ExternalObject',
   ...listPreludeHelperNames(),
