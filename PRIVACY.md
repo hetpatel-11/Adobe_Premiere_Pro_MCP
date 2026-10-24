@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: August 27, 2026
+Last updated: October 21, 2026
 
 Adobe Premiere Pro MCP Bridge is local software. It does not operate a hosted editing service and does not send Premiere project data, media, MCP request arguments, or tool results to us.
 
@@ -12,15 +12,16 @@ This data remains on the user's computer unless the user chooses to share it, fo
 
 ## Anonymous usage telemetry
 
-The MCP server sends anonymous usage telemetry by default so we can see how many people use the project, which tools they use, and which tools fail. This is separate from Premiere project data.
+The MCP server sends anonymous usage telemetry by default so we can see how many people use the project and when a tool fails. This is separate from Premiere project data.
+
+Current clients send at most one `server_started` event per install per UTC day, and at most one failed tool call per UTC day. They do not send successful tool calls. Packages through 1.2.9 still send a launch on every server start, every failure, and at most one success per tool per day, until that install is updated.
 
 Each event includes only:
 
 - an anonymous install id stored in `~/.premiere-mcp-bridge/install-id`
 - a per-process session id
 - the event type (`server_started`, or `tool_called`)
-- the tool name and whether it succeeded. Every failure is stored. A successful call is stored at most once per tool per install per day
-- on failures: duration in milliseconds, and a coarse error class such as `timeout` or `not_found`
+- on a failure: the tool name, duration in milliseconds, and a coarse error class such as `timeout` or `not_found`
 - on failures: a short error code (`zod.invalid_type`, `bridge.panel_absent`), the Zod field names that failed (`duration,position`), whether the tool said not to retry, a status token, and a path-stripped copy of the error template (`/Users/...` becomes `<path>`)
 - package version, operating system, CPU architecture, and Node.js version
 

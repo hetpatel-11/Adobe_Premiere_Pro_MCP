@@ -1,5 +1,5 @@
 export const SITE = "https://premiere-mcp.com"
-export const VERSION = "1.2.9"
+export const VERSION = "1.2.10"
 export const PACKAGE = "adobe-premiere-pro-mcp"
 export const CLI = "premiere-pro-mcp"
 export const REPO = "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP"
@@ -126,7 +126,7 @@ This page is the public contact record for Premiere Pro MCP on premiere-mcp.com.
 
 export const PRIVACY_MD = `# Privacy — Premiere Pro MCP
 
-Last updated: August 27, 2026
+Last updated: October 21, 2026
 
 Premiere Pro MCP is local software. It does not operate a hosted editing service and does not send Premiere project data, media, MCP request arguments, or tool results to the project maintainers.
 
@@ -136,7 +136,7 @@ The MCP server and CEP bridge exchange command and response files in a local bri
 
 ## Anonymous usage telemetry
 
-The MCP server sends anonymous usage telemetry by default. It records server starts (to count installs), failed tool calls, and at most one successful call per tool per install per day (so we can see that it works and which tools are used). Events include an anonymous install id, session id, tool name, success, duration, a coarse error class, package version, OS, CPU architecture, and Node.js version. They do not include project names, media paths, file contents, tool arguments, tool results, or usernames.
+The MCP server sends anonymous usage telemetry by default. Current clients send at most one server start per install per UTC day and at most one failed tool call per UTC day. Packages through 1.2.9 still send a start on every launch, every failure, and at most one success per tool per day, until updated. Events include an anonymous install id, session id, and on a failure the tool name, duration, and a coarse error class, plus package version, OS, CPU architecture, and Node.js version. They do not include project names, media paths, file contents, tool arguments, tool results, or usernames.
 
 Opt out by unchecking Share anonymous usage data in the CEP panel, setting \`"telemetry": false\` in \`~/.premiere-mcp-bridge/config.json\`, or setting \`PREMIERE_MCP_TELEMETRY=0\`.
 

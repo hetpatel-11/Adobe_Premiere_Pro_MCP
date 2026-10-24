@@ -173,7 +173,7 @@ describe('Telemetry', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  function makeTelemetry(env: Record<string, string> = {}): Telemetry {
+  function makeTelemetry(env: Record<string, string> = {}, now?: () => Date): Telemetry {
     return new Telemetry({
       env,
       homedir: () => home,
@@ -184,6 +184,7 @@ describe('Telemetry', () => {
       nodeVersion: 'v20.11.0',
       packageVersion: '1.2.2',
       ingestUrl: 'https://example.test/v1/event',
+      ...(now ? { now } : {}),
     });
   }
 
@@ -260,19 +261,57 @@ describe('Telemetry', () => {
     });
   });
 
-  it('sends a successful tool call once per tool per process', async () => {
+  it('does not send successful tool calls', async () => {
     const telemetry = makeTelemetry();
     telemetry.trackToolCall({ tool: 'ping', success: true, durationMs: 4 });
     telemetry.trackToolCall({ tool: 'ping', success: true, durationMs: 5 });
     telemetry.trackToolCall({ tool: 'list_sequences', success: true, durationMs: 8 });
     await telemetry.flush();
+    expect(captured).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sends one launch and one failure per UTC day, including across processes', async () => {
+    const now = () => new Date('2026-10-21T15:00:00.000Z');
+    const first = makeTelemetry({}, now);
+    first.trackServerStarted();
+    first.trackServerStarted();
+    first.trackToolCall({ tool: 'ping', success: false, durationMs: 4, errorKind: 'timeout' });
+    first.trackToolCall({
+      tool: 'list_sequences',
+      success: false,
+      durationMs: 8,
+      errorKind: 'connection',
+    });
+    await first.flush();
+
+    const second = makeTelemetry({}, now);
+    second.trackServerStarted();
+    second.trackToolCall({ tool: 'ping', success: false, durationMs: 3, errorKind: 'timeout' });
+    await second.flush();
+
     expect(captured).toHaveLength(2);
-    expect(captured[0]).toMatchObject({ event: 'tool_called', tool: 'ping', success: true });
+    expect(captured[0]).toMatchObject({ event: 'server_started' });
     expect(captured[1]).toMatchObject({
       event: 'tool_called',
-      tool: 'list_sequences',
-      success: true,
+      tool: 'ping',
+      success: false,
+      error_kind: 'timeout',
     });
+  });
+
+  it('sends the daily launch again on the next UTC day', async () => {
+    const first = makeTelemetry({}, () => new Date('2026-10-21T23:00:00.000Z'));
+    first.trackServerStarted();
+    await first.flush();
+
+    const second = makeTelemetry({}, () => new Date('2026-10-22T00:30:00.000Z'));
+    second.trackServerStarted();
+    await second.flush();
+
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toMatchObject({ event: 'server_started' });
+    expect(captured[1]).toMatchObject({ event: 'server_started' });
   });
 
   it('replaces illegal tool names instead of sending caller-supplied strings', async () => {
@@ -302,7 +341,7 @@ describe('Telemetry', () => {
       packageVersion: '1.2.2',
       ingestUrl: 'https://example.test/v1/event',
     });
-    second.trackServerStarted();
+    second.trackToolCall({ tool: 'ping', success: false, durationMs: 4 });
     await second.flush();
 
     expect(captured[0]?.distinct_id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');

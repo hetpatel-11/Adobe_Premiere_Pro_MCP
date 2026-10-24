@@ -4,10 +4,10 @@ Cloudflare Worker + D1 store for anonymous MCP usage events. The published MCP s
 
 `https://adobe-premiere-mcp-telemetry.hetkp8044.workers.dev/v1/event`
 
-`server_started` and every failed `tool_called` are stored. Successful tool
-calls are stored at most once per install/tool/UTC day so we can see that the
-product works and which tools are used without burning the Workers Free D1 write
-cap on repeat successes.
+`server_started` is stored at most once per install per UTC day. Failed
+`tool_called` events are stored. Successful tool calls from clients through
+1.2.9 are stored at most once per install/tool/UTC day; current clients do not
+send successes. Traces are not sampled.
 
 Payloads are allowlisted. Tool arguments, results, and filesystem paths are dropped.
 Failed tool calls include a short `error_code`, Zod `error_fields`, `retry`, `status`,

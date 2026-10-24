@@ -210,9 +210,28 @@ export default {
       return json(400, { ok: false, error: 'invalid_event' });
     }
 
-    // Published clients still POST every successful tool call. Keep the first
-    // success per install/tool/UTC day so we know the product works and which
-    // tools are used, and discard the rest to stay on the Workers Free D1 cap.
+    // Installed clients POST a launch on every process start. One row per
+    // install per UTC day is the daily-active count; skip the extra writes.
+    if (event.event === 'server_started') {
+      try {
+        const seen = await env.DB.prepare(
+          `SELECT 1 AS ok FROM events
+           WHERE distinct_id = ? AND event = 'server_started'
+             AND received_at >= datetime('now', 'start of day')
+           LIMIT 1`,
+        )
+          .bind(event.distinct_id)
+          .first();
+        if (seen) {
+          return new Response(null, { status: 204 });
+        }
+      } catch {
+        // If the lookup fails, store the launch rather than drop the day.
+      }
+    }
+
+    // Older clients still POST every successful tool call. Keep the first
+    // success per install/tool/UTC day and discard the rest.
     if (event.event === 'tool_called' && event.success === 1) {
       try {
         const seen = await env.DB.prepare(

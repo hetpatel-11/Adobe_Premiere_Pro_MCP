@@ -68,6 +68,7 @@ export type TelemetryDependencies = {
   nodeVersion?: string;
   packageVersion?: string;
   ingestUrl?: string;
+  now?: () => Date;
 };
 
 const FALSE_VALUES = new Set(['0', 'false', 'off', 'no']);
@@ -347,8 +348,9 @@ export class Telemetry {
   private readonly packageVersion: string;
   private readonly ingestUrl: string;
   private readonly sessionId: string;
+  private readonly nowImpl: () => Date;
   private readonly pending = new Set<Promise<void>>();
-  private readonly sentSuccessTools = new Set<string>();
+  private sentToday: { day: string; started: boolean; failed: boolean } | undefined;
   private installId: string | undefined;
 
   constructor(dependencies: TelemetryDependencies = {}) {
@@ -366,6 +368,7 @@ export class Telemetry {
       (typeof envIngestUrl === 'string' && envIngestUrl.length > 0
         ? envIngestUrl
         : DEFAULT_TELEMETRY_INGEST_URL);
+    this.nowImpl = dependencies.now ?? (() => new Date());
     this.sessionId = this.randomUUIDImpl();
   }
 
@@ -375,6 +378,9 @@ export class Telemetry {
 
   trackServerStarted(): void {
     if (!this.enabled()) return;
+    // One launch per UTC day is the daily-active count. Repeat process starts
+    // were most of the Worker requests and are not a separate user.
+    if (!this.claimDailySend('started')) return;
     this.enqueue({
       event: 'server_started',
       distinct_id: this.getInstallId(),
@@ -388,14 +394,11 @@ export class Telemetry {
 
   trackToolCall(input: TrackToolCallInput): void {
     if (!this.enabled()) return;
+    // Successes are not sent. The daily launch already counts the install.
+    if (input.success) return;
+    // One failure per UTC day keeps a breakage signal without a request per retry.
+    if (!this.claimDailySend('failed')) return;
     const tool = sanitizeToolName(input.tool);
-    // Repeat successes from one process are noise. The ingest worker also
-    // keeps at most one success per install/tool/UTC day, so we still learn
-    // which tools work without writing every call.
-    if (input.success) {
-      if (this.sentSuccessTools.has(tool)) return;
-      this.sentSuccessTools.add(tool);
-    }
     const payload: TelemetryPayload = {
       event: 'tool_called',
       distinct_id: this.getInstallId(),
@@ -424,6 +427,42 @@ export class Telemetry {
   async flush(): Promise<void> {
     if (this.pending.size === 0) return;
     await Promise.allSettled(this.pending);
+  }
+
+  private utcDay(): string {
+    return this.nowImpl().toISOString().slice(0, 10);
+  }
+
+  private sentStatePath(): string {
+    return join(this.homedir(), '.premiere-mcp-bridge', 'telemetry-day.json');
+  }
+
+  private loadSentToday(): { day: string; started: boolean; failed: boolean } {
+    const day = this.utcDay();
+    if (this.sentToday?.day === day) return this.sentToday;
+    const saved = readJsonObject(this.sentStatePath());
+    const sameDay = saved?.day === day;
+    this.sentToday = {
+      day,
+      started: sameDay && saved?.started === true,
+      failed: sameDay && saved?.failed === true,
+    };
+    return this.sentToday;
+  }
+
+  /** Returns false when this install already sent that kind of event today. */
+  private claimDailySend(kind: 'started' | 'failed'): boolean {
+    const state = this.loadSentToday();
+    if (state[kind]) return false;
+    state[kind] = true;
+    try {
+      const path = this.sentStatePath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(state), 'utf8');
+    } catch {
+      // The in-memory claim still stops this process from sending again.
+    }
+    return true;
   }
 
   private readInstallId(idPath: string): string | undefined {

@@ -8,7 +8,7 @@ export function PrivacyPage() {
       kicker="Policy"
       title="Privacy — Premiere Pro MCP"
     >
-      <p>Last updated August 27, 2026.</p>
+      <p>Last updated October 21, 2026.</p>
       <p>
         Premiere Pro MCP is local software. It does not operate a hosted
         editing service and does not send Premiere project data, media, MCP
@@ -27,11 +27,13 @@ export function PrivacyPage() {
         Anonymous usage telemetry
       </h2>
       <p>
-        The MCP server sends anonymous usage telemetry by default. It records
-        server starts (to count installs), failed tool calls, and at most one
-        successful call per tool per install per day. Events include an
-        anonymous install id, session id, tool name, success, duration, a
-        coarse error class, package version, OS, CPU architecture, and Node.js
+        The MCP server sends anonymous usage telemetry by default. Current
+        clients send at most one server start per install per UTC day and at
+        most one failed tool call per UTC day. Packages through 1.2.9 still
+        send a start on every launch, every failure, and at most one success
+        per tool per day, until updated. Events include an anonymous install
+        id, session id, and on a failure the tool name, duration, and a coarse
+        error class, plus package version, OS, CPU architecture, and Node.js
         version. They do not include project names, media paths, file
         contents, tool arguments, tool results, or usernames.
       </p>

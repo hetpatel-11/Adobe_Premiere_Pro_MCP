@@ -2,7 +2,14 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
-## [Unreleased]
+## [1.2.10] - 2026-10-24
+
+- `apply_lut` stores the `.cube` or `.3dl` on Lumetri's Input LUT path and selects that custom LUT. The previous call wrote the path onto the numeric LUT menu, swallowed the type error, and still returned success. A missing file, or a path Premiere does not keep, is now a failure. The second Input LUT menu on the same effect is left alone, because writing it clears the first. `apply_effect` uses the same path when Lumetri's `Input LUT` parameter is a file path.
+- Telemetry sends at most one launch per install per UTC day and at most one
+  failed tool call per UTC day. Successful tool calls are not sent. The ingest
+  Worker stores at most one launch per install per day and no longer traces
+  every request. Published copies through 1.2.9 keep the old request rate
+  until they are updated.
 
 ## [1.2.9] - 2026-10-12
 

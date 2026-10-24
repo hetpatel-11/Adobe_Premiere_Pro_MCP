@@ -11,11 +11,11 @@ import { ClipTransitionDurationSchema, ClipTransitionPositionSchema } from '../s
 export const effectsTools: ToolModule[] = [
   {
     name: 'apply_effect',
-    description: 'Applies a visual or audio effect to a clip, identifies the exact newly created component, and verifies parameter readbacks.',
+    description: 'Applies a visual or audio effect to a clip, identifies the exact newly created component, and verifies parameter readbacks. A Lumetri "Input LUT" string is a .cube or .3dl file path.',
     inputSchema: z.object({
       clipId: z.string().describe('The ID of the clip to apply the effect to'),
       effectName: z.string().describe('The name of the effect to apply (e.g., "Gaussian Blur", "Lumetri Color")'),
-      parameters: z.record(z.string(), z.any()).optional().describe('Key-value pairs for the effect\'s parameters')
+      parameters: z.record(z.string(), z.any()).optional().describe('Key-value pairs for the effect\'s parameters. For Lumetri Color, an "Input LUT" string is the absolute path of a .cube or .3dl file.')
     }),
     run: (ctx, args) => applyEffect(ctx, args.clipId, args.effectName, args.parameters),
   },
@@ -84,11 +84,11 @@ export const effectsTools: ToolModule[] = [
   },
   {
     name: 'apply_lut',
-    description: 'Applies a Look-Up Table (LUT) to a clip for color grading.',
+    description: 'Applies a .cube or .3dl file as the Lumetri Color Input LUT on a clip. Returns failure when the file is missing or Premiere does not keep the path.',
     inputSchema: z.object({
       clipId: z.string().describe('The ID of the clip'),
       lutPath: z.string().describe('The absolute path to the .cube or .3dl LUT file'),
-      intensity: z.number().optional().describe('LUT intensity (0-100)')
+      intensity: z.number().optional().describe('Input LUT intensity (0-100). Omitted leaves the effect default.')
     }),
     run: (ctx, args) => applyLut(ctx, args.clipId, args.lutPath, args.intensity),
   },
@@ -214,6 +214,91 @@ function transitionVerificationScript(): string {
     `;
 }
 
+function lumetriInputLutHelper(): string {
+  // Premiere 23.4+ keeps the custom Input LUT in the unnamed string two slots
+  // after "Basic Correction", and only renders it when the first Input LUT menu
+  // (four slots after that header) is 1. The path has to end in a separator.
+  // The second menu of the same name clears the first one, so it is never written.
+  const separator = process.platform === 'win32' ? '\\' : '/';
+  return `
+        function __applyLumetriInputLut(comp, filePath, intensity) {
+          var basic = -1;
+          for (var bi = 0; bi < comp.properties.numItems; bi++) {
+            if (String(comp.properties[bi].displayName) === "Basic Correction") { basic = bi; break; }
+          }
+          if (basic < 0 || basic + 4 >= comp.properties.numItems) {
+            return { ok: false, error: "Lumetri Color has no Input LUT path on this effect" };
+          }
+          if (String(comp.properties[basic + 4].displayName) !== "Input LUT") {
+            return { ok: false, error: "Lumetri Input LUT is not where this Premiere build keeps it" };
+          }
+          var cleaned = String(filePath);
+          while (cleaned.length > 1 && (cleaned.charAt(cleaned.length - 1) === "/" || cleaned.charAt(cleaned.length - 1) === "\\\\")) {
+            cleaned = cleaned.substring(0, cleaned.length - 1);
+          }
+          var lutFile = new File(cleaned);
+          if (!lutFile.exists) return { ok: false, error: "LUT file not found: " + cleaned };
+          var separator = ${JSON.stringify(separator)};
+          var stored = cleaned + separator;
+          try { comp.properties[basic + 1].setValue(1, true); }
+          catch (enableError) {
+            return { ok: false, error: "Could not enable Lumetri Basic Correction: " + enableError.toString() };
+          }
+          try { comp.properties[basic + 2].setValue(stored, true); }
+          catch (pathError) {
+            return { ok: false, error: "Could not set the LUT path: " + pathError.toString() };
+          }
+          var indexAfter = null;
+          try {
+            comp.properties[basic + 4].setValue(1, true);
+            indexAfter = comp.properties[basic + 4].getValue();
+          } catch (indexError) {
+            return { ok: false, error: "Could not select the custom Input LUT: " + indexError.toString() };
+          }
+          var pathAfter = "";
+          try { pathAfter = String(comp.properties[basic + 2].getValue()); }
+          catch (pathReadError) {
+            return { ok: false, error: "Could not read the LUT path back: " + pathReadError.toString() };
+          }
+          function __normLutPath(value) {
+            var s = String(value);
+            while (s.length > 1 && (s.charAt(s.length - 1) === "/" || s.charAt(s.length - 1) === "\\\\")) {
+              s = s.substring(0, s.length - 1);
+            }
+            return s;
+          }
+          if (__normLutPath(pathAfter) !== __normLutPath(stored)) {
+            return { ok: false, error: "Premiere did not keep the LUT path", pathAfter: pathAfter, inputLut: indexAfter };
+          }
+          if (indexAfter !== 1) {
+            return { ok: false, error: "Premiere did not select the custom Input LUT", inputLut: indexAfter, pathAfter: pathAfter };
+          }
+          var intensityAfter = null;
+          if (typeof intensity === "number") {
+            var intensityProp = null;
+            for (var ii = basic + 4; ii < comp.properties.numItems; ii++) {
+              if (String(comp.properties[ii].displayName) === "Intensity") { intensityProp = comp.properties[ii]; break; }
+            }
+            if (!intensityProp) return { ok: false, error: "Lumetri has no Input LUT intensity", pathAfter: pathAfter, inputLut: indexAfter };
+            try {
+              intensityProp.setValue(intensity, true);
+              intensityAfter = intensityProp.getValue();
+            } catch (intensityError) {
+              return { ok: false, error: "Could not set LUT intensity: " + intensityError.toString() };
+            }
+            if (Math.abs(Number(intensityAfter) - intensity) > 0.001) {
+              return { ok: false, error: "LUT intensity did not stick", intensityAfter: intensityAfter, pathAfter: pathAfter, inputLut: indexAfter };
+            }
+          }
+          var secondLut = null;
+          if (basic + 5 < comp.properties.numItems && String(comp.properties[basic + 5].displayName) === "Input LUT") {
+            try { secondLut = comp.properties[basic + 5].getValue(); } catch (secondError) { secondLut = null; }
+          }
+          return { ok: true, path: pathAfter, inputLut: indexAfter, intensity: intensityAfter, secondInputLut: secondLut };
+        }
+  `;
+}
+
 export async function applyEffect(ctx: ToolContext, clipId: string, effectName: string, parameters?: Record<string, any>): Promise<any> {
   const paramJson = JSON.stringify(parameters || {});
   const clipIdJson = JSON.stringify(clipId);
@@ -221,6 +306,7 @@ export async function applyEffect(ctx: ToolContext, clipId: string, effectName: 
   const script = `
       try {
         app.enableQE();
+        ${lumetriInputLutHelper()}
         var info = __findClip(${clipIdJson});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
         var clip = info.clip;
@@ -417,6 +503,21 @@ export async function applyEffect(ctx: ToolContext, clipId: string, effectName: 
         for (var pName in requestedParams) {
           if (requestedParams.hasOwnProperty && !requestedParams.hasOwnProperty(pName)) continue;
           var requestedVal = requestedParams[pName];
+          if (normalize(pName) === "inputlut" && typeof requestedVal === "string") {
+            var lutApplied = __applyLumetriInputLut(newComp, requestedVal, null);
+            paramResults.push({
+              requestedName: pName,
+              matchedDisplayName: "Input LUT",
+              strategy: "lumetri-file",
+              valueRequested: requestedVal,
+              valueAfter: lutApplied.ok ? lutApplied.path : (lutApplied.pathAfter || null),
+              inputLut: lutApplied.inputLut,
+              verification: lutApplied.ok ? "verified" : "failed",
+              ok: lutApplied.ok === true,
+              error: lutApplied.ok ? undefined : lutApplied.error
+            });
+            continue;
+          }
           var matched = null;
           // Pass 1: exact displayName match
           for (var k = 0; k < newComp.properties.numItems; k++) {
@@ -894,32 +995,63 @@ export async function colorCorrect(ctx: ToolContext, clipId: string, adjustments
   return await ctx.bridge.executeScript(script);
 }
 
-async function applyLut(ctx: ToolContext, clipId: string, lutPath: string, _intensity = 100): Promise<any> {
+async function applyLut(ctx: ToolContext, clipId: string, lutPath: string, intensity?: number): Promise<any> {
+  const intensityJson = typeof intensity === 'number' ? JSON.stringify(intensity) : 'null';
   const script = `
       try {
         app.enableQE();
+        ${lumetriInputLutHelper()}
         var info = __findClip(${JSON.stringify(clipId)});
         if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        // Addressed by id, not by whatever is on screen. __findClip() searches every
-        // sequence in the project, so a clip can be resolved out of one sequence and
-        // then, through getActiveSequence(), have the effect applied to whichever
-        // clip sits at the same track and index in a different one.
-        var qeSeq = __qeSequenceFor(info.sequence);
-        if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
-        var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-        var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
-        var effect = qe.project.getVideoEffectByName("Lumetri Color");
-        if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color not found" });
-        qeClip.addVideoEffect(effect);
-        var clip = info.clip;
-        var lastComp = clip.components[clip.components.numItems - 1];
-        for (var j = 0; j < lastComp.properties.numItems; j++) {
-          var p = lastComp.properties[j];
-          try {
-            if (p.displayName === "Input LUT") p.setValue(${JSON.stringify(lutPath)}, true);
-          } catch (e2) {}
+        if (info.trackType !== "video") return JSON.stringify({ success: false, error: "apply_lut only supports video clips" });
+        function __lastLumetri(target) {
+          for (var li = target.components.numItems - 1; li >= 0; li--) {
+            if (String(target.components[li].displayName) === "Lumetri Color") return target.components[li];
+          }
+          return null;
         }
-        return JSON.stringify({ success: true, message: "LUT applied", clipId: ${JSON.stringify(clipId)}, lutPath: ${JSON.stringify(lutPath)} });
+        var comp = __lastLumetri(info.clip);
+        var reused = comp !== null;
+        if (!comp) {
+          // Addressed by id, not by whatever is on screen. __findClip() searches every
+          // sequence in the project, so a clip can be resolved out of one sequence and
+          // then, through getActiveSequence(), have the effect applied to whichever
+          // clip sits at the same track and index in a different one.
+          var qeSeq = __qeSequenceFor(info.sequence);
+          if (!qeSeq) return JSON.stringify({ success: false, error: "Could not address sequence '" + info.sequenceName + "' through the QE API." });
+          var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
+          var qeClip = __findQeClipByDomClip(qeTrack, info.clip);
+          if (!qeClip) return JSON.stringify({ success: false, error: "Could not locate matching QE clip for Lumetri Color" });
+          var effect = qe.project.getVideoEffectByName("Lumetri Color");
+          if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color not found" });
+          qeClip.addVideoEffect(effect);
+          var afterInfo = __findClip(${JSON.stringify(clipId)});
+          if (!afterInfo) return JSON.stringify({ success: false, error: "Clip could not be re-resolved after adding Lumetri Color" });
+          comp = __lastLumetri(afterInfo.clip);
+          if (!comp) return JSON.stringify({ success: false, error: "Lumetri Color was added but could not be found on the clip" });
+        }
+        var applied = __applyLumetriInputLut(comp, ${JSON.stringify(lutPath)}, ${intensityJson});
+        if (!applied.ok) {
+          return JSON.stringify({
+            success: false,
+            error: applied.error,
+            clipId: ${JSON.stringify(clipId)},
+            lutPath: ${JSON.stringify(lutPath)},
+            pathAfter: applied.pathAfter || null,
+            inputLut: applied.inputLut
+          });
+        }
+        return JSON.stringify({
+          success: true,
+          message: "LUT applied",
+          clipId: ${JSON.stringify(clipId)},
+          lutPath: ${JSON.stringify(lutPath)},
+          path: applied.path,
+          inputLut: applied.inputLut,
+          intensity: applied.intensity,
+          secondInputLut: applied.secondInputLut,
+          reusedExistingLumetri: reused
+        });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
       }
