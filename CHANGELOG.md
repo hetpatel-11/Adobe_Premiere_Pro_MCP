@@ -2,6 +2,11 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [Unreleased]
+
+- The generated-script identifier guard treats `ProjectItemType` as a Premiere host global, the same class as `Sequence` and `File`.
+- `detect_silence` on Linux puts `sudo apt-get install -y ffmpeg` in `nextStep`, matching the macOS and Windows install hints.
+
 ## [1.2.11] - 2026-10-24
 
 - `import_media` puts the file in `binName` when that bin exists, and returns failure when it does not. The previous call imported to the project root and echoed the bin name anyway.
