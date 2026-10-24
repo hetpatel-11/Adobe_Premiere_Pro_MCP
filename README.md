@@ -302,6 +302,7 @@ All `283` catalog tools have an implementation. `tools/list` advertises a small 
 | :--- | :--- |
 | `list_available_effects` / `list_clip_effects` / `get_effect_properties` | Discover installed effects, applied effects, and their properties. |
 | `apply_effect` | Add a visual/audio effect component. Identifies and reads back the new component. Premiere 26 has no scripting API to remove effects. |
+| `remove_effect` | Remove one effect (by name, optional occurrence) from a clip and verify it is gone. |
 | `batch_apply_effect` / `copy_effects_between_clips` / `copy_effect_values` | Apply or copy effect treatments across clips. |
 | `set_effect_property` / `set_color_value` / `set_blend_mode` | Change supported effect parameters, color values, and blend modes. |
 | `color_correct` / `apply_lut` / `stabilize_clip` | Apply basic correction, LUTs, or Warp Stabilizer. |
