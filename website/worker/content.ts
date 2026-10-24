@@ -1,5 +1,5 @@
 export const SITE = "https://premiere-mcp.com"
-export const VERSION = "1.2.10"
+export const VERSION = "1.2.11"
 export const PACKAGE = "adobe-premiere-pro-mcp"
 export const CLI = "premiere-pro-mcp"
 export const REPO = "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP"

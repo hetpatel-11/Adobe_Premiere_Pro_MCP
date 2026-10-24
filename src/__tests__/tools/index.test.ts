@@ -482,6 +482,7 @@ describe('PremiereProTools', () => {
         expect(script).toContain('var exportStem = requestedPath;');
         expect(script).toContain('tryExport(timeNumber, exportStem)');
         expect(script).not.toContain('tryExport(timeNumber, "/tmp/shot.png")');
+        expect(script).toContain('afterTimecodeError');
       });
 
       it('reports the path it actually wrote rather than the one requested', async () => {
@@ -934,7 +935,10 @@ describe('PremiereProTools', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('ffmpeg was not found on PATH');
+      expect(result.errorCode).toBe('ffmpeg.not_found');
+      expect(result.retry).toBe(false);
+      expect(result.nextStep).toMatch(/brew install ffmpeg|winget install --id Gyan\.FFmpeg/);
+      expect(result.installCommand).toMatch(/ffmpeg/);
       // Only the version-check spawn should have happened -- never attempted the real analysis.
       expect(mockSpawn).toHaveBeenCalledTimes(1);
     });

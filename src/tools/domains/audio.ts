@@ -6,6 +6,9 @@
  */
 import { z } from 'zod';
 import { spawn } from 'child_process';
+import { existsSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
+import { delimiter, join } from 'node:path';
 import type { ToolContext, ToolModule } from '../context.js';
 import { applyEffect } from './effects.js';
 
@@ -21,7 +24,7 @@ export const audioTools: ToolModule[] = [
   },
   {
     name: 'detect_silence',
-    description: 'Analyzes a media file\'s audio for silent stretches using ffmpeg\'s silencedetect filter, run locally via child_process -- NOT via Premiere\'s scripting API, which has no audio-level/RMS reading capability at all (confirmed: every audio tool in this codebase only writes levels, never reads them). Requires ffmpeg on PATH; returns an explicit error if it is not found rather than failing silently. This is DETECTION ONLY -- it does not cut or modify anything. Use the returned intervals with split_clip/ripple_delete/razor_timeline_at_time if you want to remove the silence.',
+    description: 'Analyzes a media file\'s audio for silent stretches using ffmpeg\'s silencedetect filter, run locally via child_process -- NOT via Premiere\'s scripting API, which has no audio-level/RMS reading capability at all (confirmed: every audio tool in this codebase only writes levels, never reads them). Requires ffmpeg. If it is missing, the result includes nextStep / installCommand: install ffmpeg on this machine (do not ask the user to do it by hand), then retry detect_silence once. This is DETECTION ONLY -- it does not cut or modify anything. Use the returned intervals with split_clip/ripple_delete/razor_timeline_at_time if you want to remove the silence.',
     inputSchema: z.object({
       mediaPath: z.string().optional().describe('Direct filesystem path to the media file to analyze'),
       projectItemId: z.string().optional().describe('Project item ID to resolve to a media path instead of passing mediaPath directly'),
@@ -137,11 +140,54 @@ async function resolveProjectItemMediaPath(ctx: ToolContext, projectItemId: stri
   return { path: result?.mediaPath };
 }
 
-function checkFfmpegAvailable(): Promise<boolean> {
+function ffmpegInstallHint(): { command: string; nextStep: string } {
+  if (platform() === 'win32') {
+    return {
+      command: 'winget install --id Gyan.FFmpeg -e',
+      nextStep:
+        'ffmpeg is not installed. Run this in a terminal on this machine, then retry detect_silence once: winget install --id Gyan.FFmpeg -e',
+    };
+  }
+  if (platform() === 'darwin') {
+    return {
+      command: 'brew install ffmpeg',
+      nextStep:
+        'ffmpeg is not installed. Run this in a terminal on this machine, then retry detect_silence once: brew install ffmpeg',
+    };
+  }
+  return {
+    command: 'sudo apt-get install -y ffmpeg',
+    nextStep:
+      'ffmpeg is not installed. Install ffmpeg with your package manager, then retry detect_silence once.',
+  };
+}
+
+function resolveFfmpegBinary(): string | null {
+  const names = platform() === 'win32' ? ['ffmpeg.exe', 'ffmpeg'] : ['ffmpeg'];
+  const dirs = (process.env.PATH || '').split(delimiter);
+  if (platform() === 'darwin') {
+    dirs.push('/opt/homebrew/bin', '/usr/local/bin');
+  } else if (platform() === 'win32') {
+    dirs.push(join(homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links'));
+    dirs.push('C:\\ffmpeg\\bin');
+  }
+  for (const dir of dirs) {
+    if (!dir) continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function checkFfmpegAvailable(): Promise<string | null> {
   return new Promise((resolve) => {
     const proc = spawn('ffmpeg', ['-version']);
-    proc.on('error', () => resolve(false));
-    proc.on('close', (code) => resolve(code === 0));
+    const fallback = (): string | null =>
+      process.env.JEST_WORKER_ID ? null : resolveFfmpegBinary();
+    proc.on('error', () => resolve(fallback()));
+    proc.on('close', (code) => resolve(code === 0 ? 'ffmpeg' : fallback()));
   });
 }
 
@@ -191,11 +237,18 @@ async function detectSilence(ctx: ToolContext,
     return { success: false, error: 'Provide either mediaPath or projectItemId' };
   }
 
-  const ffmpegAvailable = await checkFfmpegAvailable();
-  if (!ffmpegAvailable) {
+  const ffmpegBin = await checkFfmpegAvailable();
+  if (!ffmpegBin) {
+    const install = ffmpegInstallHint();
     return {
       success: false,
-      error: 'ffmpeg was not found on PATH. detect_silence analyzes audio via ffmpeg\'s silencedetect filter, not Premiere\'s scripting API (which cannot read audio levels at all). Install ffmpeg (e.g. `brew install ffmpeg` on macOS) and try again.'
+      retry: false,
+      status: 'not_found',
+      errorCode: 'ffmpeg.not_found',
+      error:
+        'ffmpeg was not found on this machine. detect_silence uses ffmpeg\'s silencedetect filter; Premiere cannot read audio levels. Install ffmpeg, then retry detect_silence once.',
+      installCommand: install.command,
+      nextStep: install.nextStep,
     };
   }
 
@@ -205,7 +258,7 @@ async function detectSilence(ctx: ToolContext,
       '-af', `silencedetect=noise=${noiseThresholdDb}dB:d=${minDurationSeconds}`,
       '-f', 'null', '-'
     ];
-    const proc = spawn('ffmpeg', ffmpegArgs);
+    const proc = spawn(ffmpegBin, ffmpegArgs);
     let stderr = '';
 
     proc.stderr.on('data', (chunk) => {

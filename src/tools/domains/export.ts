@@ -436,15 +436,30 @@ async function exportFrame(ctx: ToolContext, sequenceId: string, time: number, o
           return writtenPath(false) !== null;
         }
 
+        // Premiere 26 accepts HH:MM:SS:FF and throws "Illegal Parameter type"
+        // for a raw second count. 1.2.5 already tries timecode first. Keep
+        // numeric probes only as a last resort, and do not let that known
+        // throw replace a timecode miss in the error we report.
         var exported =
           tryExport(timeCode, exportStem) ||
-          tryExport(exportStem, timeCode) ||
-          tryExport(timeNumber, exportStem) ||
-          tryExport(exportStem, timeNumber) ||
-          tryExport(timeString, exportStem) ||
-          tryExport(exportStem, timeString) ||
-          tryExport(timeTicks, exportStem) ||
-          tryExport(exportStem, timeTicks);
+          tryExport(exportStem, timeCode);
+        var afterTimecodeError = exportError;
+        if (!exported) {
+          exportError = null;
+          exported =
+            tryExport(timeNumber, exportStem) ||
+            tryExport(exportStem, timeNumber) ||
+            tryExport(timeString, exportStem) ||
+            tryExport(exportStem, timeString) ||
+            tryExport(timeTicks, exportStem) ||
+            tryExport(exportStem, timeTicks);
+          if (!exported) {
+            if (afterTimecodeError) exportError = afterTimecodeError;
+            else if (exportError && String(exportError).indexOf("Illegal Parameter type") !== -1) {
+              exportError = "Premiere rejected a raw-seconds frame export (Illegal Parameter type). Open the sequence in a timeline and retry; this tool already sends HH:MM:SS:FF first.";
+            }
+          }
+        }
 
         var actualPath = writtenPath(true);
         if (!exported || !actualPath) {

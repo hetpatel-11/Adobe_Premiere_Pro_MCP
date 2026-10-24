@@ -2,7 +2,7 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
-## [Unreleased]
+## [1.2.11] - 2026-10-24
 
 - `import_media` puts the file in `binName` when that bin exists, and returns failure when it does not. The previous call imported to the project root and echoed the bin name anyway.
 - `move_clip_to_track` parks past every track and removes the extra audio clip Premiere creates for the parked copy. The original linked audio stays where it was.
@@ -11,6 +11,8 @@ All notable changes are documented here. Releases use semantic versioning.
 - `verify_premiere_connection` reports `readOnly` from the project file's readonly attribute. It was a hardcoded `true`.
 - The CEP heartbeat records the last time Premiere finished an ExtendScript call. A timeout while that timestamp is stale says the scripting thread is stuck, instead of treating a fresh panel heartbeat as a healthy host.
 - The CEP manifest names Premiere as the dispatch host, and the macOS installer enables PlayerDebugMode for CSXS 9 through 15. Windows doctor fails when that value is a DWORD, which CEP ignores, and when the CEP log shows the panel's signature was rejected.
+- `detect_silence` looks outside `PATH` for ffmpeg and, when it is missing, returns the install command for this machine instead of a generic not-found error.
+- `export_frame` reports the timecode failure from Premiere 26. A later raw-seconds attempt no longer replaces that error with "Illegal Parameter type".
 
 ## [1.2.10] - 2026-10-24
 
