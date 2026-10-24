@@ -199,6 +199,46 @@ Fix:
 3. Click `Start Bridge`.
 4. If bridge code changed, right-click the panel and choose `Reload`.
 
+### The CEP panel is listed but does nothing when clicked (Windows, CEP 12)
+
+Status: confirmed, workaround available
+
+On Premiere Pro builds running CEP runtime 12 (`PlugPlug version : 12.0.1.2`, seen on
+Premiere Pro 26.3.2 on Windows), clicking `Window > Extensions > MCP Bridge (CEP)` does
+nothing — no panel, no error dialog. `%TEMP%\CEP12-PPRO.log` records the real cause on
+every click:
+
+```
+ERROR Signature verification failed for extension com.mcp.premiere.cepbridge.panel
+```
+
+This happens even with `PlayerDebugMode` correctly set to `1` under
+`HKCU\Software\Adobe\CSXS.12` (and the other CSXS.* keys `--install-cep` writes). CEP's
+debug-mode signature bypass does not reliably work for CEP 12 in this configuration —
+other unsigned dev extensions on the same machine that happen to carry real
+`META-INF/signatures.xml` + `mimetype` data (because they were originally distributed as
+signed `.zxp` files and later unpacked into the extensions folder) load fine; a bare
+unsigned folder like `cep-plugin/` does not. This is consistent with reports of the same
+CEP 12 signature-bypass regression on macOS.
+
+Fix: sign the extension instead of relying on debug mode.
+
+1. Download Adobe's official `ZXPSignCmd` for your platform from
+   `Adobe-CEP/CEP-Resources` (`ZXPSignCMD/<version>/win64/ZXPSignCmd.exe` for Windows) and
+   set `ZXP_SIGN_CMD` to its path.
+2. Run `node scripts/create-self-signed-zxp-cert.mjs` to generate a local self-signed
+   certificate (works on macOS via Keychain, and on Windows/Linux via a local
+   `cert-password.txt` next to the `.p12` — keep that file private, it is not committed).
+3. Run `node scripts/sign-zxp.mjs` with `ZXP_CERT_PATH` and `ZXP_CERT_PASSWORD` set to
+   produce a signed `.zxp` under `release-artifacts/`.
+4. Unzip that `.zxp` (it is a plain zip) directly over the installed extension folder —
+   `%APPDATA%\Adobe\CEP\extensions\MCPBridgeCEP` on Windows — so `META-INF/` and
+   `mimetype` land alongside the panel files, then fully quit and reopen Premiere Pro.
+
+The signature error disappears from the CEP log and the panel opens normally. This is not
+wired into `--install-cep` yet; it is a manual step only needed when the plain debug-mode
+install fails with this specific signature error.
+
 ### Live verification mutates the active project
 
 `node scripts/live-tool-sweep.mjs` creates disposable `Sweep ...` sequences and imports generated assets so the bridge is tested for real.
