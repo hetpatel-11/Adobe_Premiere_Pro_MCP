@@ -11,6 +11,18 @@ All notable changes are documented here. Releases use semantic versioning.
   every request. Published copies through 1.2.9 keep the old request rate
   until they are updated.
 
+- New color management tools, built from calls verified on 26.5.2 while setting up HLG projects:
+  - `get_color_management` reads:
+    - project graphics white and LUT interpolation, with the values this build supports
+    - a sequence's working color space, its available list, linear compositing and auto tone mapping
+    - optionally, a project item's current, original and override color space and its Input LUT id
+  - `set_project_color_management` sets `setLogColorManagement`, graphics white (100/203/300) and
+    trilinear/tetrahedral LUT interpolation. It reads back the two that have getters; log color
+    management has no getter, so it is reported as unverified.
+  - `set_sequence_color_settings` sets the working color space, choosing the ColorSpace object from
+    `workingColorSpaceList` by name, plus `compositeLinearColor` and `autoToneMapEnabled`, then
+    reads them back.
+
 ## [1.2.9] - 2026-10-12
 
 - `export_sequence` finds Adobe Media Encoder inside the Creative Cloud folder
