@@ -234,7 +234,12 @@ export function getExpandedTools(existingNames: Set<string>): MCPTool[] {
     .filter((name) => !existingNames.has(name))
     .map((name) => {
       let inputSchema: z.ZodTypeAny = z.record(z.string(), z.any());
-      if (EXPANDED_REQUIRED_CLIP_ID.has(name)) {
+      if (name === 'batch_apply_effect') {
+        inputSchema = z.object({
+          clips: z.array(z.union([z.string(), z.object({ clipId: z.string().min(1) })])).min(1).describe('Timeline clip ids to receive the effect'),
+          effectName: z.string().min(1).describe('Effect to apply'),
+        }).passthrough();
+      } else if (EXPANDED_REQUIRED_CLIP_ID.has(name)) {
         inputSchema = z.object({ clipId: z.string().min(1).describe('Timeline clip id') }).passthrough();
       } else if (EXPANDED_REQUIRED_PROJECT_ITEM_ID.has(name)) {
         inputSchema = z.object({
@@ -2098,6 +2103,30 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (seqErr) return fail(seqErr);
           var batchSeq = targetSequence();
           if (!batchSeq) return fail("No active sequence");
+          if (!args.clips || !(args.clips instanceof Array) || !args.clips.length) return fail("batch_apply_effect requires a non-empty clips array");
+          var requestedBatchIds = [];
+          for (var bri = 0; bri < args.clips.length; bri++) {
+            var requestedBatchId = typeof args.clips[bri] === "string" ? args.clips[bri] : args.clips[bri] && args.clips[bri].clipId;
+            if (!requestedBatchId) return fail("batch_apply_effect requires a clipId for every clip");
+            requestedBatchIds.push(String(requestedBatchId));
+          }
+          var allBatchClips = allClips(batchSeq);
+          var batchClips = [];
+          for (var bci = 0; bci < requestedBatchIds.length; bci++) {
+            var matchedBatchClip = null;
+            for (var bcj = 0; bcj < allBatchClips.length; bcj++) {
+              if (__idsMatch(allBatchClips[bcj].clip.nodeId, requestedBatchIds[bci])) {
+                matchedBatchClip = allBatchClips[bcj];
+                break;
+              }
+            }
+            if (!matchedBatchClip) return fail("Clip not found in sequence: " + requestedBatchIds[bci]);
+            var alreadyRequested = false;
+            for (var bck = 0; bck < batchClips.length; bck++) {
+              if (batchClips[bck] === matchedBatchClip) { alreadyRequested = true; break; }
+            }
+            if (!alreadyRequested) batchClips.push(matchedBatchClip);
+          }
           app.enableQE();
           // Resolved once, outside the loop: qeSequenceFor() scans every QE
           // sequence, so doing it per clip made the tool O(clips x sequences),
@@ -2106,7 +2135,6 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           // whole batch instead of recording one clip's error and continuing.
           var qeBatchSeq = qeSequenceFor(batchSeq);
           if (!qeBatchSeq) return fail("Could not address sequence '" + batchSeq.name + "' through the QE API.");
-          var batchClips = allClips(batchSeq);
           var batchResults = [];
           for (var bai = 0; bai < batchClips.length; bai++) {
             try {
