@@ -167,11 +167,12 @@ describe('bins that do not resolve', () => {
     expect(script).not.toContain('Parent bin not found');
   });
 
-  it('import_folder refuses a destination it cannot find', async () => {
-    await tools.executeTool('import_folder', { folderPath: '/tmp/x', binName: 'Nope' });
+  it('import_folder refuses a destination it cannot find when createBin is false', async () => {
+    await tools.executeTool('import_folder', { folderPath: '/tmp/x', binName: 'Nope', createBin: false });
     const script = bridge.executeScript.mock.calls[0][0] as string;
 
     expect(script).toContain('Destination bin not found');
+    expect(script).toContain('if (!targetBin && false)');
     expect(script).not.toContain('|| app.project.rootItem;');
   });
 });

@@ -21,6 +21,21 @@ All notable changes are documented here. Releases use semantic versioning.
   which is where Media Encoder saves user presets. The Application Support path
   is still searched.
 
+- `ripple_delete` and `remove_from_timeline` (ripple mode) now actually ripple.
+  On Premiere 26.x `TrackItem.remove(true, ...)` ignores the ripple flag, so the
+  gap stayed and the linked audio/video partner was left behind. A shared
+  `__rippleRemoveClip` helper lifts the clip and its linked partners, then shifts
+  every later clip left by the gap in exact ticks. Default scope is all tracks
+  (like sync lock); a track with a clip spanning the gap, or a locked track, is
+  skipped and reported. New optional `includeLinked` and `rippleScope`
+  (`all` | `affected`) arguments. Failed shifts return `success: false`.
+- `import_folder` no longer fails with `targetBin.importFiles is not a function`
+  (bins have no `importFiles`; only `app.project` does). It imports through the
+  project into the target bin, skips files already in the project, ignores
+  hidden/system files, creates a missing root-level bin (new `createBin`
+  argument, default true; `false` keeps the old refuse-if-missing behaviour) and
+  reports `skipped`, `errors` and `binCreated`.
+
 ## [1.2.8] - 2026-09-02
 
 - `move_clip_to_track` parks past the last clip on the destination, restores

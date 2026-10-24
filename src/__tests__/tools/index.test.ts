@@ -1860,6 +1860,43 @@ describe('PremiereProTools', () => {
       expect(mockBridge.executeScript).toHaveBeenCalledWith(expect.stringContaining('__findClip("clip-123", "seq-456")'));
       expect(mockBridge.executeScript).toHaveBeenCalledWith(expect.stringContaining('var isRipple = "lift" === "ripple";'));
     });
+
+    it('ripple-deletes by lifting the clip and its links, then shifting later clips', async () => {
+      // TrackItem.remove(true, ...) ignores its ripple flag in Premiere 26.x and
+      // leaves both the gap and the linked partner behind.
+      mockBridge.executeScript.mockResolvedValue({ success: true, clipId: 'clip-123' });
+
+      await tools.executeTool('remove_from_timeline', { clipId: 'clip-123', sequenceId: 'seq-456' });
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('__rippleRemoveClip(info, true, "all")');
+      expect(script).not.toContain('clip.remove(isRipple');
+
+      mockBridge.executeScript.mockClear();
+      await tools.executeTool('remove_from_timeline', {
+        clipId: 'clip-123', deleteMode: 'ripple', includeLinked: false, rippleScope: 'affected'
+      });
+      expect(mockBridge.executeScript.mock.calls[0][0]).toContain('__rippleRemoveClip(info, false, "affected")');
+    });
+
+    it('routes the expanded ripple_delete through the same helper', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('ripple_delete', { clipId: 'clip-123' });
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('__rippleRemoveClip(rippleClip');
+      expect(script).not.toContain('rippleClip.clip.remove(true, true)');
+    });
+
+    it('imports folders through app.project, since bins have no importFiles', async () => {
+      mockBridge.executeScript.mockResolvedValue({ success: true });
+
+      await tools.executeTool('import_folder', { folderPath: '/tmp/x', binName: 'Footage' });
+      const script = mockBridge.executeScript.mock.calls[0][0] as string;
+      expect(script).toContain('app.project.importFiles([file.fsName], true, targetBin, false)');
+      expect(script).not.toContain('targetBin.importFiles(');
+      expect(script).toContain('app.project.rootItem.createBin("Footage")');
+      expect(script).toContain('already in project');
+    });
   });
 
   describe('marker sequence targeting', () => {

@@ -287,7 +287,7 @@ All `283` catalog tools have an implementation. `tools/list` advertises a small 
 | :--- | :--- |
 | `add_to_timeline` / `add_to_timeline_batch` | Place one or many project clips with per-clip source ranges and link-audio control. Batch placement returns per-clip results. |
 | `insert_from_source` / `overwrite_from_source` / `overwrite_clip` | Perform three-point insert or overwrite editing from the Source monitor. |
-| `remove_from_timeline` / `remove_selected_clips` / `ripple_delete` | Remove timeline clips. Ripple deletion closes the gap when the host supports it. |
+| `remove_from_timeline` / `remove_selected_clips` / `ripple_delete` | Remove timeline clips. Ripple deletion removes linked audio/video partners and closes the gap across tracks (verified on Premiere 26.3). |
 | `move_clip` / `move_clip_to_track` / `set_clip_start_time` | Reposition a clip in time or on another track. |
 | `split_clip` / `razor_timeline_at_time` / `razor_all_tracks` | Cut one clip or multiple tracks at a requested timeline point. |
 | `trim_clip` / `roll_edit` / `slide_edit` / `slip_edit` | Adjust edit points and clip content timing. Structural QE edits are read back rather than trusted blindly. |

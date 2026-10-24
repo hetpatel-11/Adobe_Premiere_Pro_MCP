@@ -39,9 +39,10 @@ export const mediaTools: ToolModule[] = [
     inputSchema: z.object({
       folderPath: z.string().describe('The absolute path to the folder containing media files'),
       binName: z.string().optional().describe('The name of the bin to import the media into'),
-      recursive: z.boolean().optional().describe('Whether to import from subfolders recursively')
+      recursive: z.boolean().optional().describe('Whether to import from subfolders recursively'),
+      createBin: z.boolean().optional().describe('Create the root-level bin named by binName if it does not exist yet (default true). Set false to fail instead.')
     }),
-    run: (ctx, args) => importFolder(ctx, args.folderPath, args.binName, args.recursive),
+    run: (ctx, args) => importFolder(ctx, args.folderPath, args.binName, args.recursive, args.createBin),
   },
   {
     name: 'import_sequences_from_project',
@@ -141,26 +142,54 @@ async function importEdl(filePath: string): Promise<any> {
   };
 }
 
-async function importFolder(ctx: ToolContext, folderPath: string, binName?: string, recursive = false): Promise<any> {
+async function importFolder(ctx: ToolContext, folderPath: string, binName?: string, recursive = false, createBin: boolean = true): Promise<any> {
   const script = `
       try {
         var folder = new Folder(${JSON.stringify(folderPath)});
+        if (!folder.exists) return JSON.stringify({ success: false, error: "Folder not found: " + ${JSON.stringify(folderPath)} });
         var importedItems = [];
         var errors = [];
         
+        // Bins have no importFiles(); only app.project does. Import one file at a
+        // time through the project into the target bin so one bad file cannot sink
+        // the batch, then find the new item by media path.
+        var skipNames = { "thumbs.db": true, "desktop.ini": true, ".ds_store": true };
+        var skipped = [];
+        function mediaPathOf(item) {
+          try { return item.getMediaPath ? String(item.getMediaPath()) : ""; } catch (e) { return ""; }
+        }
+        function findByMediaPath(parent, path) {
+          if (!parent || !parent.children) return null;
+          for (var i = 0; i < parent.children.numItems; i++) {
+            var child = parent.children[i];
+            if (__samePath(mediaPathOf(child), path)) return child;
+            var nested = findByMediaPath(child, path);
+            if (nested) return nested;
+          }
+          return null;
+        }
         function importFiles(dir, targetBin) {
           var files = dir.getFiles();
           for (var i = 0; i < files.length; i++) {
             var file = files[i];
             if (file instanceof File) {
+              if (skipNames[String(file.name).toLowerCase()] || String(file.name).charAt(0) === ".") continue;
               try {
-                var item = targetBin.importFiles([file.fsName]);
-                if (item && item.length > 0) {
+                var existing = findByMediaPath(app.project.rootItem, file.fsName);
+                if (existing) {
+                  skipped.push({ name: file.name, path: file.fsName, id: existing.nodeId, reason: "already in project" });
+                  continue;
+                }
+                var ok = app.project.importFiles([file.fsName], true, targetBin, false);
+                var item = ok ? findByMediaPath(app.project.rootItem, file.fsName) : null;
+                if (item) {
                   importedItems.push({
                     name: file.name,
                     path: file.fsName,
-                    id: item[0].nodeId
+                    id: item.nodeId
                   });
+                } else {
+                  errors.push({ file: file.name, error: ok ? "Premiere reported success but no project item appeared" : "Premiere rejected the file" });
                 }
               } catch (e) {
                 errors.push({
@@ -175,6 +204,7 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
         }
         
         var targetBin = app.project.rootItem;
+        var binCreated = false;
         ${binName ? `
         // Same silent reparent as create_bin: an unresolved destination bin sent the
         // whole import to the project root instead of failing.
@@ -190,6 +220,11 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
           return null;
         }
         targetBin = __binByName(app.project.rootItem, ${JSON.stringify(binName)});
+        if (!targetBin && ${createBin}) {
+          try { targetBin = app.project.rootItem.createBin(${JSON.stringify(binName)}); } catch (eBin) {}
+          if (!targetBin) targetBin = __binByName(app.project.rootItem, ${JSON.stringify(binName)});
+          binCreated = Boolean(targetBin);
+        }
         if (!targetBin) {
           return JSON.stringify({
             success: false,
@@ -203,8 +238,11 @@ async function importFolder(ctx: ToolContext, folderPath: string, binName?: stri
         return JSON.stringify({
           success: true,
           importedItems: importedItems,
+          skipped: skipped,
           errors: errors,
+          binCreated: binCreated,
           totalImported: importedItems.length,
+          totalSkipped: skipped.length,
           totalErrors: errors.length
         });
       } catch (e) {

@@ -1671,8 +1671,9 @@ function buildExpandedToolScript(name: string, args: Record<string, any>): strin
           if (!args.clipId && !args.node_id && !args.nodeId) return fail("ripple_delete requires clipId.");
           var rippleClip = findClip(args.clipId || args.node_id || args.nodeId);
           if (!rippleClip) return fail(pendingSequenceError || "Clip not found");
-          rippleClip.clip.remove(true, true);
-          return ok({ removed: true, ripple: true, clipId: args.clipId || args.node_id || args.nodeId });
+          var rippleResult = __rippleRemoveClip(rippleClip, args.includeLinked !== false, args.rippleScope === "affected" ? "affected" : "all");
+          if (rippleResult.failedMoves.length) return fail("Clip removed but some later clips could not be shifted", rippleResult);
+          return ok({ removed: true, ripple: true, clipId: args.clipId || args.node_id || args.nodeId, result: rippleResult });
 
         case "roll_edit":
         case "slide_edit":
