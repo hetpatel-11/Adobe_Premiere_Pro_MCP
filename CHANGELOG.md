@@ -11,6 +11,15 @@ All notable changes are documented here. Releases use semantic versioning.
   every request. Published copies through 1.2.9 keep the old request rate
   until they are updated.
 
+- `export_frame` takes `bitDepth` (8 | 16) and `colorSpace` (`rec709`, `rec2020`,
+  `hlg`, `pq`). For 16-bit or a non-709 color space, the frame is rendered through Premiere's
+  exporter instead of the QE frame grab. The tool copies the installed `PNG Sequence (Match Source)`
+  preset with deep color, the requested depth and `ADBEExportColorSpace`, exports one frame of
+  in/out range, and restores the sequence's in/out points. The QE grab always wrote an 8-bit
+  Rec.709 conversion, so on an HLG/PQ sequence it could not show HDR levels. Verified on 26.5.2:
+  `colorSpace: "hlg"` wrote 3840x2160 `rgb48be`, `arib-std-b67`/`bt2020`, with levels that matched
+  an HLG render of the same frame. Calls without the new arguments are unchanged.
+
 ## [1.2.9] - 2026-10-12
 
 - `export_sequence` finds Adobe Media Encoder inside the Creative Cloud folder
