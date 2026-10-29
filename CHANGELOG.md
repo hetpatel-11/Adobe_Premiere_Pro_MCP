@@ -2,6 +2,10 @@
 
 All notable changes are documented here. Releases use semantic versioning.
 
+## [Unreleased]
+
+- `export_sequence` takes `mode: "direct"`, which renders through `sequence.exportAsMediaDirect` inside Premiere and returns once the file is on disk, with `outputBytes` and Premiere's own result string. The Media Encoder queue stays the default. A direct render blocks Premiere's UI, does not need Media Encoder installed, and keeps the audio of a nested sequence in sync where the AME render of the same timeline has played it from the wrong point. `timeoutMs` bounds the wait (default 30 minutes); the render continues in Premiere after a timeout.
+
 ## [1.2.11] - 2026-10-24
 
 - `import_media` puts the file in `binName` when that bin exists, and returns failure when it does not. The previous call imported to the project root and echoed the bin name anyway.
