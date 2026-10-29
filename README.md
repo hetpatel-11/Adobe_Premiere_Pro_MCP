@@ -342,7 +342,7 @@ All `283` catalog tools have an implementation. `tools/list` advertises a small 
 | Tools | What they do |
 | :--- | :--- |
 | `validate_project_for_export` / `get_encoder_presets` / `get_export_file_extension` | Validate a delivery, discover readable user `.epr` presets, and resolve output extensions. |
-| `export_sequence` / `add_to_render_queue` | Queue a sequence through Adobe Media Encoder using a real preset path or exact preset name. |
+| `export_sequence` / `add_to_render_queue` | Queue a sequence through Adobe Media Encoder using a real preset path or exact preset name, or (`mode: "direct"`) render it inside Premiere and wait for the file. |
 | `get_render_queue_status` / `start_batch_encode` | Report queue-monitoring availability or start supported batch encoding. |
 | `export_frame` / `capture_frame` | Write a still image from a sequence or capture a frame. |
 | `export_as_fcp_xml` / `export_aaf` / `export_omf` | Export supported interchange formats. |
