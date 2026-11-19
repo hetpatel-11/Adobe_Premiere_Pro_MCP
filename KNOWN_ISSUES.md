@@ -155,6 +155,24 @@ not been done. Treat the remainder of that path as unverified rather than fixed.
 
 These are not hidden bugs; they are boundaries of the current architecture.
 
+### `API Error: 400 ... messages.1.content.1.tool_use.id: Field required` in Claude Desktop
+
+This error comes from the Anthropic API (or the cloud provider in front of it, for
+example Vertex AI, which shows up as a `req_vrtx_...` request id), not from this MCP
+server. It means the conversation history sent to the model contains a `tool_use` block
+with no `id`. This server never builds or sends conversation messages; it only answers
+tool calls, so it cannot produce or fix that malformed block.
+
+What to try:
+
+- Start a new conversation. Once a chat history holds the malformed block, every later
+  request in that chat fails the same way.
+- Update Claude Desktop to the latest version.
+- If you route Claude through a custom gateway, proxy or third-party provider, check that
+  it preserves `tool_use.id` when it translates requests.
+- If it still happens in a fresh chat with a current Claude Desktop and no gateway, report
+  it to Anthropic with the `request_id` from the error.
+
 ### Premiere scripting is incomplete
 
 Some Premiere UI operations are not cleanly exposed through the standard DOM or are only partially accessible through QE / ExtendScript.
