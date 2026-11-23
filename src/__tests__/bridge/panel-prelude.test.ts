@@ -226,7 +226,8 @@ describe('the panel copy of the prelude', () => {
 
     expect(handed).toContain('function __mcpStringify');
     expect(handed).toContain('function __mcpParse');
-    expect(handed.endsWith('return 1;')).toBe(true);
+    // Undo wrap nests the body; the original return must still be present.
+    expect(handed).toContain('return 1;');
   });
 
   it('does not let a __proto__ key reparent the object, in the panel copy too', () => {
@@ -247,10 +248,11 @@ describe('the panel copy of the prelude', () => {
     // Everything else here proves the array's contents are right. None of it
     // proves the panel uses them: stopping it from prepending the prelude at all
     // left every other assertion in this file green while the escaper became dead
-    // code. This pins the one line that puts it in front of the script.
+    // code. This pins the line that puts the prelude in front of the (undo-wrapped) script.
     const source = realFs.readFileSync(PANEL, 'utf8');
 
-    expect(source).toMatch(/EXTENDSCRIPT_COMPAT_HELPERS\s*\+\s*'\\n'\s*\+\s*script/);
+    expect(source).toMatch(/EXTENDSCRIPT_COMPAT_HELPERS\s*\+\s*'\\n'\s*\+\s*undoWrapped/);
+    expect(source).toMatch(/wrapScriptWithUndoGroup/);
   });
 
   it('replaces a conformant JSON.stringify rather than deferring to it', () => {
