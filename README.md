@@ -1,3 +1,5 @@
+<picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/y-times-y/ytimesy/main/public/brand/mark-light.svg"><a href="https://github.com/y-times-y/ytimesy"><img src="https://raw.githubusercontent.com/y-times-y/ytimesy/main/public/brand/mark-dark.svg" alt="ytimesy" height="18" align="absmiddle"></a></picture> I'm currently actively building [ytimesy](https://github.com/y-times-y/ytimesy), an AI software engineer that runs in the cloud. Feedback and ideas welcome.
+
 <div align="center">
 
 # MCP Bridge for Adobe Premiere Pro
