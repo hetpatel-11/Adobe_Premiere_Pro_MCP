@@ -166,7 +166,7 @@ describe("generated ExtendScript is syntactically valid", () => {
     });
   });
 
-  describe("the 112 tools declared in index.ts", () => {
+  describe("the 115 tools declared in index.ts", () => {
     /**
      * This suite only ever parsed expanded.ts. A collapsing \\" escape injected
      * into an index.ts generated script -- the exact failure this file
