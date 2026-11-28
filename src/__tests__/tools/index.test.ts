@@ -2411,6 +2411,64 @@ describe('PremiereProTools', () => {
       );
     });
 
+    it('passes mode direct to the bridge and reports a completed in-Premiere render', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
+      mockBridge.renderSequence.mockResolvedValue({
+        success: true,
+        status: 'completed',
+        mode: 'direct',
+        exportResult: 'No Error',
+        outputBytes: 12345,
+        sourceRange: 'in_out',
+        resolvedRange: { in: 0, out: 5, inMarked: false, outMarked: true },
+        encoderRangeConstant: 'ENCODE_IN_TO_OUT',
+      });
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath,
+        presetPath,
+        sourceRange: 'in_out',
+        mode: 'direct',
+        timeoutMs: 600000,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.status).toBe('completed');
+      expect(result.mode).toBe('direct');
+      expect(result.outputBytes).toBe(12345);
+      expect(result.message).toMatch(/rendered inside Premiere/);
+      expect(result.jobID).toBeUndefined();
+      expect(result.queued).toBeUndefined();
+      expect(mockBridge.renderSequence).toHaveBeenCalledWith(
+        'seq-1',
+        outputPath,
+        presetPath,
+        { sourceRange: 'in_out', removeOnCompletion: true, mode: 'direct', timeoutMs: 600000 },
+      );
+    });
+
+    it('propagates a direct-mode failure when Premiere wrote no output file', async () => {
+      const { presetPath, outputPath } = await createTempPreset();
+      mockBridge.renderSequence.mockResolvedValue({
+        success: false,
+        status: 'failed',
+        code: 'EXPORT_DIRECT_NO_OUTPUT',
+        error: 'exportAsMediaDirect returned without writing the output file. Premiere said: ',
+      } as any);
+
+      const result = await tools.executeTool('export_sequence', {
+        sequenceId: 'seq-1',
+        outputPath,
+        presetPath,
+        mode: 'direct',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('EXPORT_DIRECT_NO_OUTPUT');
+      expect(result.mode).toBe('direct');
+    });
+
     it('rejects non-absolute, unreadable, and existing output paths before queueing', async () => {
       const { presetPath, outputPath } = await createTempPreset();
       await fs.writeFile(outputPath, 'already here', 'utf8');

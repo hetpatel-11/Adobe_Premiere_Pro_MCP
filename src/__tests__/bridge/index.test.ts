@@ -2,7 +2,7 @@
  * Unit tests for PremiereProBridge
  */
 
-import { PremiereProBridge } from '../../bridge/index.js';
+import { DIRECT_EXPORT_TIMEOUT_MS, PremiereProBridge } from '../../bridge/index.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -161,6 +161,57 @@ describe('PremiereProBridge', () => {
     expect(command).toContain('var removeOnCompletion = 0;');
     expect(command).toContain('app.encoder[encoderRangeConstant]');
     expect(command).not.toContain('__findSequence("seq-"quoted"")');
+  });
+
+  it('renders inside Premiere in direct mode without touching Media Encoder', async () => {
+    const bridge = new PremiereProBridge();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: true, status: 'completed', mode: 'direct' }));
+    mockFs.unlink.mockResolvedValue(undefined);
+    // No Media Encoder anywhere on this machine.
+    mockFs.readdir.mockResolvedValue([] as any);
+
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      await bridge.initialize();
+      const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr', {
+        sourceRange: 'in_out',
+        mode: 'direct',
+        timeoutMs: 120000,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.code).not.toBe('MEDIA_ENCODER_NOT_INSTALLED');
+
+      const commandFile = JSON.parse(String(mockFs.writeFile.mock.calls[0]?.[1] ?? '{}'));
+      const command = String(commandFile.script ?? '');
+      expect(commandFile.timeoutMs).toBe(120000);
+      expect(command).toContain('var mode = "direct";');
+      expect(command).toContain('sequence.exportAsMediaDirect(outputPath, presetPath, range)');
+      expect(command).toContain('EXPORT_DIRECT_NO_OUTPUT');
+      expect(command).toContain('encoderRangeConstant = "ENCODE_IN_TO_OUT"');
+      expect(command).toContain('if (mode !== "direct") {');
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  });
+
+  it('waits the direct export default timeout when none is given', async () => {
+    const bridge = new PremiereProBridge();
+    mockFs.mkdir.mockResolvedValue(undefined);
+    mockFs.access.mockRejectedValue(new Error('Not found'));
+    mockFs.writeFile.mockResolvedValue(undefined);
+    mockFs.readFile.mockResolvedValue(JSON.stringify({ success: true }));
+    mockFs.unlink.mockResolvedValue(undefined);
+
+    await bridge.initialize();
+    await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr', { mode: 'direct' });
+
+    const commandFile = JSON.parse(String(mockFs.writeFile.mock.calls[0]?.[1] ?? '{}'));
+    expect(commandFile.timeoutMs).toBe(DIRECT_EXPORT_TIMEOUT_MS);
   });
 
   it('blocks AME rendering before Premiere when Media Encoder is not installed', async () => {

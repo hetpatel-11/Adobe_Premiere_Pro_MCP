@@ -25,6 +25,8 @@ export const BRIDGE_PANEL_NOT_RUNNING =
 export const BRIDGE_NOT_STARTED =
   'MCP Bridge panel is open but the bridge is not started. Click Start Bridge, wait until it says Connected, then retry once.';
 export const PREMIERE_LAUNCH_WAIT_MS = 45000;
+/** How long a direct (in-Premiere) export may hold the bridge call open before it is reported as timed out. */
+export const DIRECT_EXPORT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Join Premiere install/launch paths using `process.platform`, not the OS
@@ -1965,22 +1967,32 @@ export class PremiereProBridge implements PremiereProTransport {
     sequenceId: string,
     outputPath: string,
     presetPath: string,
-    options: { sourceRange?: 'entire' | 'in_out' | 'work_area'; removeOnCompletion?: boolean } = {}
+    options: {
+      sourceRange?: 'entire' | 'in_out' | 'work_area';
+      removeOnCompletion?: boolean;
+      mode?: 'ame' | 'direct';
+      timeoutMs?: number;
+    } = {}
   ): Promise<any> {
     const sourceRange = options.sourceRange ?? 'entire';
     const removeOnCompletion = options.removeOnCompletion ?? true;
-    const encoder = await this.findInstalledMediaEncoder();
-    if (encoder.available === false) {
-      return {
-        success: false,
-        status: 'failed',
-        code: 'MEDIA_ENCODER_NOT_INSTALLED',
-        error: 'Adobe Media Encoder is not installed. The export was not sent to Premiere, so no native Media Encoder warning was shown.',
-        searchedPaths: encoder.searchedPaths,
-        outputPath,
-        presetPath,
-        sourceRange,
-      };
+    const mode = options.mode ?? 'ame';
+    // Direct mode renders inside Premiere through sequence.exportAsMediaDirect and
+    // never touches Media Encoder, so a missing AME install is not a reason to refuse.
+    if (mode === 'ame') {
+      const encoder = await this.findInstalledMediaEncoder();
+      if (encoder.available === false) {
+        return {
+          success: false,
+          status: 'failed',
+          code: 'MEDIA_ENCODER_NOT_INSTALLED',
+          error: 'Adobe Media Encoder is not installed. The export was not sent to Premiere, so no native Media Encoder warning was shown.',
+          searchedPaths: encoder.searchedPaths,
+          outputPath,
+          presetPath,
+          sourceRange,
+        };
+      }
     }
     const script = `
       try {
@@ -1989,6 +2001,7 @@ export class PremiereProBridge implements PremiereProTransport {
         var presetPath = ${JSON.stringify(presetPath)};
         var sourceRange = ${JSON.stringify(sourceRange)};
         var removeOnCompletion = ${removeOnCompletion ? 1 : 0};
+        var mode = ${JSON.stringify(mode)};
         var warnings = [];
 
         function secondsOf(value) {
@@ -2036,10 +2049,17 @@ export class PremiereProBridge implements PremiereProTransport {
           return rangeFailure("ENCODER_UNAVAILABLE", "app.encoder not available in this Premiere build");
         }
 
-        // Boot AME if not already running so it can pick up the queue
-        try { app.encoder.launchEncoder(); }
-        catch (e1) {
-          warnings.push({ code: "LAUNCH_ENCODER_FAILED", message: e1.toString() });
+        if (mode === "direct" && typeof sequence.exportAsMediaDirect !== "function") {
+          return rangeFailure("EXPORT_DIRECT_UNAVAILABLE", "sequence.exportAsMediaDirect is not available in this Premiere build");
+        }
+
+        // Boot AME if not already running so it can pick up the queue. Direct mode
+        // renders inside Premiere, so AME is left alone.
+        if (mode !== "direct") {
+          try { app.encoder.launchEncoder(); }
+          catch (e1) {
+            warnings.push({ code: "LAUNCH_ENCODER_FAILED", message: e1.toString() });
+          }
         }
 
         var sequenceEnd = secondsOf(sequence.end);
@@ -2108,6 +2128,46 @@ export class PremiereProBridge implements PremiereProTransport {
         }
         range = app.encoder[encoderRangeConstant];
 
+        if (mode === "direct") {
+          // Render inside Premiere. This blocks the Premiere UI until the file is
+          // written, and the call only returns when the render is finished, so
+          // the output file on disk is the proof of success. A render of a
+          // timeline that nests another sequence keeps its audio in sync here,
+          // where the Media Encoder queue has played it from the wrong point.
+          var directResult = "";
+          try {
+            directResult = String(sequence.exportAsMediaDirect(outputPath, presetPath, range));
+          } catch (eDirect) {
+            return rangeFailure("EXPORT_DIRECT_THREW", "exportAsMediaDirect threw: " + eDirect.toString(), {
+              mode: "direct",
+              resolvedRange: resolvedRange,
+              encoderRangeConstant: encoderRangeConstant
+            });
+          }
+          var written = new File(outputPath);
+          if (!written.exists) {
+            return rangeFailure("EXPORT_DIRECT_NO_OUTPUT", "exportAsMediaDirect returned without writing the output file. Premiere said: " + directResult, {
+              mode: "direct",
+              exportResult: directResult,
+              resolvedRange: resolvedRange,
+              encoderRangeConstant: encoderRangeConstant
+            });
+          }
+          return JSON.stringify({
+            success: true,
+            status: "completed",
+            mode: "direct",
+            exportResult: directResult,
+            outputPath: outputPath,
+            outputBytes: written.length,
+            presetPath: presetPath,
+            sourceRange: sourceRange,
+            resolvedRange: resolvedRange,
+            encoderRangeConstant: encoderRangeConstant,
+            warnings: warnings
+          });
+        }
+
         var jobID = app.encoder.encodeSequence(
           sequence,
           outputPath,
@@ -2142,6 +2202,7 @@ export class PremiereProBridge implements PremiereProTransport {
         return JSON.stringify({
           success: true,
           status: "queued",
+          mode: "ame",
           queued: true,
           queueStarted: queueStarted,
           jobID: String(jobID),
@@ -2158,7 +2219,11 @@ export class PremiereProBridge implements PremiereProTransport {
       }
     `;
 
-    const raw = await this.executeScript(script);
+    // A direct render holds the ExtendScript call open for the whole encode, so
+    // the bridge (and the panel watchdog, which stretches to match) must wait far
+    // longer than the default round-trip timeout.
+    const timeoutMs = mode === 'direct' ? (options.timeoutMs ?? DIRECT_EXPORT_TIMEOUT_MS) : undefined;
+    const raw = await this.executeScript(script, timeoutMs);
     // CEP returns the JSON.stringify'd object; bridge.executeScript returns parsed.result if present.
     // Some CEP plugins wrap as string; handle both.
     if (typeof raw === "string") {

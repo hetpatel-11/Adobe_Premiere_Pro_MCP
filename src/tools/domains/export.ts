@@ -13,20 +13,22 @@ import { EncoderPresetEntry, getEncoderPresets } from './discovery.js';
 export const exportTools: ToolModule[] = [
   {
     name: 'export_sequence',
-    description: 'Renders and exports a sequence to a video file. This is for creating the final video.',
+    description: 'Renders and exports a sequence to a video file. This is for creating the final video. mode "ame" (default) queues the render in Adobe Media Encoder and returns at once; mode "direct" renders inside Premiere, blocks its UI, and returns once the file is written.',
     inputSchema: z.object({
       sequenceId: z.string().describe('The ID of the sequence to export'),
       outputPath: z.string().describe('The absolute path where the final video file will be saved'),
       presetPath: z.string().optional().describe('Absolute path to an export preset file (.epr). Required unless presetName uniquely resolves through get_encoder_presets.'),
       presetName: z.string().optional().describe('Exact user preset display name or filename stem. Must resolve to exactly one discovered .epr preset.'),
       sourceRange: z.enum(['entire', 'in_out', 'work_area']).optional().describe('Export source range. Defaults to entire. Requested ranges are never silently substituted.'),
+      mode: z.enum(['ame', 'direct']).optional().describe('ame (default): queue in Adobe Media Encoder and return immediately with a job id. direct: render inside Premiere with sequence.exportAsMediaDirect; the call blocks until the file is written and Premiere is unresponsive meanwhile. Use direct when the AME render of a nested sequence plays its audio out of sync, or when AME is not installed.'),
+      timeoutMs: z.number().int().positive().optional().describe('direct mode only: how long to wait for Premiere to finish the render before reporting a timeout. Defaults to 30 minutes. The render keeps going inside Premiere after a timeout.'),
       allowOverwrite: z.boolean().optional().describe('Allow writing to an existing output file. Defaults to false.'),
-      removeOnCompletion: z.boolean().optional().describe('Pass AME removeOnCompletion. Defaults to true to preserve existing queue behavior.'),
+      removeOnCompletion: z.boolean().optional().describe('Pass AME removeOnCompletion. Defaults to true to preserve existing queue behavior. Ignored in direct mode.'),
       format: z.enum(['mp4', 'mov', 'avi', 'h264', 'prores']).optional().describe('Deprecated hint only; the .epr preset controls codec/container.'),
       quality: z.enum(['low', 'medium', 'high', 'maximum']).optional().describe('Deprecated hint only; the .epr preset controls quality.'),
       resolution: z.string().optional().describe('Deprecated hint only; the .epr preset controls resolution.')
     }),
-    run: (ctx, args) => exportSequence(ctx, { sequenceId: args.sequenceId, outputPath: args.outputPath, presetPath: args.presetPath, presetName: args.presetName, sourceRange: args.sourceRange, allowOverwrite: args.allowOverwrite, removeOnCompletion: args.removeOnCompletion, format: args.format, quality: args.quality, resolution: args.resolution }),
+    run: (ctx, args) => exportSequence(ctx, { sequenceId: args.sequenceId, outputPath: args.outputPath, presetPath: args.presetPath, presetName: args.presetName, sourceRange: args.sourceRange, mode: args.mode, timeoutMs: args.timeoutMs, allowOverwrite: args.allowOverwrite, removeOnCompletion: args.removeOnCompletion, format: args.format, quality: args.quality, resolution: args.resolution }),
   },
   {
     name: 'export_frame',
@@ -85,6 +87,7 @@ export const exportTools: ToolModule[] = [
 ];
 
 type ExportSourceRange = 'entire' | 'in_out' | 'work_area';
+type ExportMode = 'ame' | 'direct';
 
 interface ExportSequenceArgs {
   sequenceId: string;
@@ -92,6 +95,8 @@ interface ExportSequenceArgs {
   presetPath?: string;
   presetName?: string;
   sourceRange?: ExportSourceRange;
+  mode?: ExportMode;
+  timeoutMs?: number;
   allowOverwrite?: boolean;
   removeOnCompletion?: boolean;
   format?: string;
@@ -210,6 +215,8 @@ async function exportSequence(ctx: ToolContext, args: ExportSequenceArgs): Promi
     outputPath,
     presetName,
     sourceRange = 'entire',
+    mode = 'ame',
+    timeoutMs,
     allowOverwrite = false,
     removeOnCompletion = true,
     format,
@@ -265,6 +272,7 @@ async function exportSequence(ctx: ToolContext, args: ExportSequenceArgs): Promi
     const result = await ctx.bridge.renderSequence(sequenceId, outputPath, presetPath, {
       sourceRange,
       removeOnCompletion,
+      ...(mode === 'direct' ? { mode, ...(timeoutMs !== undefined ? { timeoutMs } : {}) } : {}),
     });
 
     if (result && result.success === false) {
@@ -276,6 +284,7 @@ async function exportSequence(ctx: ToolContext, args: ExportSequenceArgs): Promi
         presetName,
         presetResolution: presetResolution.presetResolution,
         sourceRange,
+        mode,
         allowOverwrite,
         warnings: [...warnings, ...(result.warnings ?? [])],
         format,
@@ -284,9 +293,34 @@ async function exportSequence(ctx: ToolContext, args: ExportSequenceArgs): Promi
       };
     }
 
+    if (mode === 'direct') {
+      return {
+        success: true,
+        status: result?.status ?? 'completed',
+        mode,
+        message: 'Sequence rendered inside Premiere and the output file is on disk.',
+        sequenceId,
+        outputPath,
+        outputBytes: result?.outputBytes,
+        exportResult: result?.exportResult,
+        presetPath,
+        presetName,
+        presetResolution: presetResolution.presetResolution,
+        sourceRange,
+        resolvedRange: result?.resolvedRange,
+        encoderRangeConstant: result?.encoderRangeConstant,
+        format,
+        quality,
+        resolution,
+        warnings: [...warnings, ...(result?.warnings ?? [])],
+        verify: `ffprobe -show_entries format=duration,size '${outputPath}'`,
+      };
+    }
+
     return {
       success: true,
       status: result?.status ?? 'queued',
+      mode,
       message: 'Sequence queued in Adobe Media Encoder. Render runs asynchronously — verify by checking the output file size growth.',
       sequenceId,
       outputPath,
@@ -312,6 +346,7 @@ async function exportSequence(ctx: ToolContext, args: ExportSequenceArgs): Promi
       error: `Failed to export sequence: ${error instanceof Error ? error.message : String(error)}`,
       sequenceId,
       outputPath,
+      mode,
     };
   }
 }

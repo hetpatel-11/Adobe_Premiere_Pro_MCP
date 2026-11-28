@@ -124,7 +124,7 @@ const TOOL_ALIASES: Record<string, string> = {
   razor_timeline_at_time: 'cut split blade razor',
   add_to_timeline: 'place insert overwrite put clip on sequence',
   import_media: 'ingest bring files footage',
-  export_sequence: 'render ame media encoder output',
+  export_sequence: 'render ame media encoder direct in-app output',
   list_project_items: 'bins assets media inventory',
   list_sequence_tracks: 'clips on tracks video audio',
   get_active_sequence: 'current timeline open sequence',

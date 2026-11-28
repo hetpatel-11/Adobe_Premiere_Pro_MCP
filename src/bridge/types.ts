@@ -38,12 +38,17 @@ export interface PremiereProTransport {
   renderSequence(sequenceId: string, outputPath: string, presetPath: string, options?: {
     sourceRange?: 'entire' | 'in_out' | 'work_area';
     removeOnCompletion?: boolean;
+    mode?: 'ame' | 'direct';
+    timeoutMs?: number;
   }): Promise<{
     success: boolean;
     status?: string;
+    mode?: 'ame' | 'direct';
     queued?: boolean;
     queueStarted?: boolean;
     jobID?: string;
+    exportResult?: string;
+    outputBytes?: number;
     outputPath?: string;
     presetPath?: string;
     sourceRange?: string;
