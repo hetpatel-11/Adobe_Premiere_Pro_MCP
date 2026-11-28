@@ -17,5 +17,9 @@ release-artifacts/
 # Worktrees
 .worktrees/
 
+# Local signing tools/artifacts
+.tools/
+.rnd
+
 # Cloudflare
 .wrangler/
