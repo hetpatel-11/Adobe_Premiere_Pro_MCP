@@ -1,0 +1,7 @@
+# 생성물 / 캐시 (커밋 제외)
+output/
+frames/
+__pycache__/
+*.pyc
+*.wav
+*.srt
