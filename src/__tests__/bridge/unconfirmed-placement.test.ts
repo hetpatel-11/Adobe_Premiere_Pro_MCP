@@ -242,7 +242,16 @@ describe('bins are resolved by walking, not by string key', () => {
     // survives emission, so a not.toContain on it can never fail -- the same
     // source-versus-emitted confusion this change exists to fix.
     expect(script).not.toContain('children["Footage"]');
-    expect(script).toContain('__binByName(app.project.rootItem, "Footage")');
+    if (tool === 'create_bin') {
+      expect(script).toContain('__binByName(app.project.rootItem, "Footage")');
+    } else {
+      // import_folder resolves deeper than the root: binName may name a bin anywhere
+      // in the project, or a "parent/child" path, because a root-level-only lookup
+      // made a nested destination unaddressable. __binByName stays the primitive that
+      // walks one level; resolveBin composes it.
+      expect(script).toContain('resolveBin("Footage")');
+      expect(script).toContain('findBinDeep(app.project.rootItem, part)');
+    }
   });
 });
 
