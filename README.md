@@ -1,4 +1,17 @@
-<a href="https://github.com/y-times-y/ytimesy"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/y-times-y/ytimesy/main/public/brand/mark-light.svg"><img src="https://raw.githubusercontent.com/y-times-y/ytimesy/main/public/brand/mark-dark.svg" alt="ytimesy" height="18" align="absmiddle"></picture></a> I'm currently actively building [ytimesy](https://github.com/y-times-y/ytimesy), an AI software engineer that runs in the cloud. Feedback and ideas welcome.
+<div align="center">
+
+<a href="https://github.com/y-times-y/ytimesy"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/y-times-y/ytimesy/main/public/brand/mark-light.svg"><img src="https://raw.githubusercontent.com/y-times-y/ytimesy/main/public/brand/mark-dark.svg" alt="ytimesy" height="72"></picture></a>
+
+### Now building ytimesy
+
+I'm currently actively building [ytimesy](https://github.com/y-times-y/ytimesy), an AI software engineer that runs in the cloud.<br>
+Feedback and ideas welcome.
+
+[**Check out ytimesy →**](https://github.com/y-times-y/ytimesy)
+
+</div>
+
+---
 
 <div align="center">
 
