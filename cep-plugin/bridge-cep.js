@@ -614,6 +614,35 @@
         this.pumpEvalScript();
     };
 
+    /**
+     * Wrap host scripts in a Premiere undo group so every MCP mutation is one Ctrl+Z.
+     * Skips when the script already manages beginUndoGroup itself.
+     * Returns the payload's value so evalScript still yields the tool result (Node bridge sends an IIFE call).
+     */
+    MCPPremiereBridge.prototype.wrapScriptWithUndoGroup = function(script, label) {
+        if (!script || /beginUndoGroup\s*\(/.test(script)) return script;
+        var safeLabel = String(label || 'MCP Bridge').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        var trimmed = String(script).replace(/^\s+|\s+$/g, '');
+        // Production payloads are `(function(){ ... })();` — return that call. Statement bodies (panel tests / diagnostics) go in an inner function so top-level return still works.
+        var invoke = /^\(function\b/.test(trimmed)
+            ? ('return ' + trimmed.replace(/;\s*$/, '') + ';')
+            : ('return (function(){\n' + script + '\n})();');
+        return [
+            '(function(){',
+            '  var __mcpUndoOpened = false;',
+            '  try { app.beginUndoGroup("' + safeLabel + '"); __mcpUndoOpened = true; }',
+            '  catch (e0) { try { app.project.beginUndoGroup("' + safeLabel + '"); __mcpUndoOpened = true; } catch (e1) {} }',
+            '  try {',
+            '    ' + invoke,
+            '  } finally {',
+            '    if (__mcpUndoOpened) {',
+            '      try { app.endUndoGroup(); } catch (e2) { try { app.project.endUndoGroup(); } catch (e3) {} }',
+            '    }',
+            '  }',
+            '})();'
+        ].join('\n');
+    };
+
     MCPPremiereBridge.prototype.runEvalScriptJob = function(job) {
         var self = this;
         var callback = job.callback;
@@ -634,7 +663,8 @@
             }
 
             var script = job.script;
-            var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + script;
+            var undoWrapped = this.wrapScriptWithUndoGroup(script, 'MCP Bridge');
+            var fullScript = EXTENDSCRIPT_COMPAT_HELPERS + '\n' + undoWrapped;
             var waiterSettled = false;
             var nativeSettled = false;
             // Honor a per-command timeout from the server (batch operations request up to 300s).

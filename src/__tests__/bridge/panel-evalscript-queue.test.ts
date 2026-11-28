@@ -51,7 +51,43 @@ describe('CEP evalScript single-flight', () => {
     bridge.log = () => {};
     bridge.executeExtendScript('return 1;', () => {});
     expect(handedToEvalScript()).toContain('function __mcpStringify');
-    expect(handedToEvalScript().endsWith('return 1;')).toBe(true);
+    // Statement bodies are wrapped in an undo IIFE that still runs the original return.
+    expect(handedToEvalScript()).toContain('return 1;');
+    expect(handedToEvalScript()).toContain('beginUndoGroup');
+  });
+});
+
+describe('CEP undo groups', () => {
+  it('wraps a statement body so Premiere can undo the call as one step and still return the result', () => {
+    const { bridge, handedToEvalScript } = loadPanel();
+    bridge.log = () => {};
+    bridge.executeExtendScript('return 1;', () => {});
+    const handed = handedToEvalScript();
+    expect(handed).toContain('beginUndoGroup("MCP Bridge")');
+    expect(handed).toContain('endUndoGroup');
+    expect(handed).toMatch(/return \(function\(\)\s*\{[\s\S]*return 1;/);
+  });
+
+  it('returns a production IIFE payload instead of discarding its value', () => {
+    const { bridge, handedToEvalScript } = loadPanel();
+    bridge.log = () => {};
+    const iife = '(function(){ return JSON.stringify({ success: true }); })();';
+    bridge.executeExtendScript(iife, () => {});
+    const handed = handedToEvalScript();
+    expect(handed).toContain('beginUndoGroup("MCP Bridge")');
+    // Outer undo IIFE must return the Node-bridge IIFE call, or evalScript yields undefined.
+    expect(handed).toMatch(/return\s+\(function\(\)\s*\{\s*return JSON\.stringify\(\{\s*success:\s*true\s*\}\);\s*\}\)\(\)/);
+  });
+
+  it('leaves scripts that already open an undo group alone', () => {
+    const { bridge, handedToEvalScript } = loadPanel();
+    bridge.log = () => {};
+    const alreadyGrouped = '(function(){ app.beginUndoGroup("mine"); return 1; })();';
+    bridge.executeExtendScript(alreadyGrouped, () => {});
+    const handed = handedToEvalScript();
+    expect(handed).toContain(alreadyGrouped);
+    // Only the caller's group; no outer MCP Bridge wrapper.
+    expect(handed).not.toContain('beginUndoGroup("MCP Bridge")');
   });
 });
 
