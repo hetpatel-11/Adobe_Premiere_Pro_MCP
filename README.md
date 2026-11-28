@@ -76,7 +76,7 @@ The plugin still requires the local CEP bridge. Run `premiere-pro-mcp --install-
 From a clone of this repository:
 
 ```text
-/plugin marketplace add .
+/plugin marketplace add ./
 /plugin install premiere-pro-mcp@adobe-premiere-pro-mcp
 ```
 
